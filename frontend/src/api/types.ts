@@ -1,0 +1,129 @@
+// 与 web/server.py 的数据结构保持一致（字段名使用后端的 snake_case）。
+
+export type ModelProvider = 'deepseek' | 'openai'
+
+export interface ModelInfo {
+  id: string
+  name: string
+  provider: ModelProvider | string
+  model: string
+  base_url: string
+  temperature: number
+  updated_at: string
+  api_key_set: boolean
+  api_key_hint: string
+}
+
+export interface ModelPayload {
+  id?: string | null
+  name: string
+  provider: string
+  model: string
+  base_url: string
+  api_key: string
+  temperature: number
+}
+
+export type ToolFieldKind = 'text' | 'number' | 'select' | 'switch'
+
+export interface ToolFieldInfo {
+  key: string
+  label: string
+  secret: boolean
+  multiline: boolean
+  placeholder: string
+  kind: ToolFieldKind
+  options: Array<{ value: string; label: string }>
+  required: boolean
+  // 由 ToolStore.public() 补齐
+  value: string
+  value_set: boolean
+  hint: string
+}
+
+export interface ToolInfo {
+  name: string
+  label: string
+  description: string
+  risk: 'read' | 'write' | 'exec' | string
+  tool_names: string[]
+  default_enabled: boolean
+  enabled: boolean
+  fields: ToolFieldInfo[]
+}
+
+export interface WorkspaceInfo {
+  id: string
+  name: string
+  path: string
+  created_at?: string
+}
+
+export interface SessionSummary {
+  id: string
+  title: string
+  turns: number
+  messages: number
+  updated_at: string
+  compactions: number
+  workspace_id: string
+}
+
+export interface BootstrapData {
+  models: ModelInfo[]
+  active_id: string
+  active_model: ModelInfo | null
+  tools: ToolInfo[]
+  workspaces: WorkspaceInfo[]
+  active_workspace_id: string
+  sessions: SessionSummary[]
+}
+
+export interface HistoryMessage {
+  role: 'user' | 'assistant' | 'tool' | 'system' | string
+  content: string
+  tool_calls?: Array<{ name: string; args: Record<string, unknown> }>
+  tool_name?: string
+}
+
+export interface HistoryData {
+  session_id: string
+  messages: HistoryMessage[]
+  turns: number
+  compactions: number
+}
+
+export interface BrowseResult {
+  path: string
+  parent: string | null
+  dirs: Array<{ name: string; path: string }>
+}
+
+export interface FetchModelsResponse {
+  base_url: string
+  fetched: string[]
+  added: string[]
+  skipped: string[]
+  models: ModelInfo[]
+  active_id: string
+}
+
+export type ApprovalDecision = 'once' | 'always' | 'deny'
+
+export interface ApprovalRequest {
+  id: string
+  tool: string
+  risk: 'write' | 'exec' | string
+  target: string
+  summary: string
+  preview: string
+}
+
+export interface ChatDoneEvent {
+  session_id: string
+  text: string
+  tokens?: number
+  token_source?: 'provider' | 'local' | string
+  messages?: number
+  turns?: number
+}

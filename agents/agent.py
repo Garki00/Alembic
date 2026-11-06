@@ -1,0 +1,109 @@
+# agents/agent.py
+"""Agent 组装：模型、工具，以及重试 / 调用上限等运行保护中间件。
+
+工具清单不再硬编码在这里，而是从 :mod:`tools.registry` 派生，
+网页与命令行因此始终使用同一套工具。
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from langchain.agents import create_agent
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    ModelCallLimitMiddleware,
+    ModelRetryMiddleware,
+    ToolCallLimitMiddleware,
+)
+from langchain_deepseek import ChatDeepSeek
+
+from config.settings import settings
+from prompts.system import build_system_prompt
+from tools.context import ToolContext
+from tools.registry import build_tools, default_enabled_names
+
+from agents.approval import ApprovalGate, gate_from
+
+
+def cli_tool_context() -> ToolContext:
+    """命令行模式的工具上下文：工作区默认是当前目录。"""
+    workspace = Path(settings.workspace_dir or Path.cwd()).expanduser().resolve()
+    return ToolContext(
+        workspace=workspace,
+        max_output_chars=settings.max_tool_output_chars,
+        command_timeout=float(settings.command_timeout),
+    )
+
+
+def cli_enabled_tools() -> set[str]:
+    """命令行启用的条目：注册表里默认启用的那些。"""
+    return default_enabled_names()
+
+
+def build_default_tools() -> list:
+    """按命令行配置装配工具实例。"""
+    return build_tools(cli_enabled_tools(), {}, cli_tool_context())
+
+
+def build_cli_approval() -> ApprovalGate | None:
+    """命令行的审批开关：终端提问，默认开启。"""
+    if not settings.approval_enabled:
+        return None
+    return gate_from(cli_enabled_tools())
+
+
+def build_model() -> ChatDeepSeek:
+    """创建对话模型；同一个模型也用于生成历史对话摘要。"""
+    if not settings.deepseek_api_key:
+        raise RuntimeError("缺少 DEEPSEEK_API_KEY，请在 .env 中配置后再运行。")
+    return ChatDeepSeek(
+        model=settings.model_name,
+        temperature=0,
+        api_key=settings.deepseek_api_key,
+    )
+
+
+def build_middleware(approval: "ApprovalGate | None" = None) -> list[AgentMiddleware]:
+    """必要的运行保护：
+
+    - 模型调用失败自动重试（网络抖动、限流）；
+    - 单轮模型调用数上限，避免 Agent 陷入死循环；
+    - 单轮工具调用数上限，超出的工具调用会被拦截而不是继续堆积上下文；
+    - 审批（放在最内层，先让调用上限拦截，再问人）。
+    """
+
+    middleware: list[AgentMiddleware] = [
+        ModelRetryMiddleware(max_retries=settings.model_max_retries),
+        ModelCallLimitMiddleware(
+            run_limit=settings.max_model_calls,
+            exit_behavior="end",
+        ),
+        ToolCallLimitMiddleware(
+            run_limit=settings.max_tool_calls,
+            exit_behavior="continue",
+        ),
+    ]
+    if approval is not None:
+        from agents.approval import ApprovalMiddleware
+
+        middleware.append(ApprovalMiddleware(approval))
+    return middleware
+
+
+def build_agent(*, model=None, tools=None, middleware=None, approval: ApprovalGate | None = None):
+    """组装 Agent；参数可注入，方便测试或替换模型。
+
+    ``approval`` 用于挂上工具审批中间件；传了 ``middleware`` 时以 ``middleware`` 为准。
+    """
+    ctx = cli_tool_context()
+    if tools is None:
+        tools = build_default_tools()
+    if middleware is None:
+        middleware = build_middleware(approval)
+    return create_agent(
+        model or build_model(),
+        tools=tools,
+        system_prompt=build_system_prompt(str(ctx.workspace) if ctx.workspace else ""),
+        middleware=middleware,
+    )

@@ -1,0 +1,43 @@
+{
+  "name": "smart-agent-desktop",
+  "productName": "Smart Agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Smart Agent 桌面外壳（Electron + Python sidecar）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:frozen": "electron . --frozen",
+    "smoke": "electron . --smoke",
+    "build:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File ../packaging/build.ps1",
+    "build:app": "electron-builder --dir --win",
+    "build": "npm run build:backend && npm run build:app"
+  },
+  "devDependencies": {
+    "electron": "45.2.3",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.garki.smartagent",
+    "productName": "Smart Agent",
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist/smart-agent-backend",
+        "to": "backend"
+      }
+    ],
+    "extraFiles": [
+      {
+        "from": "launcher.cmd",
+        "to": "启动 Smart Agent.cmd"
+      }
+    ],
+    "win": {
+      "target": "dir"
+    }
+  }
+}

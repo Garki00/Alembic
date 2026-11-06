@@ -1,0 +1,28 @@
+[project]
+name = "smartagentdemo"
+version = "0.1.0"
+description = "本地智能体工作区：LangChain + DeepSeek，Vue 前端 + FastAPI 后端（前后端分离）"
+readme = "README.md"
+authors = [
+    { name = "garki", email = "" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "cryptography>=50.0.2",
+    "dotenv>=0.9.9",
+    "fastapi>=0.162.0",
+    "langchain>=1.4.8",
+    "langchain-deepseek>=1.1.1",
+    "langchain-openai>=1.7.3",
+    "pyjwt>=2.15.1",
+    # Windows 不自带 IANA 时区数据，zoneinfo 需要 tzdata 才能解析 Asia/Shanghai 等时区
+    "tzdata>=2026.6",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+smartagentdemo = "smartagentdemo:main"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
