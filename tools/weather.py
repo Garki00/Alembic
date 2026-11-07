@@ -22,7 +22,6 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_API_HOST = "na44ucu9jw.re.qweatherapi.com"
 
 
 def _setting(config: dict, key: str, default: str = "") -> str:
@@ -101,7 +100,13 @@ def _fetch_weather(city: str, config: dict) -> str:
         )
 
     headers = {"Authorization": f"Bearer {token}"}
-    api_host = _setting(config, "QWEATHER_API_HOST", _DEFAULT_API_HOST)
+    api_host = _setting(config, "QWEATHER_API_HOST")
+    if not api_host:
+        return tool_error(
+            "missing_api_host",
+            "缺少 QWEATHER_API_HOST，无法访问和风天气接口。",
+            hint="请在设置 → 工具 → 实时天气里填写你的 API Host（不含 https://）。",
+        )
 
     # ---- 1. 城市名 → 经纬度 ----
     try:

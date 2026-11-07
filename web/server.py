@@ -255,6 +255,7 @@ def create_app(
             "models": [item.public() for item in models.list()],
             "active_id": models.active_id,
             "active_model": active.public() if active else None,
+            "needs_setup": models.needs_setup(),
             "tools": tools.public(),
             "workspaces": workspaces.state()["workspaces"],
             "active_workspace_id": workspaces.active_id,
@@ -289,7 +290,9 @@ def create_app(
     @app.post("/api/models/fetch")
     def fetch_models(payload: FetchModelsPayload):
         """从上游拉取模型列表，并**全部**加入可选模型（已存在的跳过）。"""
-        base_url = (payload.base_url.strip() or "https://api.deepseek.com").rstrip("/")
+        base_url = (payload.base_url.strip()).rstrip("/")
+        if not base_url:
+            raise HTTPException(400, "请填写 Base URL")
         api_key = payload.api_key.strip()
         if not api_key:
             active = models.active()

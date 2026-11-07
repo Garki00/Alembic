@@ -3,7 +3,7 @@
 > 给接手的智能体 / 开发者：先读这一份，再动代码。
 > 最后更新：2026-11-07，默认引擎改回 `tool_calling`（结构化工具调用），原生 ReAct
 > 文本循环保留为可选模式并做了协议硬化（stop 序列 / 严格单步解析 / 纠错重试）；
-> 291 个后端测试全绿。
+> 295 个后端测试全绿。
 
 ## 1. 这是什么
 
@@ -12,7 +12,10 @@
 - 后端：Python 3.11 + FastAPI + LangChain 1.4.8，默认走 `create_agent` 的
   **模型原生工具调用**（结构化 `tool_calls`，观测只能由运行时产生）；设置
   `AGENT_ENGINE=react` 可切到 `agents/react.py` 的文本 ReAct 循环（已硬化）。
-  模型走 DeepSeek / OpenAI 兼容接口；
+  模型供应商支持深度求索 / OpenAI / Claude / 千问 / 硅基流动 / 自定义，统一走
+  OpenAI 兼容接口（Claude 走 Anthropic 兼容端点）；
+- 首次启动且没有可用模型时，前端显示**初始化向导**：选择带图标的供应商模板、
+  填模型 ID / Base URL / API Key，再设置工作步骤展示与收起时机；
 - 前端：Vue 3.5 + Vite 7 + TypeScript + Pinia（`frontend/`）；
 - 两者通过 `/api` 通信：开发时前端跑 5173，后端跑 8000，Vite 代理 `/api`；
 - 后端**不再提供 HTML / 静态资源**，只提供 JSON 与 SSE；
@@ -43,12 +46,13 @@ cd frontend; npm run dev                             # http://127.0.0.1:5173
 验证：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 291 个测试
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 295 个测试
 cd frontend
 npm run build                                        # vue-tsc + vite build
 ```
 
-命令行的用法没有变化：`.\\.venv\\Scripts\\python.exe main.py "北京现在几点？"`。
+命令行用法不变，但不再有默认模型名：`.env` 里需要同时配置 `DEEPSEEK_API_KEY`
+和 `MODEL_NAME`，再运行 `.\\.venv\\Scripts\\python.exe main.py "北京现在几点？"`。
 
 ## 3. 目录与职责
 
@@ -98,8 +102,11 @@ frontend/
       client.ts          fetch 封装、鉴权头、错误信息
       chat.ts            POST /api/chat 的 SSE 解析
       types.ts           后端 snake_case 数据结构类型
-    components/          侧边栏、对话流、审批卡、问答卡、任务清单、工作步骤、代码工作视图、通用设置、输入区、设置、Toast
-    lib/markdown.ts      轻量 Markdown 渲染（从旧 app.js 迁移，无第三方依赖）
+    components/          侧边栏、对话流、审批卡、问答卡、任务清单、工作步骤、代码工作视图、通用设置、输入区、设置、初始化向导、供应商图标/选择器、Toast
+    lib/
+      markdown.ts        轻量 Markdown 渲染（从旧 app.js 迁移，无第三方依赖）
+      providers.ts       ★ 供应商模板唯一事实来源：名称 / Base URL / 示例模型 / 图标
+      preferences.ts     工作步骤展示与收起时机的选项（通用设置 + 初始化向导共用）
     stores/
       workspace.ts       Pinia：模型 / 工具 / 工作区 / 会话列表 / 通用设置与 CRUD
       chat.ts            当前会话、流式消息、审批/提问回执、任务清单、停止生成
@@ -198,11 +205,19 @@ ReActAgent._gate_tool（tool_calling 模式则是 ApprovalMiddleware.wrap_tool_c
 
 ```
 App.vue onMounted
-  → GET /api/bootstrap → workspace store（models/tools/workspaces/sessions/preferences）
+  → GET /api/bootstrap → workspace store（models/tools/workspaces/sessions/preferences/needs_setup）
+  → needs_setup=true → 渲染 OnboardingModal（保存模型与偏好后关闭）
   → 打开第一个会话 → GET /api/sessions/{id}/messages
   → history 消息按「user 一轮 / assistant+tool 聚合」映射为 ChatTurn[]
   → 后续 POST /api/chat 的 SSE 事件直接改当前 assistant turn
 ```
+
+- `needs_setup` 由后端 `ModelStore.needs_setup()` 判定：没有「API Key + 模型 ID +
+  Base URL」齐全的模型时为 true；`/api/models` 增删后前端也会重算并自动弹出向导。
+- 供应商模板只在前端 `lib/providers.ts` 维护（名称、Base URL、示例模型、图标）；
+  设置 → 模型与初始化向导共用同一份，新增供应商只改这一处。
+- 前端保存模型时仍走 `POST /api/models`，后端只存 `provider` 字符串与 Base URL；
+  运行时在 `web/runtime.py` 里按 provider 决定 `ChatDeepSeek` / `ChatOpenAI`。
 
 - 会话切换时 `chat.ts` 会递增内部 `activeStream`，旧流的回调不会污染新会话。
 - 左栏搜索同时匹配工作区名与对话标题；工作区名命中时展示该工作区全部对话。
@@ -259,6 +274,14 @@ App.vue onMounted
     单独堆在顶部；每行先给动作标签 + 一行摘要，详情按需展开。
 26. **工具返回的事实才算事实**：`write_file` 落盘后会 stat 校验，失败返回
     `write_unverified`；不要在提示词或前端里把模型的「已保存」当作写入成功的证据。
+27. **供应商模板只有一处**：前端 `lib/providers.ts`（名称 / Base URL / 示例模型 /
+    图标）。初始化向导与设置 → 模型都从它派生；后端只存 `provider` 字符串。
+    不要把供应商清单或 Base URL 再写进组件或后端。
+28. **首次初始化由 `needs_setup` 驱动**：没有「Key + 模型 ID + Base URL」齐全的
+    模型就显示向导；不要自动生成默认模型（`MODEL_NAME` 默认空）。
+29. **实时天气默认关闭**：`get_weather.default_enabled=False`，API Host 没有默认值；
+    tools 配置 v3 迁移会把旧配置里的 `get_weather` 关闭一次。启用前必须填写
+    用户自己的 QWeather 凭据与 API Host。
 
 ## 6. 环境坑（这台机器上真实踩过的）
 
@@ -323,15 +346,19 @@ App.vue onMounted
     文本 ReAct 加 stop 序列 + 严格单步解析 + 协议纠错重试 + 原始输出日志；
     `write_file` 落盘后 stat 校验；`ask_user_question` 超限改为报错而非静默截断；
     两条引擎都能派生 `thought` 工作步骤；测试从 284 增至 291。**
+13. **新设备初始化向导：供应商模板（带图标）— 深度求索 / OpenAI / Claude / 千问 /
+    硅基流动 / 自定义；设置 → 模型同步图标选择器；不再内置默认模型名，新增
+    `needs_setup`；实时天气默认关闭、API Host 无默认值；tests 从 291 增至 295。**
 
 ## 10. 给接手者的建议顺序
 
-1. 跑一遍后端测试，确认 291 全绿；再 `cd frontend && npm run build`；
+1. 跑一遍后端测试，确认 295 全绿；再 `cd frontend && npm run build`；
 2. 读 `web/runtime.py`（默认 `create_agent`）、`agents/react.py`（可选文本 ReAct）、
    `tools/registry.py`、`web/server.py`、`agents/context.py`，够理解后端 85%；
 3. 读 `frontend/src/stores/chat.ts`、`frontend/src/api/chat.ts`、`frontend/src/App.vue`，
    理解前端状态与 SSE；
 4. 用 `.\scripts\dev.ps1` 起服务，手动点一遍界面（左侧工作区、右下角模型、设置里工具/审批）；
+   首次启动会自动进入初始化向导：选供应商模板 → 填模型/密钥 → 设置工作步骤；
 5. 要加工具：写 `tools/xxx.py` + 注册表条目即可，前端设置面板按字段自动派生；
 6. 改任何写入路径前，先确认 `settings.app_home`，别把用户数据写回代码目录；
 7. 不要为了让桌面版「先跑起来」而把静态资源重新塞回 FastAPI —— 先想清楚部署形态。

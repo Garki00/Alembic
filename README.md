@@ -53,6 +53,26 @@ Final Answer: ...
 - 两条路径共用同一份工具注册表；系统提示词、ReAct 模板与摘要提示词均为英文，
   最终回复仍要求使用用户的语言。
 
+## 首次启动：初始化向导
+
+新设备第一次打开、数据目录里还没有可用模型（API Key + 模型 ID + Base URL）时，
+会全屏显示初始化向导，完成后才进入对话：
+
+1. **模型供应商**：以图标卡片列出深度求索（DeepSeek）、OpenAI、Anthropic Claude、
+   阿里云千问、硅基流动与**自定义供应商**。选择模板会自动填入该供应商的 Base URL、
+   常用模型与占位提示；自定义供应商需要自己填写 Base URL。
+2. **模型设置**：显示名称（可选）、模型 ID、Base URL、API Key、Temperature。
+   不再预填 `deepseek-v4-flash` 之类的默认模型，也不会自动生成密钥。
+3. **工作步骤**：选择展示档位（简洁 / 标准 / 详细 / 完全展开）与收起时机
+   （回答结束后 / 下次有新消息时），与设置 → 通用中的选项完全一致。
+
+向导保存后，模型会出现在「设置 → 模型」里，供应商选择同样使用带图标的卡片；
+之后可以继续添加其他供应商（OpenAI 兼容接口，Claude 走 Anthropic 的兼容端点）。
+
+> 所有供应商都通过 OpenAI 兼容的 `/chat/completions` 调用；DeepSeek 使用
+> `ChatDeepSeek`，其余使用 `ChatOpenAI`。实时天气默认关闭，并且不再提供
+> 默认 API Host，需要用户填写自己的和风天气配置后才能启用。
+
 ## 内置工具
 
 工具清单只在 `tools/registry.py` 登记一次，网页设置面板、网页对话与命令行都从它派生。
@@ -61,7 +81,7 @@ Final Answer: ...
 | --- | --- | --- | --- |
 | `get_current_time` | `get_current_time` | 只读 | 开 |
 | `list_timezones` | `list_timezones` | 只读 | 开 |
-| `get_weather` | `get_weather` | 只读（需 QWeather 凭据） | 开 |
+| `get_weather` | `get_weather` | 只读（需 QWeather 凭据与 API Host） | 关 |
 | `file_read` | `list_dir` / `read_file` / `search_files` / `file_stat` | 只读 | 开 |
 | `read_document` | `read_document` | 只读（PDF / Office / 文本） | 开 |
 | `file_write` | `write_file` / `edit_file` / `make_dir` / `delete_file` / `move_file` / `copy_file` | 改工作区文件 | 开 |
@@ -131,9 +151,10 @@ Vite 开发服务器会把 `/api` 代理到 `http://127.0.0.1:8000`；端口不�
   - **通用**：工作步骤展示（简洁 / 标准 / 详细 / 完全展开）、工作步骤收起时机
     （回答结束后 / 下次有新消息时）、显示代码工作视图。偏好保存在
     `<home>/data/preferences.json`。
-  - **模型**：添加 / 编辑 / 删除模型，设置名称、协议（DeepSeek / OpenAI 兼容）、
-    模型名、Base URL、API Key、Temperature；「导入全部上游模型」会把
-    `{base_url}/models` 列出的模型一次性加入可选列表（已存在的跳过）。
+  - **模型**：添加 / 编辑 / 删除模型，选择**供应商**（带图标：深度求索 / OpenAI /
+    Claude / 千问 / 硅基流动 / 自定义），设置显示名称、模型 ID、Base URL、API Key、
+    Temperature；「导入全部上游模型」会把 `{base_url}/models` 列出的模型一次性加入
+    可选列表（已存在的跳过）。
   - **工具**：查看现有工具、风险等级与包含的具体工具名，启用 / 禁用；参数
     （如 `QWEATHER_*`）可直接修改，保存后下一轮对话立即生效。密钥类字段**不回显**，
     显示为「已配置 · ••••CEH6」，留空保存即沿用旧值，另有「清除」按钮可真正清空。
@@ -362,6 +383,8 @@ spawn EPERM、Chromium 沙箱、Electron 镜像等）保留在 [desktop/README.m
 
 命令行默认工作区是当前目录（可用 `WORKSPACE_DIR` 指定），文件类工具直接读写你
 所在目录；`run_command` 同样默认启用，每次执行前会在终端询问。
+CLI 不再有默认模型名：需要在 `.env` 里显式配置 `DEEPSEEK_API_KEY` 与
+`MODEL_NAME`（网页端则使用初始化向导 / 设置里的模型配置）。
 
 ### 交互命令
 
@@ -400,7 +423,7 @@ spawn EPERM、Chromium 沙箱、Electron 镜像等）保留在 [desktop/README.m
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `MODEL_NAME` | `deepseek-v4-flash` | 对话模型名称 |
+| `MODEL_NAME` | （未设置） | CLI 模式使用的模型名；网页端在初始化向导 / 设置里配置 |
 | `AGENT_ENGINE` | `tool_calling` | `tool_calling` 使用 `create_agent` 的模型原生工具调用；`react` 走加固后的文本 ReAct |
 | `SESSION_ID` | `default` | 默认会话 ID |
 | `MEMORY_DIR` | `<home>/memory` | 会话历史目录（覆盖用户级默认） |
@@ -473,7 +496,7 @@ Windows 默认不带 IANA 时区数据库，Python 的 `zoneinfo` 需要 `tzdata
 ## 测试
 
 ```powershell
-# 后端：291 个离线测试
+# 后端：295 个离线测试
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py" -v
 
 # 前端：类型检查 + 生产构建

@@ -77,7 +77,8 @@ def _env_float(name: str, default: float, *, upper: float) -> float:
 
 
 class Settings:
-    model_name = os.getenv("MODEL_NAME", "deepseek-v4-flash")
+    # 不再内置默认模型名：由网页初始化向导或 MODEL_NAME 显式提供。
+    model_name = os.getenv("MODEL_NAME", "")
     deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
 
     # Agent 执行范式：

@@ -40,8 +40,10 @@ __all__ = [
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# 工具配置结构版本：v2 起 run_command 默认开启（审批机制上线）
-_TOOLS_SCHEMA_VERSION = 2
+# 工具配置结构版本：
+# v2 起 run_command 默认开启（审批机制上线）；
+# v3 起实时天气默认关闭（需要用户自己的和风天气凭据与 API Host）。
+_TOOLS_SCHEMA_VERSION = 3
 
 # 工作区配置结构版本：v2 起从「单个当前目录 + 最近使用」变成命名工作区列表
 _WORKSPACE_SCHEMA_VERSION = 2
@@ -100,11 +102,16 @@ class _JsonFile:
 # ---------------------------------------------------------------------------
 @dataclass
 class ModelConfig:
-    """一个可切换的模型配置（DeepSeek / OpenAI 兼容接口）。"""
+    """一个可切换的模型配置。
+
+    ``provider`` 是供应商标识（deepseek / openai / claude / qwen /
+    siliconflow / custom），只用于展示与默认 Base URL；实际调用走 OpenAI
+    兼容接口（Claude 使用 Anthropic 的 OpenAI 兼容端点）。
+    """
 
     id: str
     name: str
-    provider: str = "deepseek"  # deepseek | openai
+    provider: str = "custom"
     model: str = ""
     base_url: str = ""
     api_key: str = ""
@@ -152,6 +159,17 @@ class ModelStore:
         model_id = self.active_id
         return self.get(model_id) if model_id else None
 
+    def needs_setup(self) -> bool:
+        """是否还没有一个可用的模型（初始化向导据此决定是否弹出）。"""
+        for model in self.list():
+            if (
+                model.api_key.strip()
+                and model.model.strip()
+                and model.base_url.strip()
+            ):
+                return False
+        return True
+
     # ---- 写入 ----
     def upsert(self, payload: dict[str, Any]) -> ModelConfig:
         data = self.file.load(self._seed())
@@ -173,7 +191,7 @@ class ModelStore:
             {
                 "id": model_id,
                 "name": (payload.get("name") or existing.get("name") or model_id).strip(),
-                "provider": (payload.get("provider") or existing.get("provider") or "deepseek").strip(),
+                "provider": (payload.get("provider") or existing.get("provider") or "custom").strip(),
                 "model": (payload.get("model") or existing.get("model") or "").strip(),
                 "base_url": (payload.get("base_url") or "").strip(),
                 "api_key": api_key,
@@ -182,7 +200,8 @@ class ModelStore:
             }
         )
         data["models"] = models
-        data.setdefault("active_id", model_id)
+        if not data.get("active_id"):
+            data["active_id"] = model_id
         self.file.save(data)
         return self._parse(existing)
 
@@ -212,10 +231,16 @@ class ModelStore:
 
     # ---- 内部 ----
     def _seed(self) -> dict[str, Any]:
-        """首次运行时用 .env 里的配置生成默认模型。"""
-        key = os.getenv("DEEPSEEK_API_KEY", "")
-        model_name = os.getenv("MODEL_NAME", "deepseek-v4-flash")
-        base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+        """首次运行时的空配置；只有显式配置了 Key 与模型名才自动建一条。
+
+        不再内置 ``deepseek-v4-flash`` 之类的默认模型名：新设备首次启动会走
+        网页初始化向导，由用户选择供应商并填写模型与密钥。
+        """
+        key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        model_name = os.getenv("MODEL_NAME", "").strip()
+        if not (key and model_name):
+            return {"models": [], "active_id": ""}
+        base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip()
         return {
             "models": [
                 {
@@ -249,7 +274,7 @@ class ModelStore:
         return ModelConfig(
             id=str(item.get("id", "")),
             name=str(item.get("name") or item.get("id", "")),
-            provider=str(item.get("provider") or "deepseek"),
+            provider=str(item.get("provider") or "custom"),
             model=str(item.get("model") or ""),
             base_url=str(item.get("base_url") or ""),
             api_key=str(item.get("api_key") or ""),
@@ -403,12 +428,16 @@ class ToolStore:
 
         # v1 → v2：审批上线后 run_command 默认打开。v1 里它从未被真正启用过，
         # 旧的 enabled=false 只是当时的默认值，不是用户的选择，因此直接迁移。
+        # v2 → v3：实时天气改为默认关闭（需要用户自己的凭据与 API Host）。
         try:
             version = int(data.get("version", 1))
         except (TypeError, ValueError):
             version = _TOOLS_SCHEMA_VERSION
-        if version < _TOOLS_SCHEMA_VERSION:
+        if version < 2:
             tools.setdefault("run_command", {"config": {}})["enabled"] = True
+        if version < 3:
+            tools.setdefault("get_weather", {"config": {}})["enabled"] = False
+        if version < _TOOLS_SCHEMA_VERSION:
             data["version"] = _TOOLS_SCHEMA_VERSION
             changed = True
 

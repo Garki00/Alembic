@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { CollapseTiming, Preferences, TranscriptViewMode } from '../api/types'
 import { errorMessage } from '../api/client'
+import { COLLAPSE_TIMINGS, TRANSCRIPT_MODES } from '../lib/preferences'
 import { useUiStore } from '../stores/ui'
 import { useWorkspaceStore } from '../stores/workspace'
 
@@ -10,17 +11,8 @@ const ui = useUiStore()
 
 const preferences = computed(() => store.preferences)
 
-const MODES: Array<{ value: TranscriptViewMode; label: string; hint: string }> = [
-  { value: 'compact', label: '简洁', hint: '只显示步骤摘要与错误' },
-  { value: 'standard', label: '标准', hint: '显示工具名与简短结果' },
-  { value: 'detailed', label: '详细', hint: '显示参数与较完整结果' },
-  { value: 'verbose', label: '完全展开', hint: '始终展开全部步骤与输出' },
-]
-
-const TIMINGS: Array<{ value: CollapseTiming; label: string }> = [
-  { value: 'completion', label: '回答结束后' },
-  { value: 'next_input', label: '下次有新消息时' },
-]
+const MODES = TRANSCRIPT_MODES
+const TIMINGS = COLLAPSE_TIMINGS
 
 async function save(patch: Partial<Preferences>, message: string): Promise<boolean> {
   try {

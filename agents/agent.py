@@ -73,6 +73,8 @@ def build_model() -> ChatDeepSeek:
     """创建对话模型；同一个模型也用于生成历史对话摘要。"""
     if not settings.deepseek_api_key:
         raise RuntimeError("缺少 DEEPSEEK_API_KEY，请在 .env 中配置后再运行。")
+    if not settings.model_name:
+        raise RuntimeError("缺少 MODEL_NAME，请在 .env 中填写模型名称后再运行。")
     return ChatDeepSeek(
         model=settings.model_name,
         temperature=0,

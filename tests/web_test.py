@@ -44,7 +44,7 @@ class WebWorkspaceTest(unittest.TestCase):
     def setUp(self):
         self.tmp = make_tempdir()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.env = patch.dict("os.environ", {"DEEPSEEK_API_KEY": ""})
+        self.env = patch.dict("os.environ", {"DEEPSEEK_API_KEY": "", "MODEL_NAME": ""})
         self.env.start()
         self.addCleanup(self.env.stop)
         self.app = create_app(
@@ -83,8 +83,11 @@ class WebWorkspaceTest(unittest.TestCase):
         from tools.registry import TOOL_SPECS
 
         data = self.client.get("/api/bootstrap").json()
-        self.assertEqual(len(data["models"]), 1)
-        self.assertTrue(data["active_id"])
+        # 新设备不再自动生成默认模型：等初始化向导配置
+        self.assertEqual(data["models"], [])
+        self.assertEqual(data["active_id"], "")
+        self.assertIsNone(data["active_model"])
+        self.assertTrue(data["needs_setup"])
         # 期望值从注册表派生：新增工具不需要改这条断言
         self.assertEqual({tool["name"] for tool in data["tools"]}, set(TOOL_SPECS))
         self.assertEqual(len(data["workspaces"]), 1)
@@ -98,9 +101,29 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertTrue(states["run_command"])
         self.assertTrue(states["file_read"])
         self.assertTrue(states["file_write"])
+        # 实时天气需要用户自己的凭据与 API Host，不再默认开启
+        self.assertFalse(states["get_weather"])
         for name in ("read_document", "fetch_url", "todo_write", "ask_user_question",
                      "background_process", "process_inspect"):
             self.assertTrue(states[name], name)
+
+    def create_model(self) -> dict:
+        """给需要模型的对话测试准备一个可用模型。"""
+        return self.client.post("/api/models", json={
+            "name": "测试模型",
+            "provider": "openai",
+            "model": "gpt-test",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-test-1234",
+            "temperature": 0,
+        }).json()["model"]
+
+    def test_needs_setup_turns_false_after_model_is_saved(self):
+        self.assertTrue(self.client.get("/api/bootstrap").json()["needs_setup"])
+        self.create_model()
+        data = self.client.get("/api/bootstrap").json()
+        self.assertFalse(data["needs_setup"])
+        self.assertTrue(data["active_id"])
 
     def test_bootstrap_persists_new_tool_entries(self):
         """升级到新版本后，data/tools.json 里应补齐新增条目且不丢旧配置。"""
@@ -110,7 +133,7 @@ class WebWorkspaceTest(unittest.TestCase):
         saved = json.loads((self.tmp / "data" / "tools.json").read_text(encoding="utf-8"))
         self.assertIn("file_read", saved["tools"])
         self.assertTrue(saved["tools"]["run_command"]["enabled"])
-        self.assertEqual(saved.get("version"), 2)
+        self.assertEqual(saved.get("version"), 3)
         self.assertEqual(saved["tools"]["get_weather"]["config"]["QWEATHER_PROJECT_ID"], "keep-me")
 
     # ---- 模型 ----
@@ -254,6 +277,7 @@ class WebWorkspaceTest(unittest.TestCase):
 
     # ---- 会话与对话 ----
     def test_chat_stream_events_and_history(self):
+        self.create_model()
         session = self.client.post("/api/sessions", json={}).json()["session"]
         payload = {"session_id": session["id"], "message": "你好"}
 
@@ -302,6 +326,7 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertEqual(self.client.get("/api/sessions").json()["sessions"], [])
 
     def test_chat_binds_session_to_workspace(self):
+        self.create_model()
         workspace_id = self.client.get("/api/bootstrap").json()["active_workspace_id"]
         session = self.client.post("/api/sessions", json={"workspace_id": workspace_id}).json()["session"]
         self.assertEqual(session["workspace_id"], workspace_id)

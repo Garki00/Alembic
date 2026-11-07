@@ -2,12 +2,14 @@
 """配置持久化的迁移与工作区 CRUD 测试（不经过 HTTP）。"""
 
 import json
+import os
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
-from config.store import ToolStore, WorkspaceStore
+from config.store import ModelStore, ToolStore, WorkspaceStore
 
 
 def make_dir() -> Path:
@@ -38,8 +40,9 @@ class ToolsMigrationTest(unittest.TestCase):
         ToolStore(self.path).ensure_saved()
 
         saved = json.loads(self.path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["version"], 2)
+        self.assertEqual(saved["version"], 3)
         self.assertTrue(saved["tools"]["run_command"]["enabled"])
+        self.assertFalse(saved["tools"]["get_weather"]["enabled"])
         self.assertEqual(saved["tools"]["get_weather"]["config"]["QWEATHER_KEY_ID"], "kid-1")
         # 新增条目也要补齐
         self.assertIn("file_read", saved["tools"])
@@ -60,7 +63,41 @@ class ToolsMigrationTest(unittest.TestCase):
         store.ensure_saved()
         saved = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertTrue(saved["tools"]["run_command"]["enabled"])
-        self.assertEqual(saved["version"], 2)
+        self.assertFalse(saved["tools"]["get_weather"]["enabled"])
+        self.assertEqual(saved["version"], 3)
+
+
+class ModelStoreTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = make_dir()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.path = self.dir / "models.json"
+
+    def test_seed_is_empty_without_complete_env_config(self):
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "MODEL_NAME": ""}):
+            store = ModelStore(self.path)
+            self.assertEqual(store.list(), [])
+            self.assertTrue(store.needs_setup())
+
+    def test_seed_uses_env_only_when_key_and_model_exist(self):
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-test", "MODEL_NAME": "deepseek-chat"}):
+            store = ModelStore(self.path)
+            models = store.list()
+            self.assertEqual(len(models), 1)
+            self.assertEqual(models[0].model, "deepseek-chat")
+            self.assertFalse(store.needs_setup())
+
+    def test_needs_setup_requires_model_id(self):
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "MODEL_NAME": ""}):
+            store = ModelStore(self.path)
+            store.upsert({
+                "name": "半配置",
+                "provider": "custom",
+                "model": "",
+                "base_url": "https://example.test/v1",
+                "api_key": "sk-test",
+            })
+            self.assertTrue(store.needs_setup())
 
 
 class WorkspaceStoreTest(unittest.TestCase):

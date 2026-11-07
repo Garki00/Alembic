@@ -33,6 +33,7 @@ data/
 # ---------- 打包产物 ----------
 build/
 dist/
+frontend/dist/
 desktop/dist/
 desktop/out/
 
@@ -40,8 +41,26 @@ desktop/out/
 node_modules/
 npm-debug.log*
 
+# ---------- TypeScript / Vite ----------
+*.tsbuildinfo
+.vite/
+.cache/
+.eslintcache
+.stylelintcache
+
+# ---------- 测试 / 覆盖率 ----------
+coverage/
+.nyc_output/
+
 # ---------- 日志 ----------
 *.log
+
+# ---------- 临时文件 ----------
+*.tmp
+*.bak
+*.orig
+*.rej
+*.pid
 
 # ---------- 编辑器 / 系统 ----------
 .idea/

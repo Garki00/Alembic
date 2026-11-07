@@ -34,6 +34,7 @@ export const useWorkspaceStore = defineStore('workspace', {
     activeWorkspaceId: '',
     sessions: [] as SessionSummary[],
     preferences: { ...DEFAULT_PREFERENCES } as Preferences,
+    needsSetup: false,
     ready: false,
   }),
 
@@ -69,6 +70,7 @@ export const useWorkspaceStore = defineStore('workspace', {
       this.activeWorkspaceId = data.active_workspace_id || this.workspaces[0]?.id || ''
       this.sessions = data.sessions || []
       this.preferences = data.preferences || { ...DEFAULT_PREFERENCES }
+      this.needsSetup = Boolean(data.needs_setup)
       this.ready = true
     },
 
@@ -82,6 +84,9 @@ export const useWorkspaceStore = defineStore('workspace', {
       this.models = data.models || []
       this.activeModelId = data.active_id || ''
       this.activeModel = this.models.find((item) => item.id === this.activeModelId) ?? null
+      this.needsSetup = !this.models.some(
+        (model) => model.api_key_set && model.model && model.base_url,
+      )
     },
 
     async createSession(workspaceId: string): Promise<SessionSummary> {

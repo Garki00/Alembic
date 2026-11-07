@@ -20,24 +20,44 @@ from tools.context import SessionRef, ToolContext
 from tools.registry import build_tools
 
 
+#: 各供应商的默认 Base URL。所有供应商都走 OpenAI 兼容的 /chat/completions；
+#: Claude 使用 Anthropic 提供的 OpenAI 兼容端点（/v1）。
+PROVIDER_BASE_URLS: dict[str, str] = {
+    "deepseek": "https://api.deepseek.com",
+    "openai": "https://api.openai.com/v1",
+    "claude": "https://api.anthropic.com/v1",
+    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "siliconflow": "https://api.siliconflow.cn/v1",
+}
+
+
 def create_chat_model(model_cfg: ModelConfig):
-    """根据模型配置创建聊天模型（DeepSeek 或 OpenAI 兼容接口）。"""
+    """根据模型配置创建聊天模型。
+
+    ``provider`` 决定默认 Base URL；除 DeepSeek 走 :class:`ChatDeepSeek` 外，
+    其余供应商都使用 :class:`ChatOpenAI` 的 OpenAI 兼容接口（Claude 走
+    Anthropic 的兼容端点）。
+    """
     if not model_cfg.api_key:
         raise RuntimeError(f"模型「{model_cfg.name}」还没有配置 API Key，请在设置里填写。")
     if not model_cfg.model:
-        raise RuntimeError(f"模型「{model_cfg.name}」还没有填写模型名称（如 deepseek-v4-flash）。")
+        raise RuntimeError(f"模型「{model_cfg.name}」还没有填写模型 ID。")
+
+    provider = (model_cfg.provider or "custom").strip().lower()
+    base_url = (model_cfg.base_url or "").strip() or PROVIDER_BASE_URLS.get(provider, "")
+    if not base_url:
+        raise RuntimeError("自定义供应商需要填写 Base URL（例如 https://api.example.com/v1）。")
 
     kwargs: dict[str, Any] = {
         "model": model_cfg.model,
         "api_key": model_cfg.api_key,
         "temperature": model_cfg.temperature,
+        "base_url": base_url,
     }
-    if model_cfg.base_url:
-        kwargs["base_url"] = model_cfg.base_url
 
-    if model_cfg.provider == "openai":
-        return ChatOpenAI(**kwargs)
-    return ChatDeepSeek(**kwargs)
+    if provider == "deepseek":
+        return ChatDeepSeek(**kwargs)
+    return ChatOpenAI(**kwargs)
 
 
 def tool_context(

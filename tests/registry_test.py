@@ -58,6 +58,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(TOOL_SPECS["read_document"].risk, "read")
         self.assertEqual(TOOL_SPECS["fetch_url"].risk, "read")
         self.assertEqual(TOOL_SPECS["background_process"].risk, "exec")
+        self.assertFalse(TOOL_SPECS["get_weather"].default_enabled)
         self.assertIsNotNone(spec_of("get_weather"))
         self.assertIsNone(spec_of("nope"))
 

@@ -111,6 +111,13 @@ class SSEApprovalFlowTest(unittest.TestCase):
             runtime_factory=factory,
         )
         self.client = TestClient(self.app)
+        self.client.post("/api/models", json={
+            "name": "测试模型",
+            "provider": "openai",
+            "model": "gpt-test",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-test",
+        })
 
     def test_approval_event_then_resolve(self):
         kinds: list[str] = []

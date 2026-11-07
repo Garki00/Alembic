@@ -224,10 +224,11 @@ TOOL_SPECS: dict[str, ToolSpec] = {
             ToolField(
                 "QWEATHER_API_HOST",
                 "API Host",
-                placeholder="na44ucu9jw.re.qweatherapi.com",
+                placeholder="填写你的和风天气 API Host（不含 https://）",
             ),
         ),
         tool_names=("get_weather",),
+        default_enabled=False,
         builder=_build_weather,
     ),
     "file_read": ToolSpec(

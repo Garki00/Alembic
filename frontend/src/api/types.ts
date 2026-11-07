@@ -1,6 +1,12 @@
 // 与 web/server.py 的数据结构保持一致（字段名使用后端的 snake_case）。
 
-export type ModelProvider = 'deepseek' | 'openai'
+export type ModelProvider =
+  | 'deepseek'
+  | 'openai'
+  | 'claude'
+  | 'qwen'
+  | 'siliconflow'
+  | 'custom'
 
 export interface ModelInfo {
   id: string
@@ -73,6 +79,7 @@ export interface BootstrapData {
   models: ModelInfo[]
   active_id: string
   active_model: ModelInfo | null
+  needs_setup: boolean
   tools: ToolInfo[]
   workspaces: WorkspaceInfo[]
   active_workspace_id: string

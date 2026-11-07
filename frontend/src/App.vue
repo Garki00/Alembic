@@ -4,6 +4,7 @@ import AppSidebar from './components/AppSidebar.vue'
 import ChatComposer from './components/ChatComposer.vue'
 import ChatTopbar from './components/ChatTopbar.vue'
 import ChatTranscript from './components/ChatTranscript.vue'
+import OnboardingModal from './components/OnboardingModal.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ToastHost from './components/ToastHost.vue'
 import WorkspaceModal from './components/WorkspaceModal.vue'
@@ -96,7 +97,8 @@ onBeforeUnmount(() => {
     <button type="button" class="btn-mini" @click="initialize">重试</button>
   </div>
 
-  <SettingsModal v-if="ui.settingsOpen" />
+  <OnboardingModal v-if="workspace.ready && workspace.needsSetup" />
+  <SettingsModal v-else-if="ui.settingsOpen" />
   <WorkspaceModal v-if="ui.workspaceModalOpen" />
   <ToastHost />
 </template>
