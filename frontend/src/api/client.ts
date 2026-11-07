@@ -2,10 +2,11 @@
 //
 // - 默认走同源 /api（开发时由 Vite 代理到 FastAPI）；
 // - 设置 VITE_API_BASE_URL 可直连后端，适合前后端分别部署；
-// - 若后端启用了 SMART_AGENT_TOKEN，前端会从 ?token= 读取并改用 Bearer 头。
+// - 若后端启用了 ALEMBIC_TOKEN，前端会从 ?token= 读取并改用 Bearer 头。
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
-const TOKEN_STORAGE_KEY = 'smart-agent-token'
+const TOKEN_STORAGE_KEY = 'alembic-token'
+const LEGACY_TOKEN_STORAGE_KEY = 'smart-agent-token'  // 旧版本，读取后迁移
 
 let authToken = ''
 
@@ -25,7 +26,13 @@ export function initAuthToken(): void {
     return
   }
   try {
-    authToken = window.sessionStorage.getItem(TOKEN_STORAGE_KEY) || ''
+    const current = window.sessionStorage.getItem(TOKEN_STORAGE_KEY)
+    const legacy = window.sessionStorage.getItem(LEGACY_TOKEN_STORAGE_KEY)
+    authToken = current || legacy || ''
+    if (!current && legacy) {
+      window.sessionStorage.setItem(TOKEN_STORAGE_KEY, legacy)
+      window.sessionStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY)
+    }
   } catch (_) {
     authToken = ''
   }

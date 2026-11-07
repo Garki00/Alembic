@@ -42,7 +42,7 @@ const groups = computed<WorkspaceGroupView[]>(() => {
   <aside class="sidebar" id="sidebar">
     <div class="brand">
       <SunIcon />
-      <span class="brand-text">SMART AGENT</span>
+      <span class="brand-text">ALEMBIC</span>
       <button
         type="button"
         class="icon-btn brand-action"

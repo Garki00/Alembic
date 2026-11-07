@@ -1,8 +1,8 @@
-# 交接文档（HANDOVER）
+# ALEMBIC 交接文档（HANDOVER）
 
 > 给接手的智能体 / 开发者：先读这一份，再动代码。
 > 最后更新：2026-11-07，切换为原生 ReAct 文本循环，提示词改为英文；新增
-> 工作步骤展示 / 收起时机 / 代码工作视图三个通用设置；282 个后端测试全绿。
+> 工作步骤展示 / 收起时机 / 代码工作视图三个通用设置；284 个后端测试全绿。
 
 ## 1. 这是什么
 
@@ -18,10 +18,11 @@
   这次的前后端分离，恢复桌面版时需要单独改造。
 
 数据（模型配置、工具开关、工作区、会话历史）全部存放在用户目录，
-`%APPDATA%\SmartAgent\{data,memory}`，不在代码目录里。
+`%APPDATA%\Alembic\{data,memory}`，不在代码目录里。旧的 `%APPDATA%\SmartAgent`
+会在首次启动时由 `config/storage.py` 复制到新目录，原目录保留。
 
-> 注意区分两个目录：`%APPDATA%\SmartAgent` 是**业务数据**（Python 后端写）；
-> `%LOCALAPPDATA%\SmartAgent` 是 **Electron 自己的 profile**（缓存、`runtime/*.log`，
+> 注意区分两个目录：`%APPDATA%\Alembic` 是**业务数据**（Python 后端写）；
+> `%LOCALAPPDATA%\Alembic` 是 **Electron 自己的 profile**（缓存、`runtime/*.log`，
 > 当前桌面版暂停，后者暂时用不到）。
 
 ## 2. 30 秒上手
@@ -40,7 +41,7 @@ cd frontend; npm run dev                             # http://127.0.0.1:5173
 验证：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 282 个测试
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 284 个测试
 cd frontend
 npm run build                                        # vue-tsc + vite build
 ```
@@ -249,7 +250,7 @@ App.vue onMounted
 | `uv add` 报 lock 文件拒绝访问 | uv 缓存写在 `%LOCALAPPDATA%` | `$env:UV_CACHE_DIR=<工作区>\.tmp\uv-cache` |
 | `npm install` 404 / `cdn.npmmirror.com/binaries/npm/...` | registry 被配成二进制镜像 | `--registry=https://registry.npmmirror.com` |
 | electron 启动即崩、`app` 未定义 | 继承了 `ELECTRON_RUN_AS_NODE=1` | 启动前 `Remove-Item Env:ELECTRON_RUN_AS_NODE` |
-| `memory/` 写入被拒 | 受限沙箱只允许工作区部分路径 | 验证时用 `SMART_AGENT_HOME=<工作区>\.tmp\...` |
+| `memory/` 写入被拒 | 受限沙箱只允许工作区部分路径 | 验证时用 `ALEMBIC_HOME=<工作区>\.tmp\...` |
 | 中文测试输出乱码 | Windows 控制台编码 | 不影响结果；需要时 `chcp 65001` |
 
 ## 7. 已知问题（最重要的一条）
@@ -285,7 +286,7 @@ App.vue onMounted
 2. 工具审批（允许本次 / 始终允许 / 拒绝），网页 SSE 双向回执 + CLI 终端提问；
 3. 界面重构：左侧按工作区分组、模型右下角切换、设置入口收敛到左上角；
 4. 字段类型（text/number/select/switch）+ 模拟工具 `mock_data`；
-5. 数据目录迁到 `%APPDATA%\SmartAgent`（含一次性迁移）；
+5. 数据目录迁到 `%APPDATA%\Alembic`（含一次性迁移）；
 6. Electron 外壳 + token 鉴权 + 随机端口 + 打包；
 7. **前端整体迁移到 Vue 3 + Vite + Pinia + TypeScript，后端改为 API-only + CORS，
    新增一键开发脚本，桌面/打包暂时搁置。**
@@ -293,13 +294,15 @@ App.vue onMounted
    `ask_user_question`、后台进程工具；网页端增加问答卡与任务清单，
    审批键拆分 delete/move。**
 9. **切换为原生 ReAct（`agents/react.py` + 英文 `prompts/react.py`），保留
-   `AGENT_ENGINE=tool_calling` 回退；系统/摘要提示词改为英文；测试从 201 增至 282。**
+   `AGENT_ENGINE=tool_calling` 回退；系统/摘要提示词改为英文；测试从 201 增至 284。**
 10. **通用设置（按 DSH 设计）：工作步骤展示四档、收起时机两项、代码工作视图开关；
     新增 `PreferencesStore` / `/api/preferences`，并补充 `tool_result` SSE 事件。**
+11. **项目改名 ALEMBIC：Python 包 `alembic`、前端/桌面/打包名称、API 标题、默认数据目录
+    与 `ALEMBIC_*` 环境变量同步；旧 `SmartAgent` 数据目录与旧环境变量保留兼容。**
 
 ## 10. 给接手者的建议顺序
 
-1. 跑一遍后端测试，确认 282 全绿；再 `cd frontend && npm run build`；
+1. 跑一遍后端测试，确认 284 全绿；再 `cd frontend && npm run build`；
 2. 读 `agents/react.py`、`tools/registry.py`、`web/server.py`、`agents/context.py` 四个文件，够理解后端 85%；
 3. 读 `frontend/src/stores/chat.ts`、`frontend/src/api/chat.ts`、`frontend/src/App.vue`，
    理解前端状态与 SSE；

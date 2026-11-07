@@ -1,9 +1,9 @@
 {
-  "name": "smart-agent-desktop",
-  "productName": "Smart Agent",
+  "name": "alembic-desktop",
+  "productName": "ALEMBIC",
   "version": "0.1.0",
   "private": true,
-  "description": "Smart Agent 桌面外壳（Electron + Python sidecar）",
+  "description": "ALEMBIC 桌面外壳（Electron + Python sidecar）",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -18,22 +18,22 @@
     "electron-builder": "^26.18.0"
   },
   "build": {
-    "appId": "com.garki.smartagent",
-    "productName": "Smart Agent",
+    "appId": "com.garki.alembic",
+    "productName": "ALEMBIC",
     "files": [
       "main.js",
       "package.json"
     ],
     "extraResources": [
       {
-        "from": "../dist/smart-agent-backend",
+        "from": "../dist/alembic-backend",
         "to": "backend"
       }
     ],
     "extraFiles": [
       {
         "from": "launcher.cmd",
-        "to": "启动 Smart Agent.cmd"
+        "to": "启动 ALEMBIC.cmd"
       }
     ],
     "win": {

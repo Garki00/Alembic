@@ -36,8 +36,8 @@ if (-not (Test-Path (Join-Path $frontend "node_modules"))) {
     Write-Host "首次运行：安装前端依赖…"
     $env:npm_config_cache = Join-Path $root ".tmp\npm-cache"
     # 本机 npm registry 可能被配成二进制镜像（install 会 404），这里显式指定公开源；
-    # 需要别的源时设置 SMART_AGENT_NPM_REGISTRY。
-    $registry = $env:SMART_AGENT_NPM_REGISTRY
+    # 需要别的源时设置 ALEMBIC_NPM_REGISTRY。
+    $registry = $env:ALEMBIC_NPM_REGISTRY
     if (-not $registry) {
         $registry = "https://registry.npmmirror.com"
     }
@@ -58,7 +58,7 @@ $frontendOut = Join-Path $logDir "dev-frontend.log"
 $frontendErr = Join-Path $logDir "dev-frontend.err.log"
 
 $env:WEB_PORT = "$BackendPort"
-$env:SMART_AGENT_PORT = "$BackendPort"
+$env:ALEMBIC_PORT = "$BackendPort"
 $env:FRONTEND_URL = "http://127.0.0.1:$FrontendPort"
 $env:npm_config_cache = Join-Path $root ".tmp\npm-cache"
 # 端口不是默认的 8000 时，让 Vite 的 /api 代理也跟着走
@@ -129,7 +129,7 @@ try {
     }
 
     Write-Host ""
-    Write-Host "Smart Agent 已启动" -ForegroundColor Green
+    Write-Host "ALEMBIC 已启动" -ForegroundColor Green
     Write-Host "  前端：http://127.0.0.1:$FrontendPort"
     Write-Host "  后端：http://127.0.0.1:$BackendPort/api"
     Write-Host "  日志：$logDir\dev-*.log"

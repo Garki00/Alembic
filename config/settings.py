@@ -15,15 +15,18 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 def resolve_app_home() -> Path:
     """用户级数据目录。
 
-    优先级：``SMART_AGENT_HOME`` → 平台约定目录下的 ``SmartAgent``：
+    优先级：``ALEMBIC_HOME``（兼容旧的 ``SMART_AGENT_HOME``）→ 平台约定目录下的
+    ``Alembic``：
 
-    - Windows：``%APPDATA%\\SmartAgent``
-    - macOS：``~/Library/Application Support/SmartAgent``
-    - Linux：``$XDG_DATA_HOME/SmartAgent``（默认 ``~/.local/share/SmartAgent``）
+    - Windows：``%APPDATA%\\Alembic``
+    - macOS：``~/Library/Application Support/Alembic``
+    - Linux：``$XDG_DATA_HOME/Alembic``（默认 ``~/.local/share/Alembic``）
 
     安装目录可能是只读的（Program Files），用户数据不能写在代码旁边。
+    旧版本的 ``SmartAgent`` 目录会在首次启动时由 :func:`config.storage.ensure_storage`
+    复制到新目录，原目录保留。
     """
-    env = os.getenv("SMART_AGENT_HOME", "").strip()
+    env = (os.getenv("ALEMBIC_HOME", "").strip() or os.getenv("SMART_AGENT_HOME", "").strip())
     if env:
         return Path(env).expanduser().resolve()
 
@@ -33,7 +36,7 @@ def resolve_app_home() -> Path:
         base = str(Path.home() / "Library" / "Application Support")
     else:
         base = os.getenv("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base) / "SmartAgent"
+    return Path(base) / "Alembic"
 
 
 def resolve_default_workspace() -> Path:

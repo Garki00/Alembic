@@ -1,4 +1,4 @@
-# Smart Agent 前端
+# ALEMBIC 前端
 
 Vue 3 + Vite + TypeScript 实现的对话工作区。后端是仓库根目录的 FastAPI 应用，
 两者通过 `/api` 通信，开发时由 Vite 代理请求。
@@ -43,7 +43,7 @@ npm run preview   # 用 4173 端口预览构建产物（/api 仍代理到 8000�
 
 在 `frontend/.env.local` 里设置即可（已在 `.gitignore` 中忽略）。
 
-如果后端设置了 `SMART_AGENT_TOKEN`，前端首次访问可带 `?token=...`，
+如果后端设置了 `ALEMBIC_TOKEN`，前端首次访问可带 `?token=...`，
 读取后会存入 sessionStorage 并改用 `Authorization: Bearer` 请求头。
 
 ## 目录
@@ -51,9 +51,9 @@ npm run preview   # 用 4173 端口预览构建产物（/api 仍代理到 8000�
 ```
 src/
   api/          fetch 封装、SSE 解析、后端数据结构类型
-  components/   侧边栏、对话流、输入区、设置、审批卡片、工作区浏览
+  components/   侧边栏、对话流、工作步骤、代码工作视图、问答卡、通用设置、审批卡片、工作区浏览
   lib/markdown.ts  轻量 Markdown 渲染（无第三方依赖）
-  stores/       Pinia：workspace（模型/工具/工作区/会话）、chat、ui
+  stores/       Pinia：workspace（模型/工具/工作区/会话/偏好）、chat、ui
   assets/main.css  设计系统（纸白 + 薄荷绿）
   App.vue       应用外壳与初始化
 ```

@@ -200,7 +200,7 @@ def _request_text(url: str, config: Mapping[str, str]) -> dict:
     allow_private = _setting(config, "FETCH_ALLOW_PRIVATE", "false").lower() in {"1", "true", "on", "yes"}
     timeout = _number(config, "FETCH_TIMEOUT", 20, low=1, high=120)
     max_bytes = _number(config, "FETCH_MAX_BYTES", 2_000_000, low=10_000, high=20_000_000)
-    user_agent = _setting(config, "FETCH_USER_AGENT", "SmartAgent/0.1 (+local)")
+    user_agent = _setting(config, "FETCH_USER_AGENT", "ALEMBIC/0.1 (+local)")
 
     headers = {
         "User-Agent": user_agent,

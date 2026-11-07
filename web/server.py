@@ -175,9 +175,17 @@ def create_app(
     preferences = PreferencesStore(paths.preferences_file)
     sessions = SessionStore(memory_dir or settings.memory_dir)
 
-    app = FastAPI(title="Smart Agent Workspace", version="0.1.0")
-    # 桌面外壳会注入随机 token；不设则保持「本机直接打开就能用」的旧行为
-    token = (auth_token if auth_token is not None else os.getenv("SMART_AGENT_TOKEN", "")).strip()
+    app = FastAPI(title="ALEMBIC Workspace", version="0.1.0")
+    # 桌面外壳会注入随机 token；不设则保持「本机直接打开就能用」的旧行为。
+    # ALEMBIC_TOKEN 为主，SMART_AGENT_TOKEN 仅用于旧桌面外壳兼容。
+    token = (
+        auth_token
+        if auth_token is not None
+        else (
+            os.getenv("ALEMBIC_TOKEN", "").strip()
+            or os.getenv("SMART_AGENT_TOKEN", "").strip()
+        )
+    )
     if token:
         install_auth(app, token)
     # CORS 必须在 auth 之后加入：Starlette 后加入的中间件在最外层，
@@ -223,7 +231,7 @@ def create_app(
     def index():
         """API 说明。页面请打开前端开发服务器（默认 http://127.0.0.1:5173）。"""
         return {
-            "name": "Smart Agent API",
+            "name": "ALEMBIC API",
             "version": "0.1.0",
             "api": "/api",
             "health": "/api/health",

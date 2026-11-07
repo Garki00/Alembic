@@ -7,7 +7,7 @@
 
 产物：
 
-    dist/smart-agent-backend/smart-agent-backend.exe
+    dist/alembic-backend/alembic-backend.exe
 
 采用 onedir（而不是 onefile）：启动快，且 Electron 可以直接把整个目录放进
 resources，不用每次解压到临时目录。
@@ -68,7 +68,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="smart-agent-backend",
+    name="alembic-backend",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -83,5 +83,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="smart-agent-backend",
+    name="alembic-backend",
 )

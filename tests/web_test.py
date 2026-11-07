@@ -60,7 +60,7 @@ class WebWorkspaceTest(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["name"], "Smart Agent API")
+        self.assertEqual(payload["name"], "ALEMBIC API")
         self.assertEqual(payload["api"], "/api")
         self.assertIn("frontend", payload)
         self.assertEqual(self.client.get("/static/app.js").status_code, 404)

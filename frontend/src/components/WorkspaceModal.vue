@@ -71,7 +71,7 @@ onMounted(() => {
         <form class="workspace-form" @submit.prevent="go">
           <input
             v-model="inputPath"
-            placeholder="输入目录路径，例如 D:\Garki\smart-agent-demo"
+            placeholder="输入目录路径，例如 D:\work\alembic"
           />
           <button type="submit" class="btn-outline" :disabled="loading">前往</button>
         </form>

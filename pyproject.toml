@@ -1,7 +1,7 @@
 [project]
-name = "smartagentdemo"
+name = "alembic"
 version = "0.1.0"
-description = "本地智能体工作区：LangChain + DeepSeek，Vue 前端 + FastAPI 后端（前后端分离）"
+description = "ALEMBIC：本地智能体工作区（LangChain + DeepSeek，Vue 前端 + FastAPI 后端）"
 readme = "README.md"
 authors = [
     { name = "garki", email = "" }
@@ -26,7 +26,7 @@ dependencies = [
 ]
 
 [project.scripts]
-smartagentdemo = "smartagentdemo:main"
+alembic = "alembic:main"
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]

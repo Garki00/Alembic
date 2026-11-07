@@ -278,7 +278,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
             ToolField(
                 "FETCH_USER_AGENT",
                 "User-Agent",
-                default="SmartAgent/0.1 (+local)",
+                default="ALEMBIC/0.1 (+local)",
             ),
         ),
         risk=RISK_READ,

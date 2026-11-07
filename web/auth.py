@@ -1,8 +1,8 @@
 # web/auth.py
 """可选的本地访问令牌。
 
-桌面外壳（Electron）在启动后端时生成随机 token 并通过 ``SMART_AGENT_TOKEN``
-注入。窗口首次用 ``/?token=<token>`` 打开，服务端校验后换成 HttpOnly Cookie 并
+桌面外壳（Electron）在启动后端时生成随机 token 并通过 ``ALEMBIC_TOKEN``
+注入（旧的 ``SMART_AGENT_TOKEN`` 仍兼容）。窗口首次用 ``/?token=<token>`` 打开，服务端校验后换成 HttpOnly Cookie 并
 重定向回 ``/``，地址栏里不会留下 token。
 
 这样即使本机别的进程扫到了端口，也调不动 ``/api/chat``（那个接口能让 agent 改文件、

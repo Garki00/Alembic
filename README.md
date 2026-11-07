@@ -1,7 +1,10 @@
-# SmartAgentDemo
+# ALEMBIC
 
 一个基于 LangChain + DeepSeek 的小型 Agent 示例，默认使用原生 ReAct 文本循环，
 具备多轮上下文、会话持久化、自动上下文压缩，以及可读写工作区文件的工具集。
+
+> 项目原名为 SmartAgentDemo；现在统一使用 **ALEMBIC** 品牌。旧数据目录
+> `%APPDATA%\SmartAgent` 和旧 `SMART_AGENT_*` 环境变量仍保留兼容。
 
 前端是 **Vue 3 + Vite + TypeScript**（`frontend/`），后端是 **FastAPI**（`web/`），
 两者通过 `/api` 通信，可以分别启动、分别部署。本次重构后暂不构建 Electron 应用，
@@ -146,13 +149,16 @@ Vite 开发服务器会把 `/api` 代理到 `http://127.0.0.1:8000`；端口不�
 
 | 平台 | 默认位置 |
 | --- | --- |
-| Windows | `%APPDATA%\SmartAgent\` |
-| macOS | `~/Library/Application Support/SmartAgent/` |
-| Linux | `$XDG_DATA_HOME/SmartAgent/`（默认 `~/.local/share/SmartAgent/`） |
+| Windows | `%APPDATA%\Alembic\` |
+| macOS | `~/Library/Application Support/Alembic/` |
+| Linux | `$XDG_DATA_HOME/Alembic/`（默认 `~/.local/share/Alembic/`） |
 
-可用 `SMART_AGENT_HOME` 覆盖整个目录。首次启动时，如果目标目录为空而仓库里还有旧的
-`data/`、`memory/`，会把它们**复制**过去（只复制、不删除，原目录保留可回退）；
-之后再改仓库里的文件不会再影响运行中的应用。
+可用 `ALEMBIC_HOME` 覆盖整个目录（旧的 `SMART_AGENT_HOME` 仍作为兼容别名）。
+首次启动时，如果目标目录为空而仓库里还有旧的 `data/`、`memory/`，会把它们**复制**
+过去（只复制、不删除，原目录保留可回退）；之后再改仓库里的文件不会再影响运行中的应用。
+
+从旧版 `SmartAgent` 升级时，如果默认目录旁存在 `%APPDATA%\SmartAgent`，首次启动会把
+它的 `data/`、`memory/`、`logs/` 复制到新的 `Alembic` 目录，旧目录保留。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -403,11 +409,14 @@ spawn EPERM、Chromium 沙箱、Electron 镜像等）保留在 [desktop/README.m
 | `WEB_HOST` / `WEB_PORT` | `127.0.0.1` / `8000` | 后端监听地址 |
 | `FRONTEND_URL` | `http://127.0.0.1:5173` | 前端开发地址（日志与 `/` 返回里展示） |
 | `CORS_ORIGINS` | 本地 5173 / 4173 | 允许跨域的前端来源，逗号分隔 |
-| `SMART_AGENT_TOKEN` | 未设置 | 设置后 API 需要令牌（桌面外壳自动注入） |
-| `SMART_AGENT_PORT` | 未设置 | 覆盖监听端口，`0` 由系统分配 |
+| `ALEMBIC_TOKEN` | 未设置 | 设置后 API 需要令牌（桌面外壳自动注入） |
+| `ALEMBIC_PORT` | 未设置 | 覆盖监听端口，`0` 由系统分配 |
 | `DATA_DIR` | `<home>/data` | 网页配置目录（覆盖用户级默认） |
 | `PREFERENCES_FILE` | `<data>/preferences.json` | 通用设置文件 |
-| `SMART_AGENT_HOME` | 平台用户目录 | 整个数据根目录，见「数据目录」 |
+| `ALEMBIC_HOME` | 平台用户目录 | 整个数据根目录，见「数据目录」 |
+
+旧版的 `SMART_AGENT_HOME` / `SMART_AGENT_TOKEN` / `SMART_AGENT_PORT` 仍作为后端兼容别名，
+新配置建议统一使用 `ALEMBIC_*`。
 
 前端自己的变量写在 `frontend/.env.local`：
 
@@ -450,7 +459,7 @@ Windows 默认不带 IANA 时区数据库，Python 的 `zoneinfo` 需要 `tzdata
 ## 测试
 
 ```powershell
-# 后端：282 个离线测试
+# 后端：284 个离线测试
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py" -v
 
 # 前端：类型检查 + 生产构建

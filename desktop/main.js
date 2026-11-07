@@ -2,7 +2,7 @@
 // Electron 外壳：拉起 Python sidecar（python -m web），等它就绪后用内置浏览器打开。
 //
 // 关键点：
-// - 后端用 SMART_AGENT_PORT=0 由系统分配端口，避免和别的服务撞车；
+// - 后端用 ALEMBIC_PORT=0 由系统分配端口，避免和别的服务撞车；
 // - 每次启动生成随机 token，窗口用 /?token=... 首开，服务端换成 HttpOnly Cookie；
 // - 窗口/应用退出时连同子进程树一起结束，不留孤儿进程。
 
@@ -11,7 +11,7 @@
 try {
   const bootDir = require("node:path").join(
     process.env.APPDATA || require("node:os").homedir(),
-    "Smart Agent",
+    "Alembic",
     "runtime",
   );
   require("node:fs").mkdirSync(bootDir, { recursive: true });
@@ -45,15 +45,15 @@ function usableUserData(dir) {
 }
 
 function pickUserData() {
-  // 默认放在 %LOCALAPPDATA%\SmartAgent：目录由我们自己创建，避免复用旧版本
-  // 留下的 %APPDATA%\Smart Agent（里面的锁文件/日志可能因为历史原因打不开）。
-  const preferred = process.env.SMART_AGENT_USER_DATA
-    || path.join(process.env.LOCALAPPDATA || app.getPath("appData"), "SmartAgent");
+  // 默认放在 %LOCALAPPDATA%\Alembic：目录由我们自己创建，避免复用旧版本
+  // 留下的 %APPDATA%\Alembic（里面的锁文件/日志可能因为历史原因打不开）。
+  const preferred = process.env.ALEMBIC_USER_DATA
+    || path.join(process.env.LOCALAPPDATA || app.getPath("appData"), "Alembic");
   if (usableUserData(preferred)) return preferred;
 
   const fallbacks = [
-    path.join(app.getPath("appData"), "SmartAgent"),
-    path.join(app.getPath("temp"), "SmartAgent"),
+    path.join(app.getPath("appData"), "Alembic"),
+    path.join(app.getPath("temp"), "Alembic"),
   ].filter(Boolean);
   for (const dir of fallbacks) {
     if (usableUserData(dir)) return dir;
@@ -75,7 +75,7 @@ try {
 } catch (_) { /* 记不下来也不能影响启动 */ }
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
-const IS_SMOKE = process.env.SMART_AGENT_SMOKE === "1" || process.argv.includes("--smoke");
+const IS_SMOKE = process.env.ALEMBIC_SMOKE === "1" || process.argv.includes("--smoke");
 const START_TIMEOUT_MS = 90000;
 
 let backend = null;
@@ -89,7 +89,7 @@ app.disableHardwareAcceleration();
 // 启动日志：GUI 进程的 stdout 在 Windows 上经常接不到控制台，落文件更可靠。
 // 打包后默认写 userData/runtime/desktop.log，方便用户反馈问题时直接给文件。
 const LOG_FILE =
-  process.env.SMART_AGENT_LOG || path.join(USER_DATA, "runtime", "desktop.log");
+  process.env.ALEMBIC_LOG || path.join(USER_DATA, "runtime", "desktop.log");
 let logDirReady = false;
 
 function log(message) {
@@ -123,10 +123,10 @@ log("main.js 已加载");
 // ---------------------------------------------------------------------------
 // 后端进程：打包版优先用自带 exe，开发版用仓库里的 .venv
 // ---------------------------------------------------------------------------
-const BACKEND_EXE = process.platform === "win32" ? "smart-agent-backend.exe" : "smart-agent-backend";
+const BACKEND_EXE = process.platform === "win32" ? "alembic-backend.exe" : "alembic-backend";
 
 function resolvePython() {
-  if (process.env.SMART_AGENT_PYTHON) return process.env.SMART_AGENT_PYTHON;
+  if (process.env.ALEMBIC_PYTHON) return process.env.ALEMBIC_PYTHON;
   const candidates =
     process.platform === "win32"
       ? [path.join(PROJECT_ROOT, ".venv", "Scripts", "python.exe")]
@@ -141,18 +141,18 @@ function resolvePython() {
  * 返回 { command, args, cwd, label }。
  *
  * 优先级：
- * 1. SMART_AGENT_BACKEND 显式指定的可执行文件（开发时手动指向 dist/ 里的产物）；
+ * 1. ALEMBIC_BACKEND 显式指定的可执行文件（开发时手动指向 dist/ 里的产物）；
  * 2. 打包后的应用：resources/backend/<exe>（electron-builder 的 extraResources）；
  * 3. 开发：仓库 .venv 里的 python -m web。
  */
 function resolveBackend() {
-  const override = process.env.SMART_AGENT_BACKEND;
+  const override = process.env.ALEMBIC_BACKEND;
   if (override && fs.existsSync(override)) {
     return { command: override, args: [], cwd: path.dirname(override), label: "指定后端" };
   }
 
   // 开发时想验证「打包后的后端」，用 `npm run start:frozen`（或 --frozen）
-  const localBuild = path.join(PROJECT_ROOT, "dist", "smart-agent-backend", BACKEND_EXE);
+  const localBuild = path.join(PROJECT_ROOT, "dist", "alembic-backend", BACKEND_EXE);
   if (process.argv.includes("--frozen")) {
     if (!fs.existsSync(localBuild)) {
       throw new Error(`还没有构建后端：${localBuild}\n先运行 packaging/build.ps1`);
@@ -243,9 +243,9 @@ function startBackend() {
     cwd: target.cwd,
     env: {
       ...process.env,
-      SMART_AGENT_TOKEN: token,
-      SMART_AGENT_PORT: "0",
-      SMART_AGENT_PORT_FILE: portFile,
+      ALEMBIC_TOKEN: token,
+      ALEMBIC_PORT: "0",
+      ALEMBIC_PORT_FILE: portFile,
       PYTHONUNBUFFERED: "1",
       PYTHONIOENCODING: "utf-8",
     },
@@ -360,9 +360,9 @@ function errorHtml(title, detail, logFile, backendLog) {
 }
 
 function writeSmokeReport(report) {
-  if (!process.env.SMART_AGENT_SMOKE_REPORT) return;
+  if (!process.env.ALEMBIC_SMOKE_REPORT) return;
   try {
-    fs.writeFileSync(process.env.SMART_AGENT_SMOKE_REPORT, report, "utf8");
+    fs.writeFileSync(process.env.ALEMBIC_SMOKE_REPORT, report, "utf8");
   } catch (_) { /* 写不出去也不影响退出 */ }
 }
 
@@ -398,7 +398,7 @@ function createWindow() {
     minWidth: 980,
     minHeight: 640,
     backgroundColor: "#faf8f1",
-    title: "Smart Agent",
+    title: "ALEMBIC",
     show: false,
     webPreferences: {
       contextIsolation: true,
@@ -471,7 +471,7 @@ function createWindow() {
   // 自检兜底：万一一直没跑到应用页，也要留下报告并退出
   if (IS_SMOKE) {
     setTimeout(() => {
-      if (process.env.SMART_AGENT_SMOKE_REPORT && !fs.existsSync(process.env.SMART_AGENT_SMOKE_REPORT)) {
+      if (process.env.ALEMBIC_SMOKE_REPORT && !fs.existsSync(process.env.ALEMBIC_SMOKE_REPORT)) {
         writeSmokeReport(JSON.stringify({ error: "timeout" }));
       }
       log("自检超时，退出");
@@ -490,7 +490,7 @@ function showError(error) {
   if (!win) return;
   const backendLog = path.join(runtimeDir(), "backend.log");
   win
-    .loadURL(pageUrl(errorHtml("Smart Agent 启动失败", detail, LOG_FILE, backendLog)))
+    .loadURL(pageUrl(errorHtml("ALEMBIC 启动失败", detail, LOG_FILE, backendLog)))
     .catch(() => { /* 连错误页都加载不了就只能看日志了 */ });
   if (!IS_SMOKE) win.show();
 }
@@ -511,7 +511,7 @@ function stopBackend() {
 function buildMenu() {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
-      { label: "Smart Agent", submenu: [{ role: "quit", label: "退出" }] },
+      { label: "ALEMBIC", submenu: [{ role: "quit", label: "退出" }] },
       {
         label: "视图",
         submenu: [
@@ -567,8 +567,8 @@ if (!gotLock && otherInstance) {
   app.whenReady().then(async () => {
     buildMenu();
     // 已知环境需要关沙箱时可直接跳过第一次尝试（也方便排查问题）
-    if (process.env.SMART_AGENT_FORCE_NO_SANDBOX === "1" && !process.argv.includes("--no-sandbox")) {
-      log("按 SMART_AGENT_FORCE_NO_SANDBOX 重启为无沙箱模式");
+    if (process.env.ALEMBIC_FORCE_NO_SANDBOX === "1" && !process.argv.includes("--no-sandbox")) {
+      log("按 ALEMBIC_FORCE_NO_SANDBOX 重启为无沙箱模式");
       relaunchNoSandbox();
       return;
     }

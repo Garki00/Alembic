@@ -26,14 +26,18 @@ class ResolveAppHomeTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def test_explicit_override_wins(self):
-        with patch.dict("os.environ", {"SMART_AGENT_HOME": str(self.tmp)}):
+        with patch.dict("os.environ", {"ALEMBIC_HOME": str(self.tmp)}):
+            self.assertEqual(resolve_app_home(), self.tmp.resolve())
+
+    def test_legacy_home_env_still_works(self):
+        with patch.dict("os.environ", {"ALEMBIC_HOME": "", "SMART_AGENT_HOME": str(self.tmp)}):
             self.assertEqual(resolve_app_home(), self.tmp.resolve())
 
     def test_windows_default_is_appdata(self):
         if sys.platform != "win32":
             self.skipTest("仅在 Windows 上验证 APPDATA 约定")
-        with patch.dict("os.environ", {"SMART_AGENT_HOME": "", "APPDATA": str(self.tmp)}):
-            self.assertEqual(resolve_app_home(), (self.tmp / "SmartAgent").resolve())
+        with patch.dict("os.environ", {"ALEMBIC_HOME": "", "SMART_AGENT_HOME": "", "APPDATA": str(self.tmp)}):
+            self.assertEqual(resolve_app_home(), (self.tmp / "Alembic").resolve())
 
     def test_default_workspace_follows_env(self):
         with patch.dict("os.environ", {"WORKSPACE_DIR": str(self.tmp)}):
@@ -58,6 +62,20 @@ class EnsureStorageTest(unittest.TestCase):
         self.assertTrue((self.home / "memory" / "chat.json").exists())
         # 原目录保留，可回退
         self.assertTrue((self.legacy / "data" / "tools.json").exists())
+
+    def test_copies_old_smartagent_home(self):
+        home = self.root / "Alembic"
+        old_home = self.root / "SmartAgent"
+        (old_home / "data").mkdir(parents=True)
+        (old_home / "data" / "tools.json").write_text('{"old": true}', encoding="utf-8")
+        (old_home / "memory").mkdir()
+        (old_home / "memory" / "old.json").write_text('{"messages": []}', encoding="utf-8")
+
+        result = ensure_storage(home=home, legacy=self.legacy)
+        self.assertIn("SmartAgent/data", result["migrated"])
+        self.assertTrue((home / "data" / "tools.json").exists())
+        self.assertTrue((home / "memory" / "old.json").exists())
+        self.assertTrue((old_home / "data" / "tools.json").exists())
 
     def test_does_not_overwrite_existing_data(self):
         (self.home / "data").mkdir(parents=True)

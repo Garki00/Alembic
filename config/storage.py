@@ -14,6 +14,8 @@ from pathlib import Path
 from config.settings import settings
 
 LEGACY_NAMES = ("data", "memory")
+LEGACY_HOME_NAME = "SmartAgent"
+LEGACY_HOME_ENTRIES = ("data", "memory", "logs")
 
 
 def _is_empty(path: Path) -> bool:
@@ -24,6 +26,34 @@ def _is_empty(path: Path) -> bool:
         return True
     except OSError:
         return False
+
+
+def _migrate_legacy_home(home_path: Path) -> list[str]:
+    """Copy data from ``%APPDATA%\\SmartAgent`` to the new ``Alembic`` home.
+
+    Only runs for the default directory layout (``.../Alembic``); a custom
+    ``ALEMBIC_HOME`` is left exactly where the user pointed it. The old
+    directory is copied, never deleted, so the user can still roll back.
+    """
+    if home_path.name != "Alembic":
+        return []
+    legacy_home = home_path.parent / LEGACY_HOME_NAME
+    if not legacy_home.is_dir() or legacy_home == home_path:
+        return []
+
+    migrated: list[str] = []
+    for name in LEGACY_HOME_ENTRIES:
+        source = legacy_home / name
+        target = home_path / name
+        if not source.is_dir():
+            continue
+        if target.exists() and not _is_empty(target):
+            continue
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
+        migrated.append(f"{LEGACY_HOME_NAME}/{name}")
+    return migrated
 
 
 def ensure_storage(
@@ -43,7 +73,8 @@ def ensure_storage(
     legacy_path = Path(legacy or settings.legacy_root).expanduser().resolve()
     home_path.mkdir(parents=True, exist_ok=True)
 
-    migrated: list[str] = []
+    # 旧品牌目录优先于仓库示例数据：用户真实数据比 demo data/ 更重要。
+    migrated: list[str] = list(_migrate_legacy_home(home_path))
     if home_path != legacy_path:
         for name in LEGACY_NAMES:
             source = legacy_path / name

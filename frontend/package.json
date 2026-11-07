@@ -1,9 +1,9 @@
 {
-  "name": "smart-agent-frontend",
+  "name": "alembic-frontend",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Smart Agent 对话工作区前端（Vue 3 + Vite）",
+  "description": "ALEMBIC 对话工作区前端（Vue 3 + Vite）",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
