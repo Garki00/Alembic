@@ -30,9 +30,18 @@ from agents.approval import (
 )
 from agents.context import ChatSession, SessionStore, message_text
 from config.settings import settings
-from config.store import AppPaths, ModelStore, ToolStore, WorkspaceStore
+from config.store import (
+    AppPaths,
+    ModelStore,
+    PreferencesStore,
+    ToolStore,
+    WorkspaceStore,
+)
+from tools.processes import ProcessManager
+from tools.todo import TodoStore
 from web.approvals import ApprovalBroker, ApprovalRegistry
 from web.auth import install_auth
+from web.questions import QuestionBroker, QuestionRegistry
 from web.runtime import build_runtime
 
 # 前后端分离后，后端只提供 /api；页面由 frontend/ 的 Vite 应用提供。
@@ -88,6 +97,16 @@ class ApprovalPayload(BaseModel):
     decision: str = "deny"  # once | always | deny
 
 
+class AnswerPayload(BaseModel):
+    answer: str = ""
+
+
+class PreferencesPayload(BaseModel):
+    transcript_view: str | None = None
+    collapse_timing: str | None = None
+    developer_tools: bool | None = None
+
+
 # ---------------------------------------------------------------------------
 # 工具函数
 # ---------------------------------------------------------------------------
@@ -126,10 +145,12 @@ def _serialize_messages(messages: Iterable[Any]) -> list[dict[str, Any]]:
         calls = getattr(message, "tool_calls", None)
         if calls:
             item["tool_calls"] = [
-                {"name": call.get("name"), "args": call.get("args") or {}} for call in calls
+                {"id": call.get("id"), "name": call.get("name"), "args": call.get("args") or {}}
+                for call in calls
             ]
         if role == "tool":
             item["tool_name"] = getattr(message, "name", None) or ""
+            item["tool_call_id"] = getattr(message, "tool_call_id", None) or ""
         result.append(item)
     return result
 
@@ -151,6 +172,7 @@ def create_app(
     models = ModelStore(paths.models_file)
     tools = ToolStore(paths.tools_file)
     workspaces = WorkspaceStore(paths.workspace_file, default=settings.default_workspace)
+    preferences = PreferencesStore(paths.preferences_file)
     sessions = SessionStore(memory_dir or settings.memory_dir)
 
     app = FastAPI(title="Smart Agent Workspace", version="0.1.0")
@@ -170,12 +192,18 @@ def create_app(
     app.state.models = models
     app.state.tools = tools
     app.state.workspaces = workspaces
+    app.state.preferences = preferences
     app.state.sessions = sessions
     app.state.runtime_factory = runtime_factory
     app.state.locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
     # 审批：待回执表（跨请求）+ 每个会话已记住的「始终允许」
     app.state.approvals = ApprovalRegistry()
     app.state.approval_memo: dict[str, dict[str, dict]] = {}
+    # 提问：与审批同构的中继，回答走 POST /api/questions/{id}
+    app.state.questions = QuestionRegistry()
+    # 任务清单与后台进程都放在应用级，跨轮次共享
+    app.state.todos = TodoStore(sessions.directory / "todos")
+    app.state.processes = ProcessManager(sessions.directory.parent / "logs" / "processes")
 
     def resolve_workspace(workspace_id: str | None, legacy_path: str | None) -> tuple[str, str]:
         """把请求里的工作区解析成 ``(id, 绝对路径)``。"""
@@ -223,6 +251,7 @@ def create_app(
             "workspaces": workspaces.state()["workspaces"],
             "active_workspace_id": workspaces.active_id,
             "sessions": [_session_summary(sessions, meta) for meta in sessions.list_sessions()],
+            "preferences": preferences.get(),
         }
 
     # ---- 模型 ----
@@ -332,6 +361,19 @@ def create_app(
             raise HTTPException(404, "工具不存在")
         return {"tools": tools.public()}
 
+    # ---- 通用设置（界面偏好） ----
+    @app.get("/api/preferences")
+    def get_preferences():
+        return {"preferences": preferences.get()}
+
+    @app.put("/api/preferences")
+    def update_preferences(payload: PreferencesPayload):
+        try:
+            updated = preferences.update(payload.model_dump(exclude_none=True))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"preferences": updated}
+
     # ---- 工作区 ----
     @app.get("/api/workspaces")
     def list_workspaces():
@@ -400,6 +442,7 @@ def create_app(
     def create_session(payload: SessionPayload):
         session_id = (payload.id or "").strip() or _new_session_id()
         sessions.delete(session_id)
+        app.state.todos.clear(session_id)
         return {
             "session": {
                 "id": session_id,
@@ -415,6 +458,7 @@ def create_app(
     @app.delete("/api/sessions/{session_id}")
     def delete_session(session_id: str):
         sessions.delete(session_id)
+        app.state.todos.clear(session_id)
         return {"ok": True}
 
     @app.get("/api/sessions/{session_id}/messages")
@@ -426,6 +470,11 @@ def create_app(
             "turns": meta.turns,
             "compactions": meta.compactions,
         }
+
+    @app.get("/api/sessions/{session_id}/todos")
+    def session_todos(session_id: str):
+        """当前会话的任务清单（网页刷新/切换会话后恢复面板）。"""
+        return {"session_id": session_id, "items": app.state.todos.load(session_id)}
 
     # ---- 对话（SSE 流式） ----
     @app.post("/api/chat")
@@ -453,6 +502,11 @@ def create_app(
             emit=emit,
             timeout=settings.approval_timeout,
         )
+        question_broker = QuestionBroker(
+            registry=app.state.questions,
+            emit=emit,
+            timeout=settings.question_timeout,
+        )
         gate: ApprovalGate | None = None
         if settings.approval_enabled:
             memo = app.state.approval_memo.setdefault(session_id, {})
@@ -468,6 +522,11 @@ def create_app(
                 workspace,
                 tool_configs=tools.configs(),
                 approval=gate,
+                asker=question_broker.ask,
+                session_id=session_id,
+                todo_store=app.state.todos,
+                process_manager=app.state.processes,
+                emit=emit,
             )
         except Exception as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -487,8 +546,12 @@ def create_app(
                     for kind, data in session.ask_stream(message):
                         if kind == "delta":
                             events.put(("delta", {"text": data}))
+                        elif kind == "thought":
+                            events.put(("thought", {"text": data}))
                         elif kind == "tool":
                             events.put(("tool", data))
+                        elif kind == "tool_result":
+                            events.put(("tool_result", data))
                         elif kind == "compacted":
                             events.put(("compacted", {}))
                         elif kind == "done":
@@ -508,6 +571,7 @@ def create_app(
             except Exception as exc:
                 events.put(("error", {"message": str(exc)}))
             finally:
+                question_broker.close()
                 broker.close()
                 events.put(None)  # 结束哨兵
 
@@ -531,7 +595,8 @@ def create_app(
                     kind, data = item
                     yield _sse(kind, data)
             finally:
-                # 客户端中途断开时，别让工具线程还挂在审批上等 5 分钟
+                # 客户端中途断开时，别让工具线程还挂在审批/提问上等 5 分钟
+                question_broker.close()
                 broker.close()
 
         return StreamingResponse(
@@ -562,6 +627,14 @@ def create_app(
         """撤销某个会话里所有「始终允许」。"""
         sid = (session_id or "default").strip() or "default"
         return {"ok": True, "cleared": len(app.state.approval_memo.pop(sid, {}) or {})}
+
+    # ---- 提问 ----
+    @app.post("/api/questions/{question_id}")
+    def answer_question(question_id: str, payload: AnswerPayload):
+        answer = payload.answer or ""
+        if not app.state.questions.resolve(question_id, answer):
+            raise HTTPException(404, "该提问不存在或已过期")
+        return {"ok": True}
 
     return app
 

@@ -6,6 +6,7 @@ import type {
   FetchModelsResponse,
   ModelInfo,
   ModelPayload,
+  Preferences,
   SessionSummary,
   ToolInfo,
   WorkspaceInfo,
@@ -17,6 +18,12 @@ interface ToolUpdatePayload {
   clear?: string[]
 }
 
+const DEFAULT_PREFERENCES: Preferences = {
+  transcript_view: 'detailed',
+  collapse_timing: 'completion',
+  developer_tools: false,
+}
+
 export const useWorkspaceStore = defineStore('workspace', {
   state: () => ({
     models: [] as ModelInfo[],
@@ -26,6 +33,7 @@ export const useWorkspaceStore = defineStore('workspace', {
     workspaces: [] as WorkspaceInfo[],
     activeWorkspaceId: '',
     sessions: [] as SessionSummary[],
+    preferences: { ...DEFAULT_PREFERENCES } as Preferences,
     ready: false,
   }),
 
@@ -60,6 +68,7 @@ export const useWorkspaceStore = defineStore('workspace', {
       this.workspaces = data.workspaces || []
       this.activeWorkspaceId = data.active_workspace_id || this.workspaces[0]?.id || ''
       this.sessions = data.sessions || []
+      this.preferences = data.preferences || { ...DEFAULT_PREFERENCES }
       this.ready = true
     },
 
@@ -177,6 +186,14 @@ export const useWorkspaceStore = defineStore('workspace', {
         body: payload,
       })
       this.tools = data.tools || this.tools
+    },
+
+    async savePreferences(patch: Partial<Preferences>): Promise<void> {
+      const data = await api<{ preferences: Preferences }>('/api/preferences', {
+        method: 'PUT',
+        body: patch,
+      })
+      this.preferences = data.preferences
     },
 
     async fetchTools(): Promise<void> {

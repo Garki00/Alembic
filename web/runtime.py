@@ -12,10 +12,11 @@ from langchain_openai import ChatOpenAI
 
 from agents.agent import build_middleware
 from agents.approval import ApprovalGate
+from agents.react import ReActAgent
 from config.settings import settings
 from config.store import ModelConfig
 from prompts.system import build_system_prompt
-from tools.context import ToolContext
+from tools.context import SessionRef, ToolContext
 from tools.registry import build_tools
 
 
@@ -39,7 +40,15 @@ def create_chat_model(model_cfg: ModelConfig):
     return ChatDeepSeek(**kwargs)
 
 
-def tool_context(workspace: str) -> ToolContext:
+def tool_context(
+    workspace: str,
+    *,
+    session_id: str = "default",
+    asker=None,
+    todo_store=None,
+    process_manager=None,
+    emit=None,
+) -> ToolContext:
     """把网页端的工作区字符串变成工具上下文。"""
     text = (workspace or "").strip()
     root = Path(text).expanduser().resolve() if text else Path.cwd().resolve()
@@ -47,6 +56,11 @@ def tool_context(workspace: str) -> ToolContext:
         workspace=root,
         max_output_chars=settings.max_tool_output_chars,
         command_timeout=float(settings.command_timeout),
+        session=SessionRef(session_id or "default"),
+        asker=asker,
+        todo_store=todo_store,
+        process_manager=process_manager,
+        emit=emit,
     )
 
 
@@ -56,6 +70,13 @@ def build_runtime(
     workspace: str,
     tool_configs: Mapping[str, Mapping[str, str]] | None = None,
     approval: ApprovalGate | None = None,
+    *,
+    asker=None,
+    session_id: str = "default",
+    todo_store=None,
+    process_manager=None,
+    emit=None,
+    engine: str | None = None,
 ):
     """返回 ``(agent, summarizer)``，供一轮对话使用。
 
@@ -63,17 +84,42 @@ def build_runtime(
     注入到工具实例里，不再写进 ``os.environ``，因此并发会话不会互相污染。
 
     ``approval`` 为工具审批开关；网页端由 :class:`web.approvals.ApprovalBroker`
-    提供「阻塞等待浏览器回执」的提问函数。
+    提供「阻塞等待浏览器回执」的提问函数。``asker`` 是 ask_user_question 的
+    提问通道（网页端由 :class:`web.questions.QuestionBroker` 提供）。
+
+    ``engine`` 默认取 ``settings.agent_engine``：``react`` 走原生 ReAct 文本循环，
+    ``tool_calling`` 走 LangChain ``create_agent``。
     """
     model = create_chat_model(model_cfg)
-    ctx = tool_context(workspace)
-    tools = build_tools(set(enabled_tools), tool_configs or {}, ctx)
-
-    agent = create_agent(
-        model,
-        tools=tools,
-        system_prompt=build_system_prompt(str(ctx.workspace) if ctx.workspace else ""),
-        middleware=build_middleware(approval),
+    ctx = tool_context(
+        workspace,
+        session_id=session_id,
+        asker=asker,
+        todo_store=todo_store,
+        process_manager=process_manager,
+        emit=emit,
     )
+    tools = build_tools(set(enabled_tools), tool_configs or {}, ctx)
+    system_prompt = build_system_prompt(str(ctx.workspace) if ctx.workspace else "")
+
+    resolved_engine = (engine or settings.agent_engine).strip().lower()
+    if resolved_engine == "react":
+        agent = ReActAgent(
+            model,
+            tools,
+            system_prompt,
+            approval=approval,
+            max_model_calls=settings.max_model_calls,
+            max_tool_calls=settings.max_tool_calls,
+            model_max_retries=settings.model_max_retries,
+            max_output_chars=settings.max_tool_output_chars,
+        )
+    else:
+        agent = create_agent(
+            model,
+            tools=tools,
+            system_prompt=system_prompt,
+            middleware=build_middleware(approval),
+        )
     # 同一个模型实例也用于生成上下文摘要
     return agent, model

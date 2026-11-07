@@ -20,19 +20,35 @@ from langchain_deepseek import ChatDeepSeek
 
 from config.settings import settings
 from prompts.system import build_system_prompt
-from tools.context import ToolContext
+from tools.context import SessionRef, ToolContext
 from tools.registry import build_tools, default_enabled_names
 
 from agents.approval import ApprovalGate, gate_from
+from agents.react import ReActAgent
 
 
-def cli_tool_context() -> ToolContext:
-    """命令行模式的工具上下文：工作区默认是当前目录。"""
+def cli_tool_context(
+    *,
+    session_ref: SessionRef | None = None,
+    asker=None,
+    todo_store=None,
+    process_manager=None,
+) -> ToolContext:
+    """命令行模式的工具上下文：工作区默认是当前目录。
+
+    ``session_ref`` / ``asker`` / ``todo_store`` / ``process_manager`` 由
+    main.py 注入；命令行切换会话时只改 ``session_ref.session_id``，
+    已装配的工具无需重建。
+    """
     workspace = Path(settings.workspace_dir or Path.cwd()).expanduser().resolve()
     return ToolContext(
         workspace=workspace,
         max_output_chars=settings.max_tool_output_chars,
         command_timeout=float(settings.command_timeout),
+        session=session_ref or SessionRef(settings.session_id),
+        asker=asker,
+        todo_store=todo_store,
+        process_manager=process_manager,
     )
 
 
@@ -41,9 +57,9 @@ def cli_enabled_tools() -> set[str]:
     return default_enabled_names()
 
 
-def build_default_tools() -> list:
+def build_default_tools(ctx: ToolContext | None = None) -> list:
     """按命令行配置装配工具实例。"""
-    return build_tools(cli_enabled_tools(), {}, cli_tool_context())
+    return build_tools(cli_enabled_tools(), {}, ctx or cli_tool_context())
 
 
 def build_cli_approval() -> ApprovalGate | None:
@@ -91,19 +107,45 @@ def build_middleware(approval: "ApprovalGate | None" = None) -> list[AgentMiddle
     return middleware
 
 
-def build_agent(*, model=None, tools=None, middleware=None, approval: ApprovalGate | None = None):
+def build_agent(
+    *,
+    model=None,
+    tools=None,
+    middleware=None,
+    approval: ApprovalGate | None = None,
+    ctx: ToolContext | None = None,
+    engine: str | None = None,
+):
     """组装 Agent；参数可注入，方便测试或替换模型。
 
-    ``approval`` 用于挂上工具审批中间件；传了 ``middleware`` 时以 ``middleware`` 为准。
+    ``engine="react"``（默认）使用原生 ReAct 文本循环；``engine="tool_calling"``
+    保留 LangChain ``create_agent`` 的模型原生工具调用路径。传了 ``middleware``
+    时按 tool_calling 处理，因为 ReAct 循环自己管理工具调用与审批。
     """
-    ctx = cli_tool_context()
+    resolved_engine = (engine or settings.agent_engine).strip().lower()
+    tool_ctx = ctx or cli_tool_context()
     if tools is None:
-        tools = build_default_tools()
+        tools = build_default_tools(tool_ctx)
+    system_prompt = build_system_prompt(str(tool_ctx.workspace) if tool_ctx.workspace else "")
+    chat_model = model or build_model()
+
+    if resolved_engine == "react" and middleware is None:
+        return ReActAgent(
+            chat_model,
+            tools,
+            system_prompt,
+            approval=approval,
+            max_model_calls=settings.max_model_calls,
+            max_tool_calls=settings.max_tool_calls,
+            model_max_retries=settings.model_max_retries,
+            max_output_chars=settings.max_tool_output_chars,
+        )
+
     if middleware is None:
         middleware = build_middleware(approval)
     return create_agent(
-        model or build_model(),
+        chat_model,
         tools=tools,
-        system_prompt=build_system_prompt(str(ctx.workspace) if ctx.workspace else ""),
+        system_prompt=system_prompt,
         middleware=middleware,
     )

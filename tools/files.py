@@ -14,7 +14,9 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import shutil
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from langchain.tools import tool
@@ -106,6 +108,51 @@ def _resolve_or_none(ctx: ToolContext, raw: str) -> Path | str:
         return resolve_in_workspace(ctx.workspace, raw)
     except WorkspacePathError as exc:
         return _as_error(exc)
+
+
+def _protected_reason(target: Path, root: Path | None) -> str:
+    """返回不能删除/覆盖的原因；空字符串表示允许。"""
+    if root is None:
+        return ""
+    if target == root:
+        return "工作区根目录"
+    try:
+        parts = target.relative_to(root).parts
+    except ValueError:
+        return ""
+    if any(part.lower() == ".git" for part in parts):
+        return ".git 目录"
+    return ""
+
+
+def _ensure_parent(target: Path) -> str | None:
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return tool_error("write_failed", f"无法创建目录 {target.parent}：{exc}。")
+    return None
+
+
+def _check_destination(destination: Path, overwrite: bool) -> str | None:
+    """检查目标是否可写；覆盖已有文件时沿用「读后写」约束。"""
+    if not destination.exists():
+        return None
+    if not overwrite:
+        return tool_error(
+            "destination_exists",
+            f"目标已存在：{destination.name}。",
+            hint="换一个目标名，或传 overwrite=True（覆盖前必须先 read_file）。",
+        )
+    if destination.is_dir():
+        return tool_error(
+            "destination_is_directory",
+            f"目标 {destination.name} 是目录，不会自动覆盖目录。",
+            hint="请先删除或改名该目录，再重试。",
+        )
+    error, _partial = _check_read(destination)
+    if error:
+        return error
+    return None
 
 
 # --------------------------------------------------------------------- 只读组
@@ -283,7 +330,45 @@ def build_file_read_tools(ctx: ToolContext) -> list:
         header = f"匹配 {pattern!r}：共 {len(matches)} 行（已搜索 {scanned} 个文件）"
         return truncate("\n".join([header, *matches]), ctx.max_output_chars)
 
-    return [list_dir, read_file, search_files]
+    @tool
+    def file_stat(path: str = ".") -> str:
+        """查看文件或目录的元信息：类型、大小、修改时间、行数。
+
+        适合在读取大文件前先判断大小，或确认某个路径是否还存在。
+
+        Args:
+            path: 相对工作区的文件或目录路径，默认 "." 表示工作区根目录。
+
+        Returns:
+            类型、大小、修改时间；文本文件额外给出行数。
+        """
+        target = _resolve_or_none(ctx, path)
+        if isinstance(target, str):
+            return target
+        if not target.exists():
+            return tool_error("not_found", f"路径不存在：{path}。")
+        try:
+            info = target.stat()
+        except OSError as exc:
+            return tool_error("stat_failed", f"无法读取 {path} 的信息：{exc}。")
+
+        kind = "目录" if target.is_dir() else "文件"
+        lines = [
+            f"路径：{display_path(ctx.workspace, target)}",
+            f"类型：{kind}",
+            f"大小：{_format_size(info.st_size)}（{info.st_size} 字节）",
+            f"修改时间：{datetime.fromtimestamp(info.st_mtime):%Y-%m-%d %H:%M:%S}",
+        ]
+        if target.is_file():
+            lines.append(f"后缀：{target.suffix.lower() or '(无)'}")
+            if not _looks_binary(target) and info.st_size <= 2_000_000:
+                try:
+                    lines.append(f"行数：{len(_read_text(target).splitlines())}")
+                except OSError:
+                    pass
+        return "\n".join(lines)
+
+    return [list_dir, read_file, search_files, file_stat]
 
 
 # --------------------------------------------------------------------- 写入组
@@ -308,6 +393,9 @@ def build_file_write_tools(ctx: ToolContext) -> list:
             return target
         if target.is_dir():
             return tool_error("is_directory", f"{path} 是目录，不能写入。", hint="请给出具体的文件名。")
+        reason = _protected_reason(target, ctx.workspace)
+        if reason:
+            return tool_error("protected_path", f"不能写入{reason}：{path}。")
 
         existed = target.exists()
         partial_warning = False
@@ -358,6 +446,9 @@ def build_file_write_tools(ctx: ToolContext) -> list:
             return tool_error("not_found", f"文件不存在：{path}。", hint="新建文件请用 write_file。")
         if target.is_dir():
             return tool_error("is_directory", f"{path} 是目录。")
+        reason = _protected_reason(target, ctx.workspace)
+        if reason:
+            return tool_error("protected_path", f"不能修改{reason}：{path}。")
         if not old_string:
             return tool_error("empty_old_string", "old_string 不能为空。")
         if old_string == new_string:
@@ -403,4 +494,176 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         replaced = count if replace_all else 1
         return f"已修改：{display_path(ctx.workspace, target)}，替换 {replaced} 处。"
 
-    return [write_file, edit_file]
+    @tool
+    def make_dir(path: str) -> str:
+        """在工作区内创建一个目录（必要时创建多级父目录）。
+
+        Args:
+            path: 相对工作区的目录路径。
+
+        Returns:
+            创建结果；已存在且是目录时返回提示而不是失败。
+        """
+        target = _resolve_or_none(ctx, path)
+        if isinstance(target, str):
+            return target
+        reason = _protected_reason(target, ctx.workspace)
+        if reason:
+            return tool_error("protected_path", f"不能在{reason}下创建目录：{path}。")
+        if target.exists():
+            if target.is_dir():
+                return f"目录已存在：{display_path(ctx.workspace, target)}"
+            return tool_error("not_a_directory", f"{path} 已存在且是文件。", hint="换一个目录名。")
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return tool_error("write_failed", f"创建目录 {path} 失败：{exc}。")
+        return f"已创建目录：{display_path(ctx.workspace, target)}"
+
+    @tool
+    def delete_file(path: str, recursive: bool = False) -> str:
+        """删除工作区内的文件或目录（不可恢复，执行前需要审批）。
+
+        工作区根目录与 .git 目录禁止删除；非空目录必须显式传
+        ``recursive=True``。删除前建议先用 list_dir / file_stat 确认目标。
+
+        Args:
+            path: 相对工作区的文件或目录路径。
+            recursive: 删除目录时是否递归删除其中的内容。
+
+        Returns:
+            删除结果；目标不存在或受保护时返回 ``Error:``。
+        """
+        target = _resolve_or_none(ctx, path)
+        if isinstance(target, str):
+            return target
+        if not target.exists():
+            return tool_error("not_found", f"路径不存在：{path}。")
+        reason = _protected_reason(target, ctx.workspace)
+        if reason:
+            return tool_error("protected_path", f"不能删除{reason}：{path}。")
+        try:
+            if target.is_dir():
+                if any(target.iterdir()) and not recursive:
+                    return tool_error(
+                        "directory_not_empty",
+                        f"目录 {path} 不是空的。",
+                        hint="确认要删除全部内容时传 recursive=True。",
+                    )
+                shutil.rmtree(target)
+                return f"已删除目录：{display_path(ctx.workspace, target)}"
+            target.unlink()
+            return f"已删除文件：{display_path(ctx.workspace, target)}"
+        except OSError as exc:
+            return tool_error("delete_failed", f"删除 {path} 失败：{exc}。")
+
+    @tool
+    def move_file(source: str, destination: str, overwrite: bool = False) -> str:
+        """移动或重命名工作区内的文件/目录（执行前需要审批）。
+
+        不能把目录移动到它自己的子目录里；覆盖已有文件前必须先读过它。
+
+        Args:
+            source: 原路径（相对工作区）。
+            destination: 目标路径（相对工作区），父目录会自动创建。
+            overwrite: 目标已存在时是否覆盖（仅支持文件）。
+
+        Returns:
+            移动结果；路径越界、目标已存在等情况返回 ``Error:``。
+        """
+        src = _resolve_or_none(ctx, source)
+        if isinstance(src, str):
+            return src
+        dst = _resolve_or_none(ctx, destination)
+        if isinstance(dst, str):
+            return dst
+        if not src.exists():
+            return tool_error("not_found", f"源路径不存在：{source}。")
+        if src == dst:
+            return tool_error("no_change", "源路径与目标路径相同。")
+        source_reason = _protected_reason(src, ctx.workspace)
+        if source_reason:
+            return tool_error("protected_path", f"不能移动{source_reason}：{source}。")
+        reason = _protected_reason(dst, ctx.workspace)
+        if reason:
+            return tool_error("protected_path", f"不能覆盖{reason}：{destination}。")
+        if src.is_dir() and dst.is_relative_to(src):
+            return tool_error(
+                "invalid_destination",
+                "不能把目录移动到它自己的子目录里。",
+                hint="请换一个工作区内的其他目标目录。",
+            )
+        if src.is_dir() and dst.exists():
+            return tool_error(
+                "destination_exists",
+                f"目标已存在：{destination}。",
+                hint="覆盖目录有风险，请换一个目标名或先删除旧目录。",
+            )
+        error = _check_destination(dst, overwrite)
+        if error:
+            return error
+        error = _ensure_parent(dst)
+        if error:
+            return error
+
+        try:
+            if overwrite and dst.exists():
+                dst.unlink()
+            shutil.move(str(src), str(dst))
+        except (OSError, shutil.Error) as exc:
+            return tool_error("move_failed", f"移动 {source} 失败：{exc}。")
+        return f"已移动：{display_path(ctx.workspace, src)} → {display_path(ctx.workspace, dst)}"
+
+    @tool
+    def copy_file(source: str, destination: str, overwrite: bool = False) -> str:
+        """复制工作区内的文件或目录（执行前需要审批）。
+
+        目标已存在时默认拒绝；覆盖已有文件前必须先读过它。
+
+        Args:
+            source: 原路径（相对工作区）。
+            destination: 目标路径（相对工作区），父目录会自动创建。
+            overwrite: 目标已存在时是否覆盖（仅支持文件）。
+
+        Returns:
+            复制结果；路径越界、目标已存在等情况返回 ``Error:``。
+        """
+        src = _resolve_or_none(ctx, source)
+        if isinstance(src, str):
+            return src
+        dst = _resolve_or_none(ctx, destination)
+        if isinstance(dst, str):
+            return dst
+        if not src.exists():
+            return tool_error("not_found", f"源路径不存在：{source}。")
+        if src == dst:
+            return tool_error("no_change", "源路径与目标路径相同。")
+        if src.is_dir() and dst.is_relative_to(src):
+            return tool_error(
+                "invalid_destination",
+                "不能把目录复制到它自己的子目录里。",
+                hint="请换一个工作区内的其他目标目录。",
+            )
+        if src.is_dir() and dst.exists():
+            return tool_error(
+                "destination_exists",
+                f"目标已存在：{destination}。",
+                hint="覆盖目录有风险，请换一个目标名或先删除旧目录。",
+            )
+        error = _check_destination(dst, overwrite)
+        if error:
+            return error
+        error = _ensure_parent(dst)
+        if error:
+            return error
+
+        try:
+            if src.is_dir():
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+        except (OSError, shutil.Error) as exc:
+            return tool_error("copy_failed", f"复制 {source} 失败：{exc}。")
+        return f"已复制：{display_path(ctx.workspace, src)} → {display_path(ctx.workspace, dst)}"
+
+    return [write_file, edit_file, make_dir, delete_file, move_file, copy_file]

@@ -77,6 +77,11 @@ class Settings:
     model_name = os.getenv("MODEL_NAME", "deepseek-v4-flash")
     deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
 
+    # Agent 执行范式：react（原生 ReAct 文本循环）或 tool_calling（LangChain create_agent）
+    agent_engine = os.getenv("AGENT_ENGINE", "react").strip().lower()
+    if agent_engine not in {"react", "tool_calling"}:
+        agent_engine = "react"
+
     # ---- 数据目录（默认在用户级目录，见 resolve_app_home）----
     app_home = str(resolve_app_home())
     legacy_root = str(_PROJECT_ROOT)
@@ -90,6 +95,7 @@ class Settings:
     models_file = os.getenv("MODELS_FILE", os.path.join(data_dir, "models.json"))
     tools_file = os.getenv("TOOLS_FILE", os.path.join(data_dir, "tools.json"))
     workspace_file = os.getenv("WORKSPACE_FILE", os.path.join(data_dir, "workspace.json"))
+    preferences_file = os.getenv("PREFERENCES_FILE", os.path.join(data_dir, "preferences.json"))
     default_workspace = str(resolve_default_workspace())
     web_host = os.getenv("WEB_HOST", "127.0.0.1")
     web_port = _env_int("WEB_PORT", 8000)
@@ -128,9 +134,10 @@ class Settings:
     command_timeout = _env_int("COMMAND_TIMEOUT", 60)  # run_command 默认超时（秒）
     workspace_dir = os.getenv("WORKSPACE_DIR", "")  # 命令行模式的默认工作区，留空用当前目录
 
-    # ---- 工具审批 ----
+    # ---- 工具审批与提问 ----
     approval_enabled = os.getenv("APPROVAL_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
     approval_timeout = _env_int("APPROVAL_TIMEOUT", 300)  # 等待人确认的秒数，超时按拒绝
+    question_timeout = _env_int("QUESTION_TIMEOUT", 300)  # 等待用户回答的秒数，超时按未回答
 
 
 settings = Settings()

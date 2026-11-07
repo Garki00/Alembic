@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from 'vue'
+import GeneralPanel from './GeneralPanel.vue'
 import ModelsPanel from './ModelsPanel.vue'
 import ToolsPanel from './ToolsPanel.vue'
 import { useUiStore } from '../stores/ui'
@@ -33,6 +34,16 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
           <button
             type="button"
             class="tab"
+            :class="{ active: ui.settingsTab === 'general' }"
+            role="tab"
+            :aria-selected="ui.settingsTab === 'general'"
+            @click="ui.settingsTab = 'general'"
+          >
+            通用
+          </button>
+          <button
+            type="button"
+            class="tab"
             :class="{ active: ui.settingsTab === 'models' }"
             role="tab"
             :aria-selected="ui.settingsTab === 'models'"
@@ -52,7 +63,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
           </button>
         </nav>
 
-        <ModelsPanel v-if="ui.settingsTab === 'models'" />
+        <GeneralPanel v-if="ui.settingsTab === 'general'" />
+        <ModelsPanel v-else-if="ui.settingsTab === 'models'" />
         <ToolsPanel v-else />
       </div>
     </div>

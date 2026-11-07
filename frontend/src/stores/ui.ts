@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 
-export type SettingsTab = 'models' | 'tools'
+export type SettingsTab = 'general' | 'models' | 'tools'
 
 let toastTimer: number | undefined
 

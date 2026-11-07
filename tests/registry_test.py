@@ -26,8 +26,14 @@ class RegistryTest(unittest.TestCase):
                 "list_timezones",
                 "get_weather",
                 "file_read",
+                "read_document",
                 "file_write",
+                "fetch_url",
+                "todo_write",
+                "ask_user_question",
                 "run_command",
+                "background_process",
+                "process_inspect",
                 "mock_data",
             ],
         )
@@ -47,15 +53,21 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(TOOL_SPECS["file_write"].risk, "write")
         self.assertEqual(
             set(TOOL_SPECS["file_read"].tool_names),
-            {"list_dir", "read_file", "search_files"},
+            {"list_dir", "read_file", "search_files", "file_stat"},
         )
+        self.assertEqual(TOOL_SPECS["read_document"].risk, "read")
+        self.assertEqual(TOOL_SPECS["fetch_url"].risk, "read")
+        self.assertEqual(TOOL_SPECS["background_process"].risk, "exec")
         self.assertIsNotNone(spec_of("get_weather"))
         self.assertIsNone(spec_of("nope"))
 
     def test_build_tools_respects_enabled_set(self):
         ctx = ToolContext(workspace=Path.cwd())
         only_read = build_tools({"file_read"}, {}, ctx)
-        self.assertEqual({tool.name for tool in only_read}, {"list_dir", "read_file", "search_files"})
+        self.assertEqual(
+            {tool.name for tool in only_read},
+            {"list_dir", "read_file", "search_files", "file_stat"},
+        )
 
         # 期望集合从注册表派生，新增工具不需要改这条断言
         expected = {

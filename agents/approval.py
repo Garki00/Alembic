@@ -37,7 +37,22 @@ Decision = Literal["once", "always", "deny"]
 VALID_DECISIONS = ("once", "always", "deny")
 
 _PREVIEW_LIMIT = 800
-_WRITE_TOOLS = {"write_file", "edit_file"}
+# 「始终允许」的记忆前缀：读写同一文件共用 file:，删除/移动各自独立，
+# 避免「允许修改 a.py」被误当成「允许删除 a.py」。
+_KEY_PREFIX = {
+    "write_file": "file",
+    "edit_file": "file",
+    "delete_file": "delete",
+    "move_file": "move",
+    "copy_file": "copy",
+    "make_dir": "mkdir",
+}
+_FILE_VERBS = {
+    "delete_file": "删除",
+    "move_file": "移动",
+    "copy_file": "复制",
+    "make_dir": "新建目录",
+}
 
 
 @dataclass(frozen=True)
@@ -77,6 +92,17 @@ def describe_call(tool: str, args: Mapping) -> tuple[str, str, str]:
         text = str(command).strip()
         return text, f"执行命令：{text}", _clip(text)
 
+    source = args.get("source")
+    destination = args.get("destination")
+    if source is not None and destination is not None:
+        target = f"{source} → {destination}"
+        verb = _FILE_VERBS.get(tool, tool)
+        return target, f"{verb}：{target}", _clip(json.dumps(args, ensure_ascii=False))
+
+    process_id = args.get("process_id")
+    if process_id is not None:
+        return str(process_id), f"停止后台进程：{process_id}", _clip(json.dumps(args, ensure_ascii=False))
+
     path = args.get("path")
     if tool == "write_file":
         content = str(args.get("content") or "")
@@ -85,6 +111,9 @@ def describe_call(tool: str, args: Mapping) -> tuple[str, str, str]:
         old = str(args.get("old_string") or "")
         new = str(args.get("new_string") or "")
         return str(path), f"修改文件：{path}（替换 {len(old)} 字符）", _clip(f"- {old}\n+ {new}")
+    if tool in _FILE_VERBS and path is not None:
+        verb = _FILE_VERBS[tool]
+        return str(path), f"{verb}：{path}", _clip(f"{verb} {path}")
     if path is not None:
         return str(path), f"{tool}：{path}", _clip(json.dumps(args, ensure_ascii=False))
 
@@ -128,9 +157,10 @@ class ApprovalPolicy:
 
         写文件的两种工具共用 ``file:<路径>``：用户「始终允许修改 a.py」这个
         意图与用 write_file 还是 edit_file 无关，拆成两条只会重复打扰。
+        删除 / 移动 / 复制各自独立，避免「允许改」被扩大成「允许删」。
         """
         target, _, _ = describe_call(tool, args)
-        prefix = "file" if tool in _WRITE_TOOLS else tool
+        prefix = _KEY_PREFIX.get(tool, tool)
         return f"{prefix}:{target}"
 
     def is_allowed(self, tool: str, args: Mapping) -> bool:
@@ -165,7 +195,7 @@ class ApprovalGate:
     ask: Callable[[ApprovalRequest], Decision]
 
 
-def _denied_message(call: Mapping) -> ToolMessage:
+def denied_tool_message(call: Mapping) -> ToolMessage:
     name = str(call.get("name") or "")
     return ToolMessage(
         content=tool_error(
@@ -211,10 +241,10 @@ class ApprovalMiddleware(AgentMiddleware):
             decision = self.gate.ask(request)
         except Exception:  # 提问通道本身出错时按拒绝处理（失败关闭）
             logger.exception("审批请求失败，按拒绝处理")
-            return _denied_message(call)
+            return denied_tool_message(call)
 
         if decision == "deny":
-            return _denied_message(call)
+            return denied_tool_message(call)
         if decision == "always":
             self.gate.policy.remember(name, args)
         return None

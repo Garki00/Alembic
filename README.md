@@ -1,7 +1,7 @@
 # SmartAgentDemo
 
-一个基于 LangChain + DeepSeek 的小型 Agent 示例，具备多轮上下文、会话持久化、
-自动上下文压缩，以及可读写工作区文件的工具集。
+一个基于 LangChain + DeepSeek 的小型 Agent 示例，默认使用原生 ReAct 文本循环，
+具备多轮上下文、会话持久化、自动上下文压缩，以及可读写工作区文件的工具集。
 
 前端是 **Vue 3 + Vite + TypeScript**（`frontend/`），后端是 **FastAPI**（`web/`），
 两者通过 `/api` 通信，可以分别启动、分别部署。本次重构后暂不构建 Electron 应用，
@@ -9,6 +9,32 @@
 
 > 接手开发 / 让其他智能体继续改这个项目，请先读 **[HANDOVER.md](HANDOVER.md)**：
 > 里面有架构图、数据流、不可破坏的约定、环境坑和已知问题。
+
+## Agent 执行范式：原生 ReAct
+
+默认 `AGENT_ENGINE=react`，使用 `agents/react.py` 的**原生 ReAct 文本循环**：
+
+1. 把英文系统提示词、工具目录、历史对话、当前问题与 scratchpad 拼成一次 prompt；
+2. 模型输出 `Thought:` / `Action:` / `Action Input:`；
+3. 循环解析并执行**一个**工具，把结果作为 `Observation:` 追加到 scratchpad；
+4. 直到模型输出 `Final Answer:`，本轮结束。
+
+```
+Thought: I need to read the config first.
+Action: read_file
+Action Input: {"path": "config/settings.py"}
+Observation: ...
+Thought: I now know the final answer
+Final Answer: ...
+```
+
+- 工具调用、审批（write/exec）、`todo_write`、`ask_user_question`、SSE 工具气泡、
+  上下文压缩、会话持久化全部复用现有层，不需要单独适配。
+- 中间步骤的 `Thought` 通过独立的 `thought` 事件展示为工作步骤预览；最终答案只包含
+  `Final Answer`，不会把思考混进正文。
+- 设置 `AGENT_ENGINE=tool_calling` 可回到 LangChain `create_agent` 的模型原生
+  tool-calling 路径；两条路径共用同一份工具注册表。
+- 系统提示词、ReAct 模板与摘要提示词均为英文；最终回复仍要求使用用户的语言。
 
 ## 内置工具
 
@@ -19,9 +45,15 @@
 | `get_current_time` | `get_current_time` | 只读 | 开 |
 | `list_timezones` | `list_timezones` | 只读 | 开 |
 | `get_weather` | `get_weather` | 只读（需 QWeather 凭据） | 开 |
-| `file_read` | `list_dir` / `read_file` / `search_files` | 只读 | 开 |
-| `file_write` | `write_file` / `edit_file` | 改工作区文件 | 开 |
+| `file_read` | `list_dir` / `read_file` / `search_files` / `file_stat` | 只读 | 开 |
+| `read_document` | `read_document` | 只读（PDF / Office / 文本） | 开 |
+| `file_write` | `write_file` / `edit_file` / `make_dir` / `delete_file` / `move_file` / `copy_file` | 改工作区文件 | 开 |
+| `fetch_url` | `fetch_url` | 只读（默认禁内网） | 开 |
+| `todo_write` | `todo_write` | 只读（会话状态） | 开 |
+| `ask_user_question` | `ask_user_question` | 只读（等待用户回答） | 开 |
 | `run_command` | `run_command` | 执行本机命令 | 开（需确认） |
+| `background_process` | `start_process` / `stop_process` | 执行本机命令 | 开（需确认） |
+| `process_inspect` | `list_processes` / `read_process_logs` | 只读 | 开 |
 | `mock_data` | `mock_lookup` | 读取自定义文本 | 关 |
 
 `risk` 为 `write` / `exec` 的条目在真正执行前需要人工确认，见下文「工具审批」。
@@ -75,16 +107,38 @@ Vite 开发服务器会把 `/api` 代理到 `http://127.0.0.1:8000`；端口不�
 - **左侧栏**：按工作区分组。每个工作区行悬停后出现「＋ 新建对话」与「⋯ 菜单」
   （重命名 / 删除），顶部有搜索框（同时搜工作区名与对话标题），左上角齿轮进入设置。
   添加工作区走目录浏览，每个工作区可单独起名。
-- **对话窗口**：流式输出、工具调用气泡（如 `get_current_time`）、Markdown 渲染、
+- **对话窗口**：流式输出、工作步骤（思考 / 工具调用 / 结果）、Markdown 渲染、
   上下文占用提示、停止生成。会话归属它的工作区，切换工作区不丢历史。
 - **模型切换**：输入框右下角显示当前模型，点开即可切换，底部还有「管理模型…」入口。
 - **设置面板**（唯一入口是左上角齿轮）：
+  - **通用**：工作步骤展示（简洁 / 标准 / 详细 / 完全展开）、工作步骤收起时机
+    （回答结束后 / 下次有新消息时）、显示代码工作视图。偏好保存在
+    `<home>/data/preferences.json`。
   - **模型**：添加 / 编辑 / 删除模型，设置名称、协议（DeepSeek / OpenAI 兼容）、
     模型名、Base URL、API Key、Temperature；「导入全部上游模型」会把
     `{base_url}/models` 列出的模型一次性加入可选列表（已存在的跳过）。
   - **工具**：查看现有工具、风险等级与包含的具体工具名，启用 / 禁用；参数
     （如 `QWEATHER_*`）可直接修改，保存后下一轮对话立即生效。密钥类字段**不回显**，
     显示为「已配置 · ••••CEH6」，留空保存即沿用旧值，另有「清除」按钮可真正清空。
+
+工作步骤的行为：
+
+```
+思考 · 需要先读取配置文件
+读取 · config/settings.py
+执行命令 · python -m unittest discover -s tests
+```
+
+- **思考也是步骤**：思考与工具调用按实际发生顺序交错排列，每行先显示
+  「思考 / 读取 / 写入 / 执行命令 / 调用工具」等动作标签和一行摘要，
+  点击该行展开完整思考、参数或结果。
+- **展示档位**：简洁显示动作标签与很短摘要；标准显示动作标签、目标与短结果；
+  详细默认展开工具参数/结果，思考保持省略可展开；完全展开始终显示全部步骤、
+  思考与输出，不自动收起。
+- **收起时机**：「回答结束后」在本轮 `done` 时收起；「下次有新消息时」保留到下一次
+  发送。手动展开的轮次不会被强制收起；完全展开模式下该选项不可用。
+- **代码工作视图**：开启后每轮显示代码改动（写入内容、`edit_file` 的 `-旧/+新`）、
+  命令与文件/网页读取轨迹，结果按代码块展示，便于核对 Agent 实际做了什么。
 
 ### 数据目录
 
@@ -105,14 +159,15 @@ Vite 开发服务器会把 `/api` 代理到 `http://127.0.0.1:8000`；端口不�
 | `<home>/data/models.json` | 模型列表与当前激活模型（API Key 仅本地保存，接口只返回掩码） |
 | `<home>/data/tools.json` | 工具启用状态与参数（密钥仅在本地保存，接口只返回掩码） |
 | `<home>/data/workspace.json` | 命名工作区列表与当前激活项（旧格式会自动迁移） |
+| `<home>/data/preferences.json` | 通用设置：工作步骤展示、收起时机、代码工作视图 |
 | `<home>/memory/*.json` | 会话历史 |
 
 `python -m web` 启动时会打印实际数据目录，可直接确认。`DATA_DIR` / `MEMORY_DIR`
 仍可作为更细粒度的覆盖。
 
 接口一览：`/api/bootstrap`、`/api/chat`（SSE 流式）、`/api/models`（CRUD / activate /
-fetch）、`/api/tools`、`/api/workspaces`（CRUD / activate / browse）、`/api/sessions`、
-`/api/approvals`。
+fetch）、`/api/tools`、`/api/preferences`、`/api/workspaces`（CRUD / activate / browse）、
+`/api/sessions`、`/api/sessions/{id}/todos`、`/api/approvals`、`/api/questions`。
 
 ## 文件与命令工具
 
@@ -125,9 +180,17 @@ fetch）、`/api/tools`、`/api/workspaces`（CRUD / activate / browse）、`/ap
 | `list_dir(path=".")` | 列目录：目录带 `/`，文件带大小，超出上限说明省略数量 |
 | `read_file(path, offset=1, limit=200)` | 带行号读取文本；大文件按 `offset` 分段，二进制文件直接拒绝 |
 | `search_files(pattern, path=".", glob="", max_results=50)` | 按正则搜内容，可只搜 `*.py` 之类，自动跳过 `.git` / `.venv` / `node_modules` |
+| `file_stat(path=".")` | 查看类型、大小、修改时间与文本行数 |
 | `write_file(path, content)` | 整文件写入（必要时建目录） |
 | `edit_file(path, old_string, new_string, replace_all=False)` | 精确匹配替换；匹配不唯一时报 `ambiguous_match` 并给出行号 |
+| `make_dir(path)` | 创建目录（可多级） |
+| `move_file(source, destination, overwrite=False)` | 移动 / 重命名；不能把目录移进自己的子目录 |
+| `copy_file(source, destination, overwrite=False)` | 复制文件或目录 |
+| `delete_file(path, recursive=False)` | 删除文件 / 目录；工作区根目录与 `.git` 受保护，非空目录需 `recursive=True` |
 | `run_command(command, cwd="", timeout=0)` | 执行 shell 命令，返回退出码 + stdout / stderr |
+| `start_process(command, cwd="")` | 后台启动长任务（dev server / watch），立即返回进程 ID |
+| `list_processes()` / `read_process_logs(process_id, tail=200)` | 查看后台进程与日志尾部 |
+| `stop_process(process_id)` | 停止进程及其子进程 |
 
 两条硬约束：
 
@@ -138,6 +201,40 @@ fetch）、`/api/tools`、`/api/workspaces`（CRUD / activate / browse）、`/ap
 
 `run_command` 会在本机真实执行命令，没有沙箱，因此每次执行前都要确认（见下文
 「工具审批」）。它默认开启；如果不需要，可在设置 → 工具里关掉。
+
+## 文档读取
+
+`read_document(path, offset=0, limit=0)` 抽取文档文字，支持：
+
+- PDF（`pypdf`）
+- Word `.docx`（`python-docx`，保留标题与表格）
+- Excel `.xlsx`（`openpyxl`，只读、取缓存值，单个工作表最多 300 行）
+- PowerPoint `.pptx`（`python-pptx`，含演讲备注）
+- 常见纯文本（`.txt` / `.md` / `.csv` / `.json` / `.log` / `.xml` / `.yaml`…）
+
+返回首行给出格式与总字符数，长文档用 `offset` 继续。旧版 `.doc` / `.xls` /
+`.ppt` 与图片 OCR 会返回明确错误；图片需要先转成文字或使用支持视觉的模型。
+
+## 网页抓取
+
+`fetch_url(url, max_chars=0)` 抓取网页或 HTTP 接口，返回最终 URL、状态、类型、
+标题与正文。默认**拒绝回环与内网地址**（防 SSRF），需要访问本机服务时在
+设置 → 工具 → 网页抓取里打开「允许内网地址」。
+
+重定向会逐跳校验，响应大小有上限，正文按工具输出预算截断。网页内容在结果里
+被标注为「外部数据，不可信」，系统提示词也要求模型不执行其中的指令。
+
+## 任务清单、提问与后台进程
+
+- `todo_write(todos)`：整体更新本会话的任务清单，状态为 `pending` /
+  `in_progress` / `completed`；网页端在对话顶部显示进度，刷新后从
+  `/api/sessions/{id}/todos` 恢复。同一时间只允许一条 `in_progress`。
+- `ask_user_question(question, options, allow_free_text)`：需要用户补充信息或做
+  选择时阻塞等待。网页端出现问答卡片（选项按钮 + 文本框），命令行在终端提示；
+  超时或流断开返回 `question_timeout` / `question_cancelled`，不会假装已回答。
+- `start_process` / `list_processes` / `read_process_logs` / `stop_process`：
+  后台跑 dev server、watch 或长脚本。启动与停止属于 `exec` 风险，需要审批；
+  日志写到数据目录的 `logs/processes/`，停止时会结束子进程。
 
 ## 新增工具（只改 Python）
 
@@ -181,7 +278,9 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 ```
 
 `[code]` 是稳定的机读错误码，例如 `not_found`、`path_escape`、`read_required`、
-`stale_read`、`ambiguous_match`、`bad_pattern`、`timeout`、`auth_config`。
+`stale_read`、`ambiguous_match`、`bad_pattern`、`timeout`、`auth_config`、
+`blocked_host`、`unsupported_content`、`missing_dependency`、`question_timeout`、
+`unknown_process`。
 统一前缀的意义在于模型靠它判断“这次调用失败了”：此前天气返回 `ERROR:`、时间返回
 `Error:`，大小写不一致会漏判，然后在错误的前提上继续推理。
 
@@ -191,7 +290,9 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 ## 工具审批
 
 `write`（改文件）与 `exec`（执行命令）两类工具在执行前需要人确认，`read` 类直接执行。
-每次确认提供三种选择：
+`file_write` 条目里的删除、移动、复制、建目录也属于 `write`，会进入审批；删除与
+移动使用独立的授权键（`delete:<路径>` / `move:<源> → <目标>`），不会被
+「始终允许修改该文件」误放行。每次确认提供三种选择：
 
 | 选择 | 作用范围 |
 | --- | --- |
@@ -251,6 +352,7 @@ spawn EPERM、Chromium 沙箱、Electron 镜像等）保留在 [desktop/README.m
 | `/session <会话ID>` | 切换到已有会话，继续之前的历史 |
 | `/sessions` | 列出已保存的会话 |
 | `/history [n]` | 查看当前会话最近 n 条消息 |
+| `/todos` | 查看当前会话的任务清单 |
 | `/approvals` | 查看本会话的「始终允许」；加 `clear` 全部清除 |
 | `/compact` | 立即压缩上下文（把较早对话生成摘要） |
 | `/status` | 查看轮次、消息数、token 估算与压缩阈值 |
@@ -259,13 +361,13 @@ spawn EPERM、Chromium 沙箱、Electron 镜像等）保留在 [desktop/README.m
 
 ## 上下文机制
 
-- **多轮记忆**：每轮把完整历史交给 Agent，因此追问、指代（“它”“刚才那个”）都能延续。
+- **多轮记忆**：每轮把历史（长会话先压缩）格式化后交给 Agent，因此追问、指代（“它”“刚才那个”）都能延续。
 - **token 统计**：优先使用模型 API 返回的 `usage`（包含系统提示词、工具 schema 与回复，
   与计费口径一致），拿不到时才退回本地字符估算；`/status` 会标明数据来源。
 - **压缩边界**：默认按模型窗口推导——`131072 × 80% − 8000 预留 ≈ 96857 tokens`，
   或历史超过 40 条消息时触发；两次自动压缩之间至少间隔 2 轮，避免“压完立刻再压”。
-- **压缩方式**：较早对话压缩成中文摘要（以【历史对话摘要】开头）并保留最近 8 条消息；
-  摘要失败时降级为“省略更早消息 + 明确提示”，对话不中断。
+- **压缩方式**：较早对话压缩成摘要（以 `[Conversation summary]` 开头）并保留最近 8 条消息；
+  摘要语言跟随对话语言；摘要失败时降级为“省略更早消息 + 明确提示”，对话不中断。
 - **工具输出预算**：单条工具结果超过 8000 tokens 会先截断再写入历史并留下标记
   （类似 Codex 的 `tool_output_token_limit`），避免一次大输出撑爆窗口。
 - **本地持久化**：会话历史保存在 `memory/<会话ID>.json`（可用 `MEMORY_DIR` 改目录），
@@ -279,6 +381,7 @@ spawn EPERM、Chromium 沙箱、Electron 镜像等）保留在 [desktop/README.m
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `MODEL_NAME` | `deepseek-v4-flash` | 对话模型名称 |
+| `AGENT_ENGINE` | `react` | `react` 原生 ReAct 文本循环；`tool_calling` 使用 `create_agent` |
 | `SESSION_ID` | `default` | 默认会话 ID |
 | `MEMORY_DIR` | `<home>/memory` | 会话历史目录（覆盖用户级默认） |
 | `MODEL_CONTEXT_WINDOW` | `131072` | 模型上下文窗口（token） |
@@ -291,6 +394,7 @@ spawn EPERM、Chromium 沙箱、Electron 镜像等）保留在 [desktop/README.m
 | `MAX_TOOL_OUTPUT_CHARS` | `20000` | 单个工具返回的字符上限（超出截断并标注） |
 | `APPROVAL_ENABLED` | `1` | 设为 `0` 关闭工具审批（自动化场景） |
 | `APPROVAL_TIMEOUT` | `300` | 等待人确认的秒数，超时按拒绝处理 |
+| `QUESTION_TIMEOUT` | `300` | `ask_user_question` 等待回答的秒数，超时按未回答处理 |
 | `COMMAND_TIMEOUT` | `60` | `run_command` 默认超时（秒） |
 | `WORKSPACE_DIR` | 当前目录 | 命令行模式的默认工作区 |
 | `MAX_MODEL_CALLS` | `8` | 单轮模型调用上限 |
@@ -302,6 +406,7 @@ spawn EPERM、Chromium 沙箱、Electron 镜像等）保留在 [desktop/README.m
 | `SMART_AGENT_TOKEN` | 未设置 | 设置后 API 需要令牌（桌面外壳自动注入） |
 | `SMART_AGENT_PORT` | 未设置 | 覆盖监听端口，`0` 由系统分配 |
 | `DATA_DIR` | `<home>/data` | 网页配置目录（覆盖用户级默认） |
+| `PREFERENCES_FILE` | `<data>/preferences.json` | 通用设置文件 |
 | `SMART_AGENT_HOME` | 平台用户目录 | 整个数据根目录，见「数据目录」 |
 
 前端自己的变量写在 `frontend/.env.local`：
@@ -345,7 +450,7 @@ Windows 默认不带 IANA 时区数据库，Python 的 `zoneinfo` 需要 `tzdata
 ## 测试
 
 ```powershell
-# 后端：201 个离线测试
+# 后端：282 个离线测试
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py" -v
 
 # 前端：类型检查 + 生产构建
@@ -355,7 +460,11 @@ npm run build
 
 测试覆盖时间工具（别名 / 偏移 / 夏令时 / 兜底）、会话持久化、上下文压缩、
 失败回滚、命令行交互命令，以及网页端接口（模型 CRUD、工具开关、密钥掩码、
-工作区浏览、SSE 流式对话、CORS 预检），工具注册表与错误契约，文件工具（含路径逃逸、
-读后写、stale 检测、截断）与命令工具（退出码、超时、截断），工具审批
-（允许本次 / 始终允许 / 拒绝、失败关闭、超时与断流、SSE 回执闭环）。
+工作区浏览、SSE 流式对话、CORS 预检），工具注册表与错误契约，通用设置
+（偏好持久化、工作步骤展示与收起时机），原生 ReAct 循环
+（解析、工具执行、审批、限流、流式事件），文件工具（含路径逃逸、
+读后写、stale 检测、截断、移动 / 复制 / 删除 / 元信息）与命令工具（退出码、超时、
+截断），文档抽取（Word / Excel / PowerPoint / PDF / 分段），网页抓取（本地 HTTP、
+重定向、SSRF、二进制拒绝），任务清单、提问中继与后台进程（启动 / 日志 / 停止），
+工具审批（允许本次 / 始终允许 / 拒绝、失败关闭、超时与断流、SSE 回执闭环）。
 全部离线运行（不调用真实模型）。

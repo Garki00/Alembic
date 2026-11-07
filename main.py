@@ -15,12 +15,17 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime
+from pathlib import Path
 
-from agents.agent import build_agent, build_cli_approval, build_model
+from agents.agent import build_agent, build_cli_approval, build_model, cli_tool_context
 from agents.approval import ApprovalPolicy
 from agents.context import ChatSession, SessionStore, TurnResult, message_text
 from config.settings import settings
 from config.storage import ensure_storage
+from tools.context import SessionRef
+from tools.processes import ProcessManager
+from tools.questions import console_asker
+from tools.todo import TodoStore, render_todos
 
 HELP_TEXT = """可用命令：
   /help            显示这份帮助
@@ -28,6 +33,7 @@ HELP_TEXT = """可用命令：
   /session <会话ID> 切换到已有会话，继续之前的历史
   /sessions        列出已保存的会话
   /history [n]     查看当前会话最近 n 条消息（默认 10）
+  /todos           查看当前会话的任务清单
   /approvals       查看本会话的「始终允许」；加 clear 清除
   /compact         立即压缩上下文（把较早的对话生成摘要）
   /status          查看当前会话状态（轮次、消息数、token 估算）
@@ -59,15 +65,20 @@ class ChatCLI:
         debug: bool = False,
         store: SessionStore | None = None,
         approval: ApprovalPolicy | None = None,
+        session_ref: SessionRef | None = None,
+        todo_store: TodoStore | None = None,
     ) -> None:
         self.agent = agent
         self.summarizer = summarizer
         self.store = store or SessionStore()
         self.debug = debug
         self.approval = approval
+        self.session_ref = session_ref or SessionRef(session_id or settings.session_id)
+        self.session_ref.session_id = session_id or settings.session_id
+        self.todo_store = todo_store or TodoStore()
         self.session = ChatSession(
             agent,
-            session_id or settings.session_id,
+            self.session_ref.session_id,
             store=self.store,
             summarizer=summarizer,
         )
@@ -143,6 +154,8 @@ class ChatCLI:
             self._list_sessions()
         elif command == "/history":
             self._show_history(argument)
+        elif command == "/todos":
+            self._show_todos()
         elif command == "/approvals":
             self._show_approvals(argument)
         elif command == "/compact":
@@ -165,6 +178,8 @@ class ChatCLI:
             summarizer=self.summarizer,
         )
         self.session.reset()
+        self.session_ref.session_id = new_id
+        self.todo_store.clear(new_id)
         self._reset_approvals()
         print(f"已开启新会话：{new_id}")
 
@@ -178,6 +193,7 @@ class ChatCLI:
             store=self.store,
             summarizer=self.summarizer,
         )
+        self.session_ref.session_id = session_id
         self._reset_approvals()
         print(f"已切换到会话 {session_id}。{self._status_line()}")
 
@@ -232,6 +248,10 @@ class ChatCLI:
             role = _ROLE_NAMES.get(getattr(message, "type", ""), message.__class__.__name__)
             print(f"  [{role}] {_truncate(message_text(message) or '<空>', 120)}")
 
+    def _show_todos(self) -> None:
+        items = self.todo_store.load(self.session.session_id)
+        print(render_todos(items))
+
     def _compact(self) -> None:
         if self.summarizer is None:
             print("当前会话没有可用的摘要模型，无法压缩。")
@@ -278,9 +298,18 @@ def main() -> None:
         return
 
     gate = build_cli_approval()
+    session_ref = SessionRef(args.session)
+    todo_store = TodoStore(SessionStore().directory / "todos")
+    process_manager = ProcessManager(Path(settings.app_home) / "logs" / "processes")
+    ctx = cli_tool_context(
+        session_ref=session_ref,
+        asker=console_asker,
+        todo_store=todo_store,
+        process_manager=process_manager,
+    )
     try:
         model = build_model()
-        agent = build_agent(model=model, approval=gate)
+        agent = build_agent(model=model, approval=gate, ctx=ctx)
     except RuntimeError as exc:  # 缺少 API Key 等配置问题
         print(f"[配置错误] {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
@@ -291,6 +320,8 @@ def main() -> None:
         session_id=args.session,
         debug=args.debug,
         approval=gate.policy if gate else None,
+        session_ref=session_ref,
+        todo_store=todo_store,
     )
     if args.new:
         cli.session.reset()

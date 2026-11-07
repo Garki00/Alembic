@@ -98,6 +98,9 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertTrue(states["run_command"])
         self.assertTrue(states["file_read"])
         self.assertTrue(states["file_write"])
+        for name in ("read_document", "fetch_url", "todo_write", "ask_user_question",
+                     "background_process", "process_inspect"):
+            self.assertTrue(states[name], name)
 
     def test_bootstrap_persists_new_tool_entries(self):
         """升级到新版本后，data/tools.json 里应补齐新增条目且不丢旧配置。"""

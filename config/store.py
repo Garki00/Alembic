@@ -19,7 +19,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from config.settings import settings
 
@@ -30,6 +30,7 @@ __all__ = [
     "AppPaths",
     "ModelConfig",
     "ModelStore",
+    "PreferencesStore",
     "ToolField",
     "ToolSpec",
     "ToolStore",
@@ -638,6 +639,74 @@ class WorkspaceStore:
 
 
 # ---------------------------------------------------------------------------
+# 界面偏好（通用设置）
+# ---------------------------------------------------------------------------
+TRANSCRIPT_VIEW_MODES = ("compact", "standard", "detailed", "verbose")
+COLLAPSE_TIMINGS = ("completion", "next_input")
+DEFAULT_TRANSCRIPT_VIEW = "detailed"
+DEFAULT_COLLAPSE_TIMING = "completion"
+
+
+def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
+    mode = str(data.get("transcript_view") or DEFAULT_TRANSCRIPT_VIEW).strip().lower()
+    if mode not in TRANSCRIPT_VIEW_MODES:
+        mode = DEFAULT_TRANSCRIPT_VIEW
+    timing = str(data.get("collapse_timing") or DEFAULT_COLLAPSE_TIMING).strip().lower()
+    if timing not in COLLAPSE_TIMINGS:
+        timing = DEFAULT_COLLAPSE_TIMING
+    developer = data.get("developer_tools", False)
+    if isinstance(developer, str):
+        developer = developer.strip().lower() in {"1", "true", "on", "yes"}
+    return {
+        "transcript_view": mode,
+        "collapse_timing": timing,
+        "developer_tools": bool(developer),
+    }
+
+
+class PreferencesStore:
+    """通用设置的持久化：工作步骤展示、收起时机、代码工作视图。
+
+    这是纯 UI 偏好，不影响模型请求；但放在用户数据目录里，
+    换浏览器/刷新后仍保持一致。
+    """
+
+    def __init__(self, path: str | Path | None = None) -> None:
+        self.file = _JsonFile(path or settings.preferences_file)
+
+    def get(self) -> dict[str, Any]:
+        return _normalize_preferences(
+            self.file.load(
+                {
+                    "transcript_view": DEFAULT_TRANSCRIPT_VIEW,
+                    "collapse_timing": DEFAULT_COLLAPSE_TIMING,
+                    "developer_tools": False,
+                }
+            )
+        )
+
+    def update(self, patch: Mapping[str, Any]) -> dict[str, Any]:
+        current = self.get()
+        if "transcript_view" in patch:
+            mode = str(patch["transcript_view"]).strip().lower()
+            if mode not in TRANSCRIPT_VIEW_MODES:
+                raise ValueError("transcript_view 只能是 compact / standard / detailed / verbose")
+            current["transcript_view"] = mode
+        if "collapse_timing" in patch:
+            timing = str(patch["collapse_timing"]).strip().lower()
+            if timing not in COLLAPSE_TIMINGS:
+                raise ValueError("collapse_timing 只能是 completion / next_input")
+            current["collapse_timing"] = timing
+        if "developer_tools" in patch:
+            value = patch["developer_tools"]
+            current["developer_tools"] = value if isinstance(value, bool) else (
+                str(value).strip().lower() in {"1", "true", "on", "yes"}
+            )
+        self.file.save(current)
+        return current
+
+
+# ---------------------------------------------------------------------------
 # 汇总
 # ---------------------------------------------------------------------------
 class AppPaths:
@@ -649,3 +718,6 @@ class AppPaths:
         self.models_file = base / "models.json"
         self.tools_file = base / "tools.json"
         self.workspace_file = base / "workspace.json"
+        self.preferences_file = (
+            _resolve(settings.preferences_file) if data_dir is None else base / "preferences.json"
+        )

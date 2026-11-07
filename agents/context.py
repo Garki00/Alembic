@@ -46,18 +46,19 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _SESSION_ID_UNSAFE = re.compile(r"[^0-9A-Za-z_.\-]+")
 
 #: 压缩摘要消息的固定前缀，方便提示词与调试时识别
-SUMMARY_PREFIX = "【历史对话摘要】"
+SUMMARY_PREFIX = "[Conversation summary]"
 
-_SUMMARY_PROMPT = """你是一个对话摘要助手。请把下面的历史对话压缩成简洁的中文要点，供后续继续对话使用。
+_SUMMARY_PROMPT = """You are a conversation summarizer. Compress the history below into concise bullet points for continuing the conversation.
 
-要求：
-1. 保留用户的身份、偏好、已确认的事实与结论；
-2. 保留工具返回的关键数据（时间、天气、地点等），不要编造；
-3. 记录未完成的任务和下一步，避免后续重复劳动；
-4. 删除寒暄、重复内容和无关细节；
-5. 只输出摘要正文，不要标题、前缀或解释。
+Requirements:
+1. Preserve the user's identity, preferences, confirmed facts and conclusions.
+2. Preserve key data returned by tools (time, weather, locations, etc.); do not invent.
+3. Record unfinished tasks and the next step so work is not repeated.
+4. Remove greetings, repetition and irrelevant details.
+5. Write the summary in the same language as the conversation.
+6. Output only the summary body; no title, prefix or explanation.
 
-历史对话：
+Conversation history:
 {messages}
 """
 
@@ -478,8 +479,10 @@ class ChatSession:
         """流式提问，依次产出事件：
 
         - ``("compacted", None)``：本轮开始前压缩了上下文；
+        - ``("thought", 文本)``：ReAct 的中间推理（工作步骤预览，不属于最终答案）；
         - ``("delta", 文本)``：模型输出的增量文本；
-        - ``("tool", {"name", "args"})``：模型发起了一次工具调用；
+        - ``("tool", {"id", "name", "args"})``：模型发起了一次工具调用；
+        - ``("tool_result", {"id", "name", "content"})``：工具返回的结果；
         - ``("done", TurnResult)``：本轮结束（已写入历史与磁盘）。
         """
         compacted = self._begin_turn(question)
@@ -488,6 +491,7 @@ class ChatSession:
 
         history = list(self.messages)
         emitted_tools: set[str] = set()
+        emitted_results: set[str] = set()
         messages: list[BaseMessage] | None = None
         try:
             stream = getattr(self.agent, "stream", None)
@@ -497,6 +501,10 @@ class ChatSession:
                 for mode, payload in stream(
                     {"messages": history}, stream_mode=["messages", "values"]
                 ):
+                    if mode == "thought":
+                        if payload:
+                            yield ("thought", str(payload))
+                        continue
                     if mode == "messages":
                         chunk, _meta = payload
                         if isinstance(chunk, AIMessageChunk):
@@ -509,6 +517,23 @@ class ChatSession:
                     current = list(payload.get("messages") or [])
                     messages = current
                     for message in current[len(history):]:
+                        if isinstance(message, ToolMessage):
+                            result_id = str(
+                                getattr(message, "tool_call_id", "")
+                                or f"{getattr(message, 'name', '')}:{len(emitted_results)}"
+                            )
+                            if result_id in emitted_results:
+                                continue
+                            emitted_results.add(result_id)
+                            yield (
+                                "tool_result",
+                                {
+                                    "id": result_id,
+                                    "name": getattr(message, "name", "") or "",
+                                    "content": message_text(message),
+                                },
+                            )
+                            continue
                         if not isinstance(message, AIMessage):
                             continue
                         for call in message.tool_calls or []:
@@ -518,7 +543,11 @@ class ChatSession:
                             emitted_tools.add(key)
                             yield (
                                 "tool",
-                                {"name": call.get("name"), "args": call.get("args") or {}},
+                                {
+                                    "id": call.get("id"),
+                                    "name": call.get("name"),
+                                    "args": call.get("args") or {},
+                                },
                             )
         except BaseException:
             self.messages = history[:-1]

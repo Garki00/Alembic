@@ -77,13 +77,24 @@ export interface BootstrapData {
   workspaces: WorkspaceInfo[]
   active_workspace_id: string
   sessions: SessionSummary[]
+  preferences: Preferences
+}
+
+export type TranscriptViewMode = 'compact' | 'standard' | 'detailed' | 'verbose'
+export type CollapseTiming = 'completion' | 'next_input'
+
+export interface Preferences {
+  transcript_view: TranscriptViewMode
+  collapse_timing: CollapseTiming
+  developer_tools: boolean
 }
 
 export interface HistoryMessage {
   role: 'user' | 'assistant' | 'tool' | 'system' | string
   content: string
-  tool_calls?: Array<{ name: string; args: Record<string, unknown> }>
+  tool_calls?: Array<{ id?: string; name: string; args: Record<string, unknown> }>
   tool_name?: string
+  tool_call_id?: string
 }
 
 export interface HistoryData {
@@ -117,6 +128,25 @@ export interface ApprovalRequest {
   target: string
   summary: string
   preview: string
+}
+
+export interface QuestionRequest {
+  id: string
+  question: string
+  options: string[]
+  allow_free_text: boolean
+}
+
+export type TodoStatus = 'pending' | 'in_progress' | 'completed'
+
+export interface TodoItem {
+  content: string
+  status: TodoStatus | string
+}
+
+export interface TodosData {
+  session_id: string
+  items: TodoItem[]
 }
 
 export interface ChatDoneEvent {

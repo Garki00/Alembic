@@ -1,4 +1,4 @@
-import type { ApprovalRequest } from '../api/types'
+import type { ApprovalRequest, QuestionRequest } from '../api/types'
 
 export type ApprovalStatus = 'pending' | 'once' | 'always' | 'denied' | 'expired'
 
@@ -7,15 +7,36 @@ export interface ChatApproval extends ApprovalRequest {
   submitting: boolean
 }
 
+export type QuestionStatus = 'pending' | 'answered' | 'expired'
+
+export interface ChatQuestion extends QuestionRequest {
+  status: QuestionStatus
+  answer: string
+  submitting: boolean
+}
+
 export interface ToolCallView {
+  id?: string
   name: string
   args: Record<string, unknown>
 }
 
 export interface ToolResultView {
+  id?: string
   name: string
   content: string
 }
+
+export type WorkEvent =
+  | { kind: 'thought'; id: string; text: string }
+  | {
+      kind: 'tool'
+      id: string
+      name: string
+      args: Record<string, unknown>
+      result: string
+      error: boolean
+    }
 
 export interface UserTurn {
   kind: 'user'
@@ -27,11 +48,15 @@ export interface AssistantTurn {
   kind: 'assistant'
   id: string
   content: string
+  workEvents: WorkEvent[]
   toolCalls: ToolCallView[]
   toolResults: ToolResultView[]
   approvals: ChatApproval[]
+  questions: ChatQuestion[]
   error: string
   streaming: boolean
+  stepsOpen: boolean
+  stepsManual: boolean
 }
 
 export interface NoteTurn {
@@ -57,10 +82,14 @@ export function createAssistantTurn(): AssistantTurn {
     kind: 'assistant',
     id: newId('assistant'),
     content: '',
+    workEvents: [],
     toolCalls: [],
     toolResults: [],
     approvals: [],
+    questions: [],
     error: '',
     streaming: false,
+    stepsOpen: true,
+    stepsManual: false,
   }
 }

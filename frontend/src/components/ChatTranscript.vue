@@ -3,6 +3,7 @@ import { nextTick, onMounted, ref, watch } from 'vue'
 import AssistantMessage from './AssistantMessage.vue'
 import UserMessage from './UserMessage.vue'
 import WelcomePanel from './WelcomePanel.vue'
+import TodoPanel from './TodoPanel.vue'
 import { useChatStore } from '../stores/chat'
 
 const chat = useChatStore()
@@ -35,6 +36,7 @@ onMounted(() => { void nextTick(() => scrollToBottom(true)) })
 
 <template>
   <section ref="scroller" class="transcript" aria-live="polite">
+    <TodoPanel v-if="chat.todos.length" :items="chat.todos" />
     <WelcomePanel v-if="!chat.messages.length" />
     <template v-for="turn in chat.messages" :key="turn.id">
       <UserMessage v-if="turn.kind === 'user'" :content="turn.content" />

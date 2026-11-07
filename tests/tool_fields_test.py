@@ -45,6 +45,17 @@ class ToolFieldContractTest(unittest.TestCase):
         tools = self.client.get("/api/tools").json()["tools"]
         return next(item for item in tools if item["name"] == tool_name)
 
+    @staticmethod
+    def sample(field, index: int = 0) -> str:
+        """按字段类型生成一个能通过校验的值。"""
+        if field.kind == "number":
+            return "12"
+        if field.kind == "switch":
+            return "true"
+        if field.kind == "select":
+            return field.options[0][0]
+        return f"值-{index}"
+
     def test_every_declared_field_is_exposed_and_round_trips(self):
         """注册表里每个字段：该露的露、该藏的藏、存进去能读回来。"""
         declared = 0
@@ -52,7 +63,10 @@ class ToolFieldContractTest(unittest.TestCase):
             if not spec.fields:
                 continue
 
-            payload = {field.key: f"值-{index}" for index, field in enumerate(spec.fields)}
+            payload = {
+                field.key: self.sample(field, index)
+                for index, field in enumerate(spec.fields)
+            }
             response = self.client.put(f"/api/tools/{name}", json={"config": payload})
             self.assertEqual(response.status_code, 200)
 
@@ -80,10 +94,14 @@ class ToolFieldContractTest(unittest.TestCase):
             field = next((item for item in spec.fields if not item.secret), None)
             if field is None:
                 continue
-            self.client.put(f"/api/tools/{name}", json={"config": {field.key: "x"}})
+            self.client.put(
+                f"/api/tools/{name}",
+                json={"config": {field.key: self.sample(field)}},
+            )
             self.client.put(f"/api/tools/{name}", json={"config": {field.key: ""}})
             exposed = {item["key"]: item for item in self.entry(name)["fields"]}
-            self.assertEqual(exposed[field.key]["value"], "")
+            expected = "false" if field.kind == "switch" else ""
+            self.assertEqual(exposed[field.key]["value"], expected)
 
     def test_secret_field_survives_empty_value_and_can_be_cleared_explicitly(self):
         for name, spec in TOOL_SPECS.items():

@@ -24,6 +24,8 @@ PROJECT = Path(SPECPATH).resolve().parent  # spec 在 packaging/ 下
 datas = []
 # Windows 不自带 IANA 时区库，zoneinfo 依赖 tzdata 的数据文件
 datas += collect_data_files("tzdata")
+# python-docx 读取时不一定用到模板，但带上可避免打包后创建文档失败
+datas += collect_data_files("docx")
 
 hiddenimports = [
     # uvicorn 的实现模块是运行时按字符串导入的，PyInstaller 静态分析看不到
@@ -38,6 +40,12 @@ hiddenimports = [
     # 两家模型协议在运行时可切换，显式带上
     "langchain_deepseek",
     "langchain_openai",
+    # 文档工具在函数内延迟导入，静态分析看不到
+    "pypdf",
+    "docx",
+    "openpyxl",
+    "pptx",
+    "et_xmlfile",
 ]
 
 a = Analysis(
