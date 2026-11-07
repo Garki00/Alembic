@@ -79,8 +79,6 @@ def _clean_options(options: list[str] | tuple[str, ...]) -> tuple[str, ...]:
             continue
         seen.add(text)
         cleaned.append(text)
-        if len(cleaned) >= MAX_OPTIONS:
-            break
     return tuple(cleaned)
 
 
@@ -117,6 +115,12 @@ def build_question_tools(ctx: ToolContext) -> list:
             )
 
         cleaned = _clean_options(options)
+        if len(cleaned) > MAX_OPTIONS:
+            return tool_error(
+                "too_many_options",
+                f"最多只能提供 {MAX_OPTIONS} 个选项，这次收到 {len(cleaned)} 个。",
+                hint="请合并或删减选项后重新提问，不要假设用户能看到被截断的选项。",
+            )
         if not cleaned and not allow_free_text:
             return tool_error(
                 "no_options",

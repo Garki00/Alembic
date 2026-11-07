@@ -1,6 +1,6 @@
 # ALEMBIC
 
-一个基于 LangChain + DeepSeek 的小型 Agent 示例，默认使用原生 ReAct 文本循环，
+一个基于 LangChain + DeepSeek 的小型 Agent 示例，默认使用模型原生工具调用，
 具备多轮上下文、会话持久化、自动上下文压缩，以及可读写工作区文件的工具集。
 
 > 项目原名为 SmartAgentDemo；现在统一使用 **ALEMBIC** 品牌。旧数据目录
@@ -13,31 +13,45 @@
 > 接手开发 / 让其他智能体继续改这个项目，请先读 **[HANDOVER.md](HANDOVER.md)**：
 > 里面有架构图、数据流、不可破坏的约定、环境坑和已知问题。
 
-## Agent 执行范式：原生 ReAct
+## Agent 执行范式：结构化工具调用（默认）
 
-默认 `AGENT_ENGINE=react`，使用 `agents/react.py` 的**原生 ReAct 文本循环**：
+默认 `AGENT_ENGINE=tool_calling`，使用 LangChain `create_agent` 的模型原生工具调用：
 
-1. 把英文系统提示词、工具目录、历史对话、当前问题与 scratchpad 拼成一次 prompt；
-2. 模型输出 `Thought:` / `Action:` / `Action Input:`；
-3. 循环解析并执行**一个**工具，把结果作为 `Observation:` 追加到 scratchpad；
-4. 直到模型输出 `Final Answer:`，本轮结束。
+1. 工具参数以结构化 `tool_calls` 返回（JSON Schema 由 `tools/registry.py` 派生）；
+2. 循环执行工具，把真实的 `ToolMessage` 作为观测交回模型；
+3. 模型无法用文本伪造 Observation，动作也不会被文本解析悄悄丢弃。
+
+> 早期版本默认是「原生 ReAct 文本循环」。文本协议要求模型严格守格式；一旦模型
+> 在一条消息里把 Action + Observation + Final Answer 全写完，解析器可能只接受
+> Final Answer 而丢掉动作（表现为「说已保存，但文件没写」）。因此默认改为结构化
+> 工具调用，文本 ReAct 保留为可选模式。
+
+### 文本 ReAct（可选，`AGENT_ENGINE=react`）
+
+`agents/react.py` 仍是完整的 ReAct 循环，并做了协议硬化：
+
+1. 生成时带 `stop=["\nObservation:", …]`，模型写完 `Action Input` 必须停下，
+   不能继续编造 Observation；
+2. 一条消息只接受「一个 Action」或「一个 Final Answer」；
+3. 模型自写 Observation、Action 与 Final Answer 混排、一条消息多个 Action，
+   一律判为协议错误，回喂纠错提示后重试（有次数上限）；
+4. 原始模型输出写入 debug 日志，解析决策有 warning 记录。
 
 ```
 Thought: I need to read the config first.
 Action: read_file
 Action Input: {"path": "config/settings.py"}
-Observation: ...
+Observation: ...            # 只由系统追加
 Thought: I now know the final answer
 Final Answer: ...
 ```
 
 - 工具调用、审批（write/exec）、`todo_write`、`ask_user_question`、SSE 工具气泡、
   上下文压缩、会话持久化全部复用现有层，不需要单独适配。
-- 中间步骤的 `Thought` 通过独立的 `thought` 事件展示为工作步骤预览；最终答案只包含
-  `Final Answer`，不会把思考混进正文。
-- 设置 `AGENT_ENGINE=tool_calling` 可回到 LangChain `create_agent` 的模型原生
-  tool-calling 路径；两条路径共用同一份工具注册表。
-- 系统提示词、ReAct 模板与摘要提示词均为英文；最终回复仍要求使用用户的语言。
+- 中间步骤的 `Thought` 通过独立的 `thought` 事件展示为工作步骤预览；结构化引擎
+  则由「带工具调用的 AI 正文」派生同样的 `thought` 事件，两条路径的工作步骤视图一致。
+- 两条路径共用同一份工具注册表；系统提示词、ReAct 模板与摘要提示词均为英文，
+  最终回复仍要求使用用户的语言。
 
 ## 内置工具
 
@@ -387,7 +401,7 @@ spawn EPERM、Chromium 沙箱、Electron 镜像等）保留在 [desktop/README.m
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `MODEL_NAME` | `deepseek-v4-flash` | 对话模型名称 |
-| `AGENT_ENGINE` | `react` | `react` 原生 ReAct 文本循环；`tool_calling` 使用 `create_agent` |
+| `AGENT_ENGINE` | `tool_calling` | `tool_calling` 使用 `create_agent` 的模型原生工具调用；`react` 走加固后的文本 ReAct |
 | `SESSION_ID` | `default` | 默认会话 ID |
 | `MEMORY_DIR` | `<home>/memory` | 会话历史目录（覆盖用户级默认） |
 | `MODEL_CONTEXT_WINDOW` | `131072` | 模型上下文窗口（token） |
@@ -459,7 +473,7 @@ Windows 默认不带 IANA 时区数据库，Python 的 `zoneinfo` 需要 `tzdata
 ## 测试
 
 ```powershell
-# 后端：284 个离线测试
+# 后端：291 个离线测试
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py" -v
 
 # 前端：类型检查 + 生产构建
@@ -470,8 +484,8 @@ npm run build
 测试覆盖时间工具（别名 / 偏移 / 夏令时 / 兜底）、会话持久化、上下文压缩、
 失败回滚、命令行交互命令，以及网页端接口（模型 CRUD、工具开关、密钥掩码、
 工作区浏览、SSE 流式对话、CORS 预检），工具注册表与错误契约，通用设置
-（偏好持久化、工作步骤展示与收起时机），原生 ReAct 循环
-（解析、工具执行、审批、限流、流式事件），文件工具（含路径逃逸、
+（偏好持久化、工作步骤展示与收起时机），ReAct 循环
+（解析、工具执行、审批、限流、流式事件、协议纠错与 stop 序列），文件工具（含路径逃逸、
 读后写、stale 检测、截断、移动 / 复制 / 删除 / 元信息）与命令工具（退出码、超时、
 截断），文档抽取（Word / Excel / PowerPoint / PDF / 分段），网页抓取（本地 HTTP、
 重定向、SSRF、二进制拒绝），任务清单、提问中继与后台进程（启动 / 日志 / 停止），

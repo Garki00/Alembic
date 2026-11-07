@@ -28,23 +28,31 @@ REACT_PROMPT_TEMPLATE = """You have access to these tools:
 
 {tools}
 
-Use exactly this format:
+Use exactly this format. Each assistant message contains ONE step only.
+
+When a tool is needed, output exactly these three lines and then STOP:
 
 Thought: brief reasoning about the next step
 Action: one of [{tool_names}]
 Action Input: a JSON object with the tool arguments
-Observation: the tool result (filled by the system, never by you)
-... repeat Thought / Action / Action Input / Observation as needed ...
+
+After you stop, the system appends the Observation and calls you again.
+Continue from the Scratchpad below.
+
+When the task is complete, output:
+
 Thought: I now know the final answer
 Final Answer: the complete answer to the user
 
 Rules:
-- Use one action per step.
+- Exactly one step per message: either one Action (with its Action Input) or one Final Answer.
+- Never write an Observation line yourself. Only the system appends Observations.
+- Never put an Action and a Final Answer in the same message: run the tool, read the
+  Observation, and only then answer.
+- Do not repeat earlier steps or observations.
 - Action must be exactly one of the tool names above.
 - Action Input must be a valid JSON object. Use {{}} when the tool takes no arguments.
-- Never write an Observation yourself; the system appends it.
-- Continue from the Scratchpad below. Do not repeat earlier steps or observations.
-- If no tool is needed, skip Action and write Final Answer directly.
+- If no tool is needed, write the Final Answer directly without an Action.
 - Do not include the words "Action" or "Action Input" inside the Final Answer.
 - Answer in the same language as the user's latest message.
 

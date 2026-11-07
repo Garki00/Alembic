@@ -163,6 +163,82 @@ class ReActLoopTest(unittest.TestCase):
         self.assertEqual(result["messages"][-1].content, "ok")
         self.assertEqual(len(model.prompts), 2)
 
+    def test_mixed_action_and_final_answer_is_rejected(self):
+        """A model that writes Action + Final Answer together must not skip the tool."""
+        agent = make_agent([
+            'Thought: write now.\nAction: echo\nAction Input: {"text": "hi"}\n'
+            "Final Answer: already done",
+            'Thought: retry.\nAction: echo\nAction Input: {"text": "hi"}',
+            "Thought: done\nFinal Answer: echo:hi",
+        ])
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+        self.assertEqual(len(tool_messages), 1)
+        self.assertEqual(tool_messages[0].content, "echo:hi")
+        self.assertEqual(result["messages"][-1].content, "echo:hi")
+        # The corrective observation is fed back to the model on the retry.
+        self.assertIn("protocol_violation", agent.model.prompts[1][1].content)
+
+    def test_model_written_observation_is_rejected(self):
+        """A fabricated Observation must never be trusted as a tool result."""
+        agent = make_agent([
+            'Thought: write it.\nAction: echo\nAction Input: {"text": "hi"}\n'
+            "Observation: echo:fake\n"
+            "Final Answer: saved",
+            'Thought: retry.\nAction: echo\nAction Input: {"text": "hi"}',
+            "Thought: done\nFinal Answer: echo:hi",
+        ])
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+        self.assertEqual(len(tool_messages), 1)
+        self.assertEqual(tool_messages[0].content, "echo:hi")
+        self.assertNotIn("echo:fake", tool_messages[0].content)
+        self.assertIn("protocol_violation", agent.model.prompts[1][1].content)
+
+    def test_multiple_actions_are_rejected(self):
+        """Two actions in one message are ambiguous; none of them may run yet."""
+        agent = make_agent([
+            'Thought: two steps.\nAction: echo\nAction Input: {"text": "a"}\n'
+            'Action: echo\nAction Input: {"text": "b"}',
+            'Thought: one step.\nAction: echo\nAction Input: {"text": "ok"}',
+            "Thought: done\nFinal Answer: echo:ok",
+        ])
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+        self.assertEqual(len(tool_messages), 1)
+        self.assertEqual(tool_messages[0].content, "echo:ok")
+
+    def test_protocol_errors_stop_after_limit(self):
+        agent = make_agent(
+            [
+                'Action: echo\nAction Input: {"text": "a"}\nFinal Answer: done',
+                'Action: echo\nAction Input: {"text": "a"}\nFinal Answer: done',
+                'Action: echo\nAction Input: {"text": "a"}\nFinal Answer: done',
+            ],
+            max_protocol_errors=1,
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+        self.assertIn("ReAct format", result["messages"][-1].content)
+        self.assertFalse(any(isinstance(m, ToolMessage) for m in result["messages"]))
+
+    def test_stop_sequences_limit_each_completion_to_one_step(self):
+        class StopAwareModel:
+            def __init__(self):
+                self.stops: list = []
+
+            def invoke(self, _messages, stop=None):
+                self.stops.append(stop)
+                return AIMessage(content="Thought: done\nFinal Answer: ok")
+
+        model = StopAwareModel()
+        agent = ReActAgent(model, [echo], "base")
+        agent.invoke({"messages": [HumanMessage(content="go")]})
+        self.assertEqual(len(model.stops), 1)
+        self.assertIn("\nObservation:", model.stops[0])
+
     def test_stream_emits_thought_tool_and_final(self):
         agent = make_agent([
             'Thought: echo it.\nAction: echo\nAction Input: {"text": "hi"}',
@@ -236,7 +312,7 @@ class ApprovalTest(unittest.TestCase):
 
 
 class BuildAgentTest(unittest.TestCase):
-    def test_build_agent_react_is_default(self):
+    def test_build_agent_react_opt_in(self):
         import os
         from unittest.mock import patch
 

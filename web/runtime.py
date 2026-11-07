@@ -87,8 +87,9 @@ def build_runtime(
     提供「阻塞等待浏览器回执」的提问函数。``asker`` 是 ask_user_question 的
     提问通道（网页端由 :class:`web.questions.QuestionBroker` 提供）。
 
-    ``engine`` 默认取 ``settings.agent_engine``：``react`` 走原生 ReAct 文本循环，
-    ``tool_calling`` 走 LangChain ``create_agent``。
+    ``engine`` 默认取 ``settings.agent_engine``：``tool_calling`` 走 LangChain
+    ``create_agent`` 的模型原生工具调用（默认），``react`` 走原生 ReAct 文本循环
+    （可选兼容模式，解析器严格单步）。
     """
     model = create_chat_model(model_cfg)
     ctx = tool_context(

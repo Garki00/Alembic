@@ -118,9 +118,9 @@ def build_agent(
 ):
     """组装 Agent；参数可注入，方便测试或替换模型。
 
-    ``engine="react"``（默认）使用原生 ReAct 文本循环；``engine="tool_calling"``
-    保留 LangChain ``create_agent`` 的模型原生工具调用路径。传了 ``middleware``
-    时按 tool_calling 处理，因为 ReAct 循环自己管理工具调用与审批。
+    ``engine="tool_calling"``（默认）使用 LangChain ``create_agent`` 的模型原生
+    工具调用；``engine="react"`` 走原生 ReAct 文本循环（严格单步解析，作为可选
+    兼容模式）。传了 ``middleware`` 时按 tool_calling 处理。
     """
     resolved_engine = (engine or settings.agent_engine).strip().lower()
     tool_ctx = ctx or cli_tool_context()

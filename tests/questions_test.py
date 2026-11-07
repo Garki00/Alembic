@@ -62,6 +62,15 @@ class QuestionToolTest(unittest.TestCase):
         })
         self.assertTrue(text.startswith("Error: [no_options]"), text)
 
+    def test_too_many_options_is_rejected_instead_of_truncated(self):
+        seen: list[Question] = []
+        text = self.tool(lambda q: (seen.append(q), "A")[1]).invoke({
+            "question": "选哪个？",
+            "options": [f"选项{i}" for i in range(7)],
+        })
+        self.assertTrue(text.startswith("Error: [too_many_options]"), text)
+        self.assertEqual(seen, [])
+
 
 class QuestionBrokerTest(unittest.TestCase):
     def setUp(self):

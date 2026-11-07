@@ -80,10 +80,14 @@ class Settings:
     model_name = os.getenv("MODEL_NAME", "deepseek-v4-flash")
     deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
 
-    # Agent 执行范式：react（原生 ReAct 文本循环）或 tool_calling（LangChain create_agent）
-    agent_engine = os.getenv("AGENT_ENGINE", "react").strip().lower()
+    # Agent 执行范式：
+    # - tool_calling（默认）：模型原生工具调用，动作与观测走结构化通道，
+    #   不存在「文本解析把动作吞掉」这一类故障；
+    # - react：原生 ReAct 文本循环，保留 Thought 事件，但解析器必须严格
+    #   （见 agents/react.py）。仅作为可选的兼容/实验模式。
+    agent_engine = os.getenv("AGENT_ENGINE", "tool_calling").strip().lower()
     if agent_engine not in {"react", "tool_calling"}:
-        agent_engine = "react"
+        agent_engine = "tool_calling"
 
     # ---- 数据目录（默认在用户级目录，见 resolve_app_home）----
     app_home = str(resolve_app_home())

@@ -1,16 +1,18 @@
 # ALEMBIC 交接文档（HANDOVER）
 
 > 给接手的智能体 / 开发者：先读这一份，再动代码。
-> 最后更新：2026-11-07，切换为原生 ReAct 文本循环，提示词改为英文；新增
-> 工作步骤展示 / 收起时机 / 代码工作视图三个通用设置；284 个后端测试全绿。
+> 最后更新：2026-11-07，默认引擎改回 `tool_calling`（结构化工具调用），原生 ReAct
+> 文本循环保留为可选模式并做了协议硬化（stop 序列 / 严格单步解析 / 纠错重试）；
+> 291 个后端测试全绿。
 
 ## 1. 这是什么
 
 一个**本地优先的智能体工作区**：
 
-- 后端：Python 3.11 + FastAPI + LangChain 1.4.8，默认走 `agents/react.py` 的
-  **原生 ReAct 文本循环**；设置 `AGENT_ENGINE=tool_calling` 可切回
-  `create_agent` 的模型原生工具调用。模型走 DeepSeek / OpenAI 兼容接口；
+- 后端：Python 3.11 + FastAPI + LangChain 1.4.8，默认走 `create_agent` 的
+  **模型原生工具调用**（结构化 `tool_calls`，观测只能由运行时产生）；设置
+  `AGENT_ENGINE=react` 可切到 `agents/react.py` 的文本 ReAct 循环（已硬化）。
+  模型走 DeepSeek / OpenAI 兼容接口；
 - 前端：Vue 3.5 + Vite 7 + TypeScript + Pinia（`frontend/`）；
 - 两者通过 `/api` 通信：开发时前端跑 5173，后端跑 8000，Vite 代理 `/api`；
 - 后端**不再提供 HTML / 静态资源**，只提供 JSON 与 SSE；
@@ -41,7 +43,7 @@ cd frontend; npm run dev                             # http://127.0.0.1:5173
 验证：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 284 个测试
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 291 个测试
 cd frontend
 npm run build                                        # vue-tsc + vite build
 ```
@@ -55,7 +57,7 @@ main.py                  CLI 入口（argparse + ChatCLI，含 /approvals 等命
 run_backend.py           PyInstaller 入口，等价于 python -m web
 agents/
   agent.py               CLI 侧装配：model / tools / engine 选择（react 或 tool_calling）
-  react.py               ★ 原生 ReAct 循环：提示词、解析、工具执行、审批、限流、流式事件
+  react.py               可选文本 ReAct 循环：stop 序列、严格单步解析、审批、限流、流式事件
   context.py             ChatSession、SessionStore、上下文压缩、SessionMeta
   approval.py            审批策略、中间件、终端提问器
 config/
@@ -124,26 +126,38 @@ data/tools.json → ToolStore.configs() → build_runtime(..., tool_configs=)
 - 密钥字段**永远不回显**：`value=""` + `value_set` + `hint`（`••••1234` / `12 字符`）。
 - 保存时空字符串表示「保持原值」；要清空必须走 `PUT /api/tools/{name}` 的 `clear: [key]`。
 
-### 4.2 ReAct 一轮
+### 4.2 Agent 一轮
+
+默认 `tool_calling`（`create_agent`）：模型返回结构化 `tool_calls`，运行时逐个执行并把
+真实的 `ToolMessage` 交回；审批由 `ApprovalMiddleware` 处理。观测只能由运行时产生，
+不存在「文本解析把动作吞掉」这一类故障。
 
 ```
 ChatSession.ask_stream
-  → ReActAgent._run(messages)
-     → build_react_prompt(history, question, scratchpad)   # 英文模板
-     → model.invoke([SystemMessage, HumanMessage])
-     → 有 Final Answer → 追加 AIMessage(final)，结束
-     → 有 Action/Action Input
-          → ApprovalGate（write/exec 才拦截）
-          → tool.invoke(args) → ToolMessage(observation)
-          → scratchpad += Thought/Action/Action Input/Observation
-          → 下一轮模型调用
+  → agent.stream({"messages": history}, stream_mode=["messages","values"])
+     → 模型返回 tool_calls → ApprovalMiddleware → tool.invoke(args)
+     → 工具结果作为 ToolMessage 回到模型 → 直到没有 tool_calls
+  → 带 tool_calls 的 AI 正文派生 thought 事件（工作步骤）
+```
+
+可选 `AGENT_ENGINE=react`：`ReActAgent._run` 走文本 ReAct，且做了协议硬化：
+
+```
+  → build_react_prompt(history, question, scratchpad)   # 英文模板
+  → model.invoke(..., stop=["\nObservation:", ...])
+  → 模型自写 Observation / Action+Final 混排 / 多 Action → 判协议错误，回喂纠错后重试
+  → 有 Final Answer → 追加 AIMessage(final)，结束
+  → 有 Action/Action Input → ApprovalGate → tool.invoke(args)
+       → ToolMessage(observation) → scratchpad → 下一轮模型调用
 ```
 
 - `ReActAgent` 同时实现 `invoke` 与 `stream`，因此 CLI、SSE、上下文压缩、历史持久化
-  不需要知道底层是 ReAct 还是 tool-calling。
-- 中间 `Thought` 通过独立的 `thought` 事件推给前端，作为工作步骤预览；
-  最终 `done` 只包含 `Final Answer`，不会把思考混进回答正文。
-- `AGENT_ENGINE=tool_calling` 时改走 `create_agent`，审批仍由 `ApprovalMiddleware` 处理。
+  不需要知道底层引擎。
+- ReAct 的中间 `Thought` 通过独立 `thought` 事件推送；`tool_calling` 没有文本 Thought，
+  由「带 `tool_calls` 的 AI 正文」派生同一个事件（`ChatSession.ask_stream` 里
+  `derive_step_thoughts`），两条路径的工作步骤视图一致。
+- ReAct 的 `stop` 序列让模型写完 `Action Input` 就停，无法继续编造 Observation；
+  提示词与解析器都要求「一条消息 = 一个 Action 或一个 Final Answer」。
 
 ### 4.3 对话 → SSE
 
@@ -229,16 +243,22 @@ App.vue onMounted
 18. **后台进程只能操作 `ProcessManager` 自己启动的 ID**，不接受任意 PID；停止时按进程树处理。
 19. **提示词统一用英文**：`prompts/system.py`、`prompts/react.py`、`agents/context.py`
     的摘要提示词；但要求模型用用户的语言回复。新增提示词不要写回中文。
-20. **默认引擎是原生 ReAct**：改 `agents/react.py` 时必须保持 `invoke` / `stream`
-    接口与现有 `ChatSession` 兼容；`AGENT_ENGINE=tool_calling` 只作为回退路径。
-21. **通用设置只有一处**：后端 `config/store.py: PreferencesStore`，前端
+20. **默认引擎是 `tool_calling`**：`create_agent` 的结构化工具调用是主路径；
+    `AGENT_ENGINE=react` 是可选兼容模式。改 `agents/react.py` 时必须保持
+    `invoke` / `stream` 接口与现有 `ChatSession` 兼容，并保留 stop 序列与严格单步解析。
+21. **ReAct 一条消息只能是单步**：解析器先拒绝模型自写 `Observation:`，再拒绝
+    `Action` 与 `Final Answer` 混排和多 Action；不要改回「Final Answer 优先」。
+    模型伪造的观测绝不能被当作工具结果写进历史。
+22. **通用设置只有一处**：后端 `config/store.py: PreferencesStore`，前端
     `workspace.preferences`；不要在组件里另存 localStorage，否则刷新/换浏览器会分叉。
-22. **工作步骤策略**：`compact / standard / detailed / verbose` 四档、`completion /
+23. **工作步骤策略**：`compact / standard / detailed / verbose` 四档、`completion /
     next_input` 两种收起时机；`verbose` 不自动收起，手动展开的轮次不被强制收起。
-23. **工具结果必须带 `tool_call_id`**：`tool` 与 `tool_result` 事件靠 id 配对；
+24. **工具结果必须带 `tool_call_id`**：`tool` 与 `tool_result` 事件靠 id 配对；
     历史消息也通过 `AIMessage.tool_calls[].id` / `ToolMessage.tool_call_id` 保持配对。
-24. **工作步骤按 `workEvents` 顺序渲染**：思考与工具调用交错，不能把所有思考
+25. **工作步骤按 `workEvents` 顺序渲染**：思考与工具调用交错，不能把所有思考
     单独堆在顶部；每行先给动作标签 + 一行摘要，详情按需展开。
+26. **工具返回的事实才算事实**：`write_file` 落盘后会 stat 校验，失败返回
+    `write_unverified`；不要在提示词或前端里把模型的「已保存」当作写入成功的证据。
 
 ## 6. 环境坑（这台机器上真实踩过的）
 
@@ -273,8 +293,8 @@ App.vue onMounted
 - Electron 适配、安装包、代码签名、应用图标；
 - 生产部署的静态资源服务（Nginx / Caddy / 一个独立静态服务器）；
 - 流式 PTY 终端、审批卡片 diff 视图、任务真取消；
-- 原生 ReAct 是单步串行（每轮一个工具），提示词每步重发历史；追求低延迟/并行
-  工具调用时可切 `AGENT_ENGINE=tool_calling`；
+- 文本 ReAct 是单步串行（每轮一个工具），提示词每步重发历史；默认的
+  `tool_calling` 可并行返回多个工具调用，延迟更低；
 - `web_search`（当前只有 `fetch_url`；搜索需要接第三方检索源）；
 - 文档图片 OCR / 视觉模型、附件上传与 @文件引用；
 - MCP 客户端、skills / 自定义命令；
@@ -299,11 +319,16 @@ App.vue onMounted
     新增 `PreferencesStore` / `/api/preferences`，并补充 `tool_result` SSE 事件。**
 11. **项目改名 ALEMBIC：Python 包 `alembic`、前端/桌面/打包名称、API 标题、默认数据目录
     与 `ALEMBIC_*` 环境变量同步；旧 `SmartAgent` 数据目录与旧环境变量保留兼容。**
+12. **修复「说已写入但没写文件」：默认引擎改回 `tool_calling`（结构化工具调用），
+    文本 ReAct 加 stop 序列 + 严格单步解析 + 协议纠错重试 + 原始输出日志；
+    `write_file` 落盘后 stat 校验；`ask_user_question` 超限改为报错而非静默截断；
+    两条引擎都能派生 `thought` 工作步骤；测试从 284 增至 291。**
 
 ## 10. 给接手者的建议顺序
 
-1. 跑一遍后端测试，确认 284 全绿；再 `cd frontend && npm run build`；
-2. 读 `agents/react.py`、`tools/registry.py`、`web/server.py`、`agents/context.py` 四个文件，够理解后端 85%；
+1. 跑一遍后端测试，确认 291 全绿；再 `cd frontend && npm run build`；
+2. 读 `web/runtime.py`（默认 `create_agent`）、`agents/react.py`（可选文本 ReAct）、
+   `tools/registry.py`、`web/server.py`、`agents/context.py`，够理解后端 85%；
 3. 读 `frontend/src/stores/chat.ts`、`frontend/src/api/chat.ts`、`frontend/src/App.vue`，
    理解前端状态与 SSE；
 4. 用 `.\scripts\dev.ps1` 起服务，手动点一遍界面（左侧工作区、右下角模型、设置里工具/审批）；

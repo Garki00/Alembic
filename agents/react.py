@@ -50,6 +50,33 @@ _MAX_HISTORY_MESSAGES = 40
 _MAX_HISTORY_CHARS = 16000
 _MAX_THOUGHT_CHARS = 1200
 
+#: Stop sequences that keep the model from writing the *next* ReAct step
+#: (notably ``Observation:``) inside the same completion. Observations must
+#: only ever be produced by the loop, never by the model.
+_DEFAULT_STOP_SEQUENCES = ("\nObservation:", "\nObservation :")
+
+#: A line the model authored as an observation. Since the system is the only
+#: legitimate author, any match inside a completion is a protocol violation.
+_OBSERVATION_LINE = re.compile(r"(?im)^[ \t]*Observation\s*:")
+_ACTION_LINES = re.compile(r"(?im)^\s*Action\s*:\s*(.+?)\s*$")
+
+_PROTOCOL_HINT = (
+    "Reply with exactly one Thought + one Action + one Action Input, then stop "
+    "and wait for the system Observation; or reply with a standalone Final Answer."
+)
+
+
+def _protocol_note(reason: str) -> str:
+    """Scratchpad entry that tells the model how to repair a malformed step."""
+    return (
+        "Thought: [format correction] I must follow the ReAct contract exactly.\n"
+        f"Observation: {tool_error('protocol_violation', reason, hint=_PROTOCOL_HINT)}\n"
+    )
+
+
+def _count_actions(text: str) -> int:
+    return len(list(_ACTION_LINES.finditer(text)))
+
 
 def _message_type(message: Any) -> str:
     return str(getattr(message, "type", "") or "")
@@ -186,7 +213,14 @@ class ReActAgent:
         max_tool_calls: tool executions allowed in one turn.
         model_max_retries: retries for transient model failures.
         max_output_chars: observation budget passed back to the model.
+        max_protocol_errors: malformed steps tolerated before giving up.
+        stop_sequences: generation stops that prevent the model from writing
+            the next step (``Observation:``) itself.
     """
+
+    #: This agent emits its own ``thought`` events; ``ChatSession`` must not
+    #: derive them a second time from AI messages that carry tool calls.
+    emits_thought_events = True
 
     def __init__(
         self,
@@ -199,6 +233,8 @@ class ReActAgent:
         max_tool_calls: int = 15,
         model_max_retries: int = 2,
         max_output_chars: int = 20000,
+        max_protocol_errors: int = 2,
+        stop_sequences: Sequence[str] | None = None,
     ) -> None:
         self.model = model
         self.tools = list(tools)
@@ -215,6 +251,10 @@ class ReActAgent:
         self.max_tool_calls = max(1, int(max_tool_calls))
         self.model_max_retries = max(0, int(model_max_retries))
         self.max_output_chars = max(1000, int(max_output_chars))
+        self.max_protocol_errors = max(0, int(max_protocol_errors))
+        self.stop_sequences = (
+            tuple(stop_sequences) if stop_sequences is not None else _DEFAULT_STOP_SEQUENCES
+        )
 
     # ---- public interface expected by ChatSession ----
     def invoke(self, payload: Mapping[str, Any]) -> dict[str, list[BaseMessage]]:
@@ -252,6 +292,7 @@ class ReActAgent:
         history = format_history(history_messages)
         scratchpad = ""
         tool_calls = 0
+        protocol_errors = 0
 
         for _step in range(self.max_model_calls):
             prompt = build_react_prompt(
@@ -264,39 +305,75 @@ class ReActAgent:
                 response = self._ask_model(prompt)
             except Exception as exc:  # exhausted retries
                 logger.exception("ReAct model call failed")
-                final = f"I could not reach the model: {exc}"
-                messages.append(AIMessage(content=final))
-                if emit:
-                    yield ("messages", (AIMessageChunk(content=final), None))
-                yield ("values", {"messages": list(messages)})
+                yield from self._finish(messages, f"I could not reach the model: {exc}", emit)
                 return
 
             text = self._text_of(response).strip()
+            logger.debug("ReAct step %s raw output: %s", _step, text)
             if not text:
-                final = "The model returned an empty response."
-                messages.append(AIMessage(content=final))
-                if emit:
-                    yield ("messages", (AIMessageChunk(content=final), None))
-                yield ("values", {"messages": list(messages)})
+                yield from self._finish(messages, "The model returned an empty response.", emit)
                 return
 
-            final = extract_final_answer(text)
-            if final is not None:
-                messages.append(AIMessage(content=final))
-                if emit:
-                    yield ("messages", (AIMessageChunk(content=final), None))
-                yield ("values", {"messages": list(messages)})
-                return
+            # The model must never author observations: the loop is the only
+            # legitimate source. A model that invents one has not actually run
+            # the tool, so its "result" must not be trusted.
+            if _OBSERVATION_LINE.search(text):
+                protocol_errors += 1
+                logger.warning("ReAct protocol violation: model wrote an Observation itself")
+                if protocol_errors > self.max_protocol_errors:
+                    yield from self._finish(messages, self._protocol_failure(), emit)
+                    return
+                scratchpad += _protocol_note(
+                    "You wrote an Observation yourself. Only the system may append "
+                    "Observations; never copy or invent one."
+                )
+                continue
 
             action = extract_action(text)
-            if action is None:
-                # No Action and no Final Answer: treat the raw output as the answer
-                # rather than looping forever.
-                messages.append(AIMessage(content=text))
-                if emit:
-                    yield ("messages", (AIMessageChunk(content=text), None))
-                yield ("values", {"messages": list(messages)})
+            final = extract_final_answer(text)
+
+            # A step is either an Action or a Final Answer, never both. Without
+            # this guard a model that emits the whole loop in one message (with a
+            # fabricated Observation) has its action silently discarded: the
+            # final answer is accepted while no tool ever ran.
+            if action is not None and final is not None:
+                protocol_errors += 1
+                logger.warning("ReAct protocol violation: Action and Final Answer in one step")
+                if protocol_errors > self.max_protocol_errors:
+                    yield from self._finish(messages, self._protocol_failure(), emit)
+                    return
+                scratchpad += _protocol_note(
+                    "You wrote both an Action and a Final Answer in one step. "
+                    "Run the action first and wait for the Observation; only then answer."
+                )
+                continue
+
+            if final is not None:
+                yield from self._finish(messages, final, emit)
                 return
+
+            if action is None:
+                protocol_errors += 1
+                if protocol_errors > self.max_protocol_errors:
+                    # Weak model that answers in plain prose: keep the graceful
+                    # fallback instead of failing the turn.
+                    yield from self._finish(messages, text, emit)
+                    return
+                scratchpad += _protocol_note(
+                    "Your output contained neither an Action nor a Final Answer."
+                )
+                continue
+
+            if _count_actions(text) > 1:
+                protocol_errors += 1
+                logger.warning("ReAct protocol violation: multiple Actions in one step")
+                if protocol_errors > self.max_protocol_errors:
+                    yield from self._finish(messages, self._protocol_failure(), emit)
+                    return
+                scratchpad += _protocol_note(
+                    "You wrote more than one Action in one step. Emit exactly one."
+                )
+                continue
 
             name, raw_input = action
             thought = extract_thought(text)
@@ -329,10 +406,7 @@ class ReActAgent:
                     "I stopped because the tool-call limit was reached. "
                     "Please narrow the request or continue in a new turn."
                 )
-                messages.append(AIMessage(content=final))
-                if emit:
-                    yield ("messages", (AIMessageChunk(content=final), None))
-                yield ("values", {"messages": list(messages)})
+                yield from self._finish(messages, final, emit)
                 return
 
             call_id = f"call_{_step}_{uuid4().hex[:6]}"
@@ -368,22 +442,38 @@ class ReActAgent:
             "I stopped because the model-call limit was reached. "
             "Please narrow the request or continue in a new turn."
         )
+        yield from self._finish(messages, final, emit)
+
+    # ---- loop helpers ----
+    def _finish(
+        self,
+        messages: list[BaseMessage],
+        final: str,
+        emit: bool,
+    ) -> Iterator[tuple[str, Any]]:
+        """Append the final answer and emit the terminal events."""
         messages.append(AIMessage(content=final))
         if emit:
             yield ("messages", (AIMessageChunk(content=final), None))
         yield ("values", {"messages": list(messages)})
 
+    def _protocol_failure(self) -> str:
+        return (
+            "I stopped because the model kept breaking the ReAct format. "
+            "Please retry; if it persists, switch AGENT_ENGINE to tool_calling."
+        )
+
+
     # ---- model ----
     def _ask_model(self, prompt: str):
+        messages = [
+            SystemMessage(content=self.system_prompt),
+            HumanMessage(content=prompt),
+        ]
         last_error: Exception | None = None
         for attempt in range(self.model_max_retries + 1):
             try:
-                return self.model.invoke(
-                    [
-                        SystemMessage(content=self.system_prompt),
-                        HumanMessage(content=prompt),
-                    ]
-                )
+                return self._invoke_model(messages)
             except Exception as exc:
                 last_error = exc
                 if attempt < self.model_max_retries:
@@ -391,6 +481,21 @@ class ReActAgent:
                     continue
                 break
         raise last_error or RuntimeError("model call failed")
+
+    def _invoke_model(self, messages: list[BaseMessage]):
+        """Call the model with ReAct stop sequences when it supports them.
+
+        Stopping at ``\\nObservation:`` prevents the model from writing the next
+        step itself. Test doubles and a few providers only accept ``invoke``
+        without extra kwargs, so fall back to the plain call once.
+        """
+        if not self.stop_sequences:
+            return self.model.invoke(messages)
+        try:
+            return self.model.invoke(messages, stop=list(self.stop_sequences))
+        except TypeError:
+            logger.debug("model does not accept stop=; calling without stop sequences")
+            return self.model.invoke(messages)
 
     @staticmethod
     def _text_of(response: Any) -> str:

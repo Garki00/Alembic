@@ -492,6 +492,11 @@ class ChatSession:
         history = list(self.messages)
         emitted_tools: set[str] = set()
         emitted_results: set[str] = set()
+        emitted_thoughts: set[str] = set()
+        # ReAct emits its own ``thought`` events. Native tool-calling agents do
+        # not, so derive them from AI messages that carry tool calls: that text
+        # is the model's reasoning for the action, not part of the final answer.
+        derive_step_thoughts = not getattr(self.agent, "emits_thought_events", False)
         messages: list[BaseMessage] | None = None
         try:
             stream = getattr(self.agent, "stream", None)
@@ -536,7 +541,13 @@ class ChatSession:
                             continue
                         if not isinstance(message, AIMessage):
                             continue
-                        for call in message.tool_calls or []:
+                        calls = list(message.tool_calls or [])
+                        if derive_step_thoughts and calls:
+                            thought_text = message_text(message).strip()
+                            if thought_text and thought_text not in emitted_thoughts:
+                                emitted_thoughts.add(thought_text)
+                                yield ("thought", thought_text)
+                        for call in calls:
                             key = str(call.get("id") or call.get("name"))
                             if key in emitted_tools:
                                 continue

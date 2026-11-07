@@ -136,6 +136,7 @@ class WriteToolsTest(FilesTestBase):
     def test_write_creates_new_file_and_parents(self):
         text = self.write["write_file"].invoke({"path": "pkg/sub/new.txt", "content": "hi"})
         self.assertIn("已创建", text)
+        self.assertIn("校验：文件已存在", text)
         self.assertEqual((self.root / "pkg" / "sub" / "new.txt").read_text(encoding="utf-8"), "hi")
 
     def test_overwrite_requires_read_first(self):

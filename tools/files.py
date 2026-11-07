@@ -405,19 +405,34 @@ def build_file_write_tools(ctx: ToolContext) -> list:
                 return error
             partial_warning = partial
 
+        payload = content.encode("utf-8")
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("w", encoding="utf-8", newline="\n") as handle:
-                handle.write(content)
+            with target.open("wb") as handle:
+                handle.write(payload)
         except OSError as exc:
             return tool_error("write_failed", f"写入 {path} 失败：{exc}。")
+
+        # 落盘后立刻回读元数据：工具返回值只能是「真的写成功」，
+        # 不能让模型用一句“已保存”代替事实（见 write_unverified）。
+        try:
+            actual = target.stat().st_size
+        except OSError as exc:
+            return tool_error("write_unverified", f"写入 {path} 后无法确认文件状态：{exc}。")
+        if actual != len(payload):
+            return tool_error(
+                "write_unverified",
+                f"{path} 写入后大小不一致（磁盘 {actual} 字节，预期 {len(payload)} 字节）。",
+                hint="请用 file_stat 检查文件，再重试写入。",
+            )
 
         _mark_read(target, complete=True)
         action = "已覆盖" if existed else "已创建"
         lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         result = [
             f"{action}：{display_path(ctx.workspace, target)}",
-            f"行数：{lines}，字节数：{len(content.encode('utf-8'))}",
+            f"行数：{lines}，字节数：{actual}",
+            "校验：文件已存在，大小与写入内容一致。",
         ]
         if partial_warning:
             result.append("注意：上次只读取了该文件的局部内容，覆盖写入可能丢失未读部分。")

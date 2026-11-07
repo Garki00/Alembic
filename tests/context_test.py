@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 from agents.context import (
     MIN_TURNS_BETWEEN_COMPACTIONS,
@@ -490,6 +490,46 @@ class ChatSessionTest(unittest.TestCase):
             result = session.ask("第二个问题")
             self.assertFalse(result.compacted)
             self.assertGreater(len(session), 2)
+
+
+class StepThoughtTest(unittest.TestCase):
+    """tool_calling 没有独立的 thought 通道，由带 tool_calls 的 AI 正文派生。"""
+
+    class ThoughtStreamAgent:
+        emits_thought_events = False
+
+        def stream(self, payload, stream_mode=None):
+            history = list(payload["messages"])
+            ai = AIMessage(
+                content="先读文件确认。",
+                tool_calls=[{"name": "read_file", "args": {"path": "a"}, "id": "call-1"}],
+            )
+            yield ("messages", (AIMessageChunk(content="先读文件确认。"), None))
+            # values 会重复上报同一条消息，thought 只能发一次
+            yield ("values", {"messages": [*history, ai]})
+            yield ("values", {"messages": [*history, ai]})
+            tool = ToolMessage(content="内容", tool_call_id="call-1", name="read_file")
+            yield ("values", {"messages": [*history, ai, tool]})
+            final = AIMessage(content="完成")
+            yield ("messages", (AIMessageChunk(content="完成"), None))
+            yield ("values", {"messages": [*history, ai, tool, final]})
+
+    def test_tool_call_message_text_becomes_thought(self):
+        with workspace_tempdir() as tmp:
+            session = ChatSession(
+                self.ThoughtStreamAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                hydrate=False,
+            )
+            events = list(session.ask_stream("读一下"))
+
+            thoughts = [payload for kind, payload in events if kind == "thought"]
+            self.assertEqual(thoughts, ["先读文件确认。"])
+            tools = [payload for kind, payload in events if kind == "tool"]
+            self.assertEqual(tools[0]["name"], "read_file")
+            done = next(payload for kind, payload in events if kind == "done")
+            self.assertEqual(done.text, "完成")
 
 
 if __name__ == "__main__":
