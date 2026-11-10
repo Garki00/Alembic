@@ -7,9 +7,14 @@ import { useWorkspaceStore } from '../stores/workspace'
 const workspace = useWorkspaceStore()
 const ui = useUiStore()
 
+const hasWorkspace = computed(() => Boolean(workspace.activeWorkspace))
 const hint = computed(() => workspace.activeWorkspace
   ? `工作目录：${workspace.activeWorkspace.path}`
-  : '先在左侧添加一个工作区。')
+  : '')
+
+function chooseWorkspace(): void {
+  ui.openWorkspaceModal()
+}
 
 const suggestions = [
   '北京现在几点？',
@@ -25,19 +30,29 @@ function pick(text: string): void {
 <template>
   <div class="welcome">
     <div class="welcome-sun"><SunIcon /></div>
-    <div class="eyebrow">{{ workspace.activeWorkspace?.name || '工作区' }}</div>
-    <h1>开始对话</h1>
-    <p>{{ hint }}</p>
-    <div class="suggestions">
-      <button
-        v-for="text in suggestions"
-        :key="text"
-        type="button"
-        class="suggestion"
-        @click="pick(text)"
-      >
-        {{ text }}
+    <template v-if="hasWorkspace">
+      <div class="eyebrow">{{ workspace.activeWorkspace?.name || '工作区' }}</div>
+      <h1>开始对话</h1>
+      <p>{{ hint }}</p>
+      <div class="suggestions">
+        <button
+          v-for="text in suggestions"
+          :key="text"
+          type="button"
+          class="suggestion"
+          @click="pick(text)"
+        >
+          {{ text }}
+        </button>
+      </div>
+    </template>
+    <template v-else>
+      <div class="eyebrow">GET STARTED</div>
+      <h1>选择一个工作区</h1>
+      <p>选择或添加一个目录作为工作区，然后开始对话。</p>
+      <button type="button" class="btn-primary welcome-action" @click="chooseWorkspace">
+        选择工作区
       </button>
-    </div>
+    </template>
   </div>
 </template>

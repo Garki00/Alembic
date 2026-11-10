@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { CollapseTiming, Preferences, TranscriptViewMode } from '../api/types'
+import type {
+  CollapseTiming,
+  PermissionMode,
+  Preferences,
+  TranscriptViewMode,
+} from '../api/types'
 import { errorMessage } from '../api/client'
 import { COLLAPSE_TIMINGS, TRANSCRIPT_MODES } from '../lib/preferences'
 import { useUiStore } from '../stores/ui'
@@ -13,6 +18,11 @@ const preferences = computed(() => store.preferences)
 
 const MODES = TRANSCRIPT_MODES
 const TIMINGS = COLLAPSE_TIMINGS
+const PERMISSIONS: Array<{ value: PermissionMode; label: string; hint: string }> = [
+  { value: 'read_only', label: '只读', hint: '所有工具调用都需要用户审批' },
+  { value: 'workspace_write', label: '工作区内修改', hint: '工作区内写文件免审批，执行命令仍需审批' },
+  { value: 'full_access', label: '完全权限', hint: '所有工具调用都不需要审批' },
+]
 
 async function save(patch: Partial<Preferences>, message: string): Promise<boolean> {
   try {
@@ -41,6 +51,23 @@ async function setTiming(event: Event): Promise<void> {
   }
 }
 
+async function setPermission(event: Event): Promise<void> {
+  const element = event.target as HTMLSelectElement
+  const value = element.value as PermissionMode
+  if (value === 'full_access' && store.preferences.permission_mode !== 'full_access') {
+    const confirmed = window.confirm(
+      '完全权限会让 Agent 无需审批执行所有工具和命令。确认切换吗？',
+    )
+    if (!confirmed) {
+      element.value = store.preferences.permission_mode
+      return
+    }
+  }
+  if (!(await save({ permission_mode: value }, '权限设置已更新'))) {
+    element.value = store.preferences.permission_mode
+  }
+}
+
 async function setDeveloperTools(event: Event): Promise<void> {
   const element = event.target as HTMLInputElement
   const value = element.checked
@@ -57,6 +84,23 @@ async function setDeveloperTools(event: Event): Promise<void> {
     </div>
 
     <div class="general-list">
+      <div class="general-row">
+        <div class="general-text">
+          <div class="general-title">权限</div>
+          <div class="general-desc">控制 Agent 调用工具前是否需要你审批。</div>
+        </div>
+        <div class="general-control">
+          <select class="general-select" :value="preferences.permission_mode" @change="setPermission">
+            <option v-for="mode in PERMISSIONS" :key="mode.value" :value="mode.value">
+              {{ mode.label }}
+            </option>
+          </select>
+          <div class="general-hint">
+            {{ PERMISSIONS.find((mode) => mode.value === preferences.permission_mode)?.hint }}
+          </div>
+        </div>
+      </div>
+
       <div class="general-row">
         <div class="general-text">
           <div class="general-title">工作步骤展示</div>

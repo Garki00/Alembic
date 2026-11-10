@@ -83,16 +83,16 @@ class WebWorkspaceTest(unittest.TestCase):
         from tools.registry import TOOL_SPECS
 
         data = self.client.get("/api/bootstrap").json()
-        # 新设备不再自动生成默认模型：等初始化向导配置
-        self.assertEqual(data["models"], [])
-        self.assertEqual(data["active_id"], "")
+        # 新设备不再自动生成默认供应商/工作区：等初始化向导与用户选择
+        self.assertEqual(data["providers"], [])
+        self.assertEqual(data["active_provider_id"], "")
+        self.assertEqual(data["active_model_id"], "")
         self.assertIsNone(data["active_model"])
         self.assertTrue(data["needs_setup"])
         # 期望值从注册表派生：新增工具不需要改这条断言
         self.assertEqual({tool["name"] for tool in data["tools"]}, set(TOOL_SPECS))
-        self.assertEqual(len(data["workspaces"]), 1)
-        self.assertTrue(data["active_workspace_id"])
-        self.assertEqual(Path(data["workspaces"][0]["path"]), Path.cwd().resolve())
+        self.assertEqual(data["workspaces"], [])
+        self.assertEqual(data["active_workspace_id"], "")
 
     def test_tools_enabled_by_default(self):
         data = self.client.get("/api/bootstrap").json()
@@ -107,23 +107,29 @@ class WebWorkspaceTest(unittest.TestCase):
                      "background_process", "process_inspect"):
             self.assertTrue(states[name], name)
 
-    def create_model(self) -> dict:
-        """给需要模型的对话测试准备一个可用模型。"""
-        return self.client.post("/api/models", json={
-            "name": "测试模型",
+    def create_provider(self) -> dict:
+        """给需要模型的对话测试准备一个可用供应商。"""
+        return self.client.post("/api/providers", json={
             "provider": "openai",
-            "model": "gpt-test",
+            "name": "测试供应商",
             "base_url": "https://example.test/v1",
             "api_key": "sk-test-1234",
-            "temperature": 0,
-        }).json()["model"]
+            "models": [
+                {"model": "gpt-test", "name": "GPT Test", "thinking": "high"},
+            ],
+        }).json()["provider"]
 
-    def test_needs_setup_turns_false_after_model_is_saved(self):
+    def create_workspace(self) -> dict:
+        """给需要工作区的对话测试准备一个目录。"""
+        return self.client.post("/api/workspaces", json={"path": str(self.tmp)}).json()["workspace"]
+
+    def test_needs_setup_turns_false_after_provider_is_saved(self):
         self.assertTrue(self.client.get("/api/bootstrap").json()["needs_setup"])
-        self.create_model()
+        self.create_provider()
         data = self.client.get("/api/bootstrap").json()
         self.assertFalse(data["needs_setup"])
-        self.assertTrue(data["active_id"])
+        self.assertTrue(data["active_provider_id"])
+        self.assertTrue(data["active_model_id"])
 
     def test_bootstrap_persists_new_tool_entries(self):
         """升级到新版本后，data/tools.json 里应补齐新增条目且不丢旧配置。"""
@@ -136,41 +142,78 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertEqual(saved.get("version"), 3)
         self.assertEqual(saved["tools"]["get_weather"]["config"]["QWEATHER_PROJECT_ID"], "keep-me")
 
-    # ---- 模型 ----
-    def test_model_crud_and_key_masking(self):
-        created = self.client.post("/api/models", json={
-            "name": "OpenAI 兼容",
+    # ---- 供应商与模型 ----
+    def test_provider_crud_models_and_key_masking(self):
+        created = self.client.post("/api/providers", json={
             "provider": "openai",
-            "model": "gpt-test",
+            "name": "OpenAI 兼容",
             "base_url": "https://example.com/v1",
             "api_key": "sk-test-1234",
-            "temperature": 0.3,
-        }).json()["model"]
+            "models": [
+                {
+                    "model": "gpt-test",
+                    "name": "GPT Test",
+                    "thinking": "high",
+                    "thinking_levels": ["none", "high"],
+                    "temperature": 0.3,
+                },
+            ],
+        }).json()["provider"]
         self.assertTrue(created["api_key_set"])
         self.assertEqual(created["api_key_hint"], "••••1234")
         self.assertNotIn("api_key", created)
+        self.assertEqual(len(created["models"]), 1)
+        self.assertEqual(created["models"][0]["thinking"], "high")
+        self.assertEqual(created["models"][0]["thinking_levels"], ["none", "high"])
 
-        models = self.client.get("/api/models").json()["models"]
-        self.assertIn("gpt-test", [item["model"] for item in models])
+        providers = self.client.get("/api/providers").json()["providers"]
+        self.assertIn("gpt-test", [item["model"] for item in providers[0]["models"]])
 
-        # 更新时不传 key，旧 key 应保留
-        updated = self.client.post("/api/models", json={
-            "id": created["id"], "name": "改名", "provider": "openai",
-            "model": "gpt-test", "base_url": "https://example.com/v1",
-        }).json()["model"]
+        # 更新时不传 key，旧 key 应保留；模型列表整体更新
+        updated = self.client.post("/api/providers", json={
+            "id": created["id"],
+            "provider": "openai",
+            "name": "改名",
+            "base_url": "https://example.com/v1",
+            "models": [
+                {"id": created["models"][0]["id"], "model": "gpt-test", "name": "GPT Test"},
+                {"model": "gpt-2", "name": "GPT 2", "thinking": "max"},
+            ],
+        }).json()["provider"]
         self.assertEqual(updated["name"], "改名")
         self.assertTrue(updated["api_key_set"])
+        self.assertEqual([item["model"] for item in updated["models"]], ["gpt-test", "gpt-2"])
 
-        self.client.post(f"/api/models/{created['id']}/activate")
-        self.assertEqual(self.client.get("/api/models").json()["active_id"], created["id"])
+        second = next(item for item in updated["models"] if item["model"] == "gpt-2")
+        activated = self.client.post(
+            f"/api/providers/{created['id']}/activate",
+            json={"model_id": second["id"]},
+        ).json()
+        self.assertEqual(activated["active_model_id"], second["id"])
+        self.assertEqual(activated["active_model"]["thinking"], "max")
 
-        self.client.delete(f"/api/models/{created['id']}")
-        self.assertNotIn(created["id"],
-                         [item["id"] for item in self.client.get("/api/models").json()["models"]])
+        changed = self.client.patch(
+            f"/api/providers/{created['id']}/models/{second['id']}/thinking",
+            json={"thinking": "low"},
+        ).json()
+        self.assertEqual(changed["active_model"]["thinking"], "low")
+        self.assertEqual(changed["active_model"]["thinking_levels"], ["low", "high", "max"])
 
-    def test_model_requires_model_or_name(self):
-        response = self.client.post("/api/models", json={"name": "", "model": ""})
-        self.assertEqual(response.status_code, 400)
+        self.client.delete(f"/api/providers/{created['id']}")
+        self.assertEqual(self.client.get("/api/providers").json()["providers"], [])
+
+    def test_provider_requires_base_url_key_and_models(self):
+        self.assertEqual(self.client.post("/api/providers", json={
+            "provider": "custom", "base_url": "", "api_key": "sk-test",
+            "models": [{"model": "m"}],
+        }).status_code, 400)
+        self.assertEqual(self.client.post("/api/providers", json={
+            "provider": "custom", "base_url": "https://example.test/v1", "models": [{"model": "m"}],
+        }).status_code, 400)
+        self.assertEqual(self.client.post("/api/providers", json={
+            "provider": "custom", "base_url": "https://example.test/v1",
+            "api_key": "sk-test", "models": [{"model": ""}],
+        }).status_code, 400)
 
     # ---- 工具 ----
     def test_tool_toggle_and_config(self):
@@ -185,7 +228,7 @@ class WebWorkspaceTest(unittest.TestCase):
 
     def test_clear_secret_requires_explicit_request(self):
         """留空表示“保持不变”，所以清空密钥只能用 clear 显式请求。"""
-        self.client.put("/api/tools/get_weather", json={"config": {"QWEATHER_KEY_ID": "T95D4DCEH6"}})
+        self.client.put("/api/tools/get_weather", json={"config": {"QWEATHER_KEY_ID": "test-key-id"}})
         self.client.put("/api/tools/get_weather", json={"clear": ["QWEATHER_KEY_ID"]})
 
         weather = next(
@@ -209,7 +252,7 @@ class WebWorkspaceTest(unittest.TestCase):
     def test_secret_fields_are_masked_and_empty_save_keeps_value(self):
         pem = "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----"
         self.client.put("/api/tools/get_weather", json={
-            "config": {"QWEATHER_KEY_ID": "T95D4DCEH6", "QWEATHER_PRIVATE_KEY": pem},
+            "config": {"QWEATHER_KEY_ID": "test-key-id", "QWEATHER_PRIVATE_KEY": pem},
         })
 
         weather = next(
@@ -221,7 +264,7 @@ class WebWorkspaceTest(unittest.TestCase):
         # 密钥不回显，只给掩码提示
         self.assertEqual(fields["QWEATHER_KEY_ID"]["value"], "")
         self.assertTrue(fields["QWEATHER_KEY_ID"]["value_set"])
-        self.assertEqual(fields["QWEATHER_KEY_ID"]["hint"], "••••CEH6")
+        self.assertEqual(fields["QWEATHER_KEY_ID"]["hint"], "••••y-id")
         self.assertNotIn("PRIVATE KEY", json.dumps(weather, ensure_ascii=False))
 
         # 前端留空再保存（或回传掩码）不能把真实密钥清空
@@ -229,7 +272,7 @@ class WebWorkspaceTest(unittest.TestCase):
             "config": {"QWEATHER_KEY_ID": "", "QWEATHER_PRIVATE_KEY": "••••"},
         })
         stored = self.app.state.tools.state()["get_weather"]["config"]
-        self.assertEqual(stored["QWEATHER_KEY_ID"], "T95D4DCEH6")
+        self.assertEqual(stored["QWEATHER_KEY_ID"], "test-key-id")
         self.assertEqual(stored["QWEATHER_PRIVATE_KEY"], pem)
 
     # ---- 工作区 ----
@@ -259,6 +302,26 @@ class WebWorkspaceTest(unittest.TestCase):
         deleted = self.client.delete(f"/api/workspaces/{workspace['id']}").json()
         self.assertNotIn(workspace["id"], [item["id"] for item in deleted["workspaces"]])
 
+    def test_workspace_file_browser_api(self):
+        self.create_workspace()
+        (self.tmp / "README.md").write_text("# 标题\n\n正文", encoding="utf-8")
+        (self.tmp / "binary.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00")
+
+        listing = self.client.get("/api/workspace/files")
+        self.assertEqual(listing.status_code, 200)
+        paths = {item["path"] for item in listing.json()["entries"]}
+        self.assertIn("README.md", paths)
+
+        preview = self.client.get("/api/workspace/file", params={"path": "README.md"})
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.json()["kind"], "markdown")
+        self.assertIn("# 标题", preview.json()["content"])
+
+        unsupported = self.client.get("/api/workspace/file", params={"path": "binary.png"})
+        self.assertEqual(unsupported.status_code, 200)
+        self.assertFalse(unsupported.json()["supported"])
+        self.assertEqual(unsupported.json()["kind"], "unsupported")
+
     def test_delete_workspace_removes_its_sessions(self):
         from agents.context import SessionMeta
 
@@ -277,7 +340,8 @@ class WebWorkspaceTest(unittest.TestCase):
 
     # ---- 会话与对话 ----
     def test_chat_stream_events_and_history(self):
-        self.create_model()
+        self.create_provider()
+        self.create_workspace()
         session = self.client.post("/api/sessions", json={}).json()["session"]
         payload = {"session_id": session["id"], "message": "你好"}
 
@@ -315,6 +379,39 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertEqual(roles, ["user", "assistant"])
         self.assertEqual(history["messages"][1]["content"], "你好")
 
+    def test_chat_accepts_null_session_id(self):
+        """工作区里直接发送消息应自动创建会话，而不是要求先点新建。"""
+        self.create_provider()
+        workspace = self.create_workspace()
+        events: list[tuple[str, dict]] = []
+        with self.client.stream("POST", "/api/chat", json={
+            "session_id": None,
+            "message": "你好",
+        }) as response:
+            self.assertEqual(response.status_code, 200)
+            buffer = ""
+            for chunk in response.iter_text():
+                buffer += chunk
+                while "\n\n" in buffer:
+                    raw, buffer = buffer.split("\n\n", 1)
+                    event, data = "message", ""
+                    for line in raw.splitlines():
+                        if line.startswith("event:"):
+                            event = line[6:].strip()
+                        elif line.startswith("data:"):
+                            data += line[5:].strip()
+                    if data:
+                        events.append((event, json.loads(data)))
+        kinds = [kind for kind, _ in events]
+        self.assertIn("meta", kinds)
+        self.assertIn("done", kinds)
+        session_id = dict(events)["meta"]["session_id"]
+        self.assertTrue(session_id)
+        self.assertNotEqual(session_id, "default")
+        listed = self.client.get("/api/sessions").json()["sessions"]
+        created = next(item for item in listed if item["id"] == session_id)
+        self.assertEqual(created["workspace_id"], workspace["id"])
+
     def test_chat_rejects_empty_message(self):
         session = self.client.post("/api/sessions", json={}).json()["session"]
         response = self.client.post("/api/chat", json={"session_id": session["id"], "message": " "})
@@ -326,8 +423,9 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertEqual(self.client.get("/api/sessions").json()["sessions"], [])
 
     def test_chat_binds_session_to_workspace(self):
-        self.create_model()
-        workspace_id = self.client.get("/api/bootstrap").json()["active_workspace_id"]
+        self.create_provider()
+        workspace = self.create_workspace()
+        workspace_id = workspace["id"]
         session = self.client.post("/api/sessions", json={"workspace_id": workspace_id}).json()["session"]
         self.assertEqual(session["workspace_id"], workspace_id)
 
@@ -342,8 +440,8 @@ class WebWorkspaceTest(unittest.TestCase):
         listed = self.client.get("/api/sessions").json()["sessions"]
         self.assertEqual(listed[0]["workspace_id"], workspace_id)
 
-    # ---- 从上游导入模型 ----
-    def test_fetch_imports_all_upstream_models(self):
+    # ---- 从上游获取模型 ID ----
+    def test_fetch_returns_upstream_models_without_writing(self):
         class FakeResponse:
             def raise_for_status(self):
                 return None
@@ -366,21 +464,41 @@ class WebWorkspaceTest(unittest.TestCase):
             def get(url, headers=None):
                 return FakeResponse()
 
-        body = {"base_url": "https://example.test/v1", "api_key": "sk-upstream", "provider": "openai"}
+        provider = self.create_provider()
+        body = {
+            "provider_id": provider["id"],
+            "base_url": "https://example.test/v1",
+            "api_key": "",
+            "provider": "openai",
+        }
         with patch("web.server.httpx.Client", FakeClient):
-            first = self.client.post("/api/models/fetch", json=body).json()
-        self.assertEqual(first["added"], ["m-a", "m-b"])
-        self.assertEqual(first["skipped"], [])
+            data = self.client.post("/api/providers/fetch", json=body).json()
+        self.assertEqual(data["models"], ["m-a", "m-b"])
+        # 获取只是返回候选列表，不写库
+        providers = self.client.get("/api/providers").json()["providers"]
+        self.assertEqual(len(providers), 1)
+        self.assertEqual([item["model"] for item in providers[0]["models"]], ["gpt-test"])
 
-        imported = {item["model"] for item in self.client.get("/api/models").json()["models"]}
-        self.assertIn("m-a", imported)
-        self.assertIn("m-b", imported)
 
-        # 重复导入应全部跳过，不产生重复条目
-        with patch("web.server.httpx.Client", FakeClient):
-            second = self.client.post("/api/models/fetch", json=body).json()
-        self.assertEqual(second["added"], [])
-        self.assertEqual(second["skipped"], ["m-a", "m-b"])
+class CreateChatModelTest(unittest.TestCase):
+    def test_thinking_level_maps_to_reasoning_effort(self):
+        from config.store import ModelConfig
+        from web.runtime import create_chat_model
+
+        cfg = ModelConfig(
+            id="m",
+            name="m",
+            provider="openai",
+            model="gpt-test",
+            base_url="https://example.test/v1",
+            api_key="sk-test",
+            thinking="high",
+        )
+        model = create_chat_model(cfg)
+        self.assertEqual(model.reasoning_effort, "high")
+
+        cfg.thinking = "none"
+        self.assertIsNone(create_chat_model(cfg).reasoning_effort)
 
 
 if __name__ == "__main__":

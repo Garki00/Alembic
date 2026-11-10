@@ -49,7 +49,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
             :aria-selected="ui.settingsTab === 'models'"
             @click="ui.settingsTab = 'models'"
           >
-            模型
+            供应商
           </button>
           <button
             type="button"

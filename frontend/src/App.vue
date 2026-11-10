@@ -4,18 +4,21 @@ import AppSidebar from './components/AppSidebar.vue'
 import ChatComposer from './components/ChatComposer.vue'
 import ChatTopbar from './components/ChatTopbar.vue'
 import ChatTranscript from './components/ChatTranscript.vue'
+import InspectorSidebar from './components/InspectorSidebar.vue'
 import OnboardingModal from './components/OnboardingModal.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ToastHost from './components/ToastHost.vue'
 import WorkspaceModal from './components/WorkspaceModal.vue'
 import { errorMessage } from './api/client'
 import { useChatStore } from './stores/chat'
+import { useInspectorStore } from './stores/inspector'
 import { useUiStore } from './stores/ui'
 import { useWorkspaceStore } from './stores/workspace'
 
 const workspace = useWorkspaceStore()
 const chat = useChatStore()
 const ui = useUiStore()
+const inspector = useInspectorStore()
 
 const bootError = ref('')
 
@@ -37,6 +40,13 @@ async function initialize(): Promise<void> {
   bootError.value = ''
   try {
     await workspace.bootstrap()
+
+    if (!workspace.workspaces.length) {
+      chat.sessionId = null
+      chat.resetConversation()
+      applyDeepLink()
+      return
+    }
 
     const first = workspace.sessions[0]
     if (first) {
@@ -76,13 +86,21 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app" :class="{ 'sidebar-open': ui.sidebarOpen }">
+  <div
+    class="app"
+    :class="{ 'sidebar-open': ui.sidebarOpen, 'inspector-open': inspector.open }"
+    :style="{
+      '--sidebar-width': `${ui.sidebarWidth}px`,
+      '--inspector-width': `${inspector.width}px`,
+    }"
+  >
     <AppSidebar />
     <main class="main">
       <ChatTopbar />
       <ChatTranscript />
       <ChatComposer />
     </main>
+    <InspectorSidebar v-if="inspector.open" />
   </div>
 
   <div

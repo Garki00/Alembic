@@ -1,13 +1,15 @@
 import { defineStore } from 'pinia'
 import { api } from '../api/client'
 import type {
+  ActiveModelInfo,
   BootstrapData,
   BrowseResult,
   FetchModelsResponse,
-  ModelInfo,
-  ModelPayload,
   Preferences,
+  ProviderInfo,
+  ProviderPayload,
   SessionSummary,
+  ThinkingLevel,
   ToolInfo,
   WorkspaceInfo,
 } from '../api/types'
@@ -21,14 +23,16 @@ interface ToolUpdatePayload {
 const DEFAULT_PREFERENCES: Preferences = {
   transcript_view: 'detailed',
   collapse_timing: 'completion',
+  permission_mode: 'workspace_write',
   developer_tools: false,
 }
 
 export const useWorkspaceStore = defineStore('workspace', {
   state: () => ({
-    models: [] as ModelInfo[],
+    providers: [] as ProviderInfo[],
+    activeProviderId: '',
     activeModelId: '',
-    activeModel: null as ModelInfo | null,
+    activeModel: null as ActiveModelInfo | null,
     tools: [] as ToolInfo[],
     workspaces: [] as WorkspaceInfo[],
     activeWorkspaceId: '',
@@ -45,10 +49,14 @@ export const useWorkspaceStore = defineStore('workspace', {
         ?? null
     },
 
-    activeModelInfo(state): ModelInfo | null {
-      return state.models.find((item) => item.id === state.activeModelId)
-        ?? state.activeModel
+    activeProvider(state): ProviderInfo | null {
+      return state.providers.find((item) => item.id === state.activeProviderId)
+        ?? state.providers[0]
         ?? null
+    },
+
+    activeModelInfo(state): ActiveModelInfo | null {
+      return state.activeModel
     },
 
     sessionsOf(state) {
@@ -62,8 +70,9 @@ export const useWorkspaceStore = defineStore('workspace', {
   actions: {
     async bootstrap(): Promise<void> {
       const data = await api<BootstrapData>('/api/bootstrap')
-      this.models = data.models || []
-      this.activeModelId = data.active_id || ''
+      this.providers = data.providers || []
+      this.activeProviderId = data.active_provider_id || ''
+      this.activeModelId = data.active_model_id || ''
       this.activeModel = data.active_model || null
       this.tools = data.tools || []
       this.workspaces = data.workspaces || []
@@ -79,14 +88,29 @@ export const useWorkspaceStore = defineStore('workspace', {
       this.sessions = data.sessions || []
     },
 
-    async fetchModels(): Promise<void> {
-      const data = await api<{ models: ModelInfo[]; active_id: string }>('/api/models')
-      this.models = data.models || []
-      this.activeModelId = data.active_id || ''
-      this.activeModel = this.models.find((item) => item.id === this.activeModelId) ?? null
-      this.needsSetup = !this.models.some(
-        (model) => model.api_key_set && model.model && model.base_url,
+    applyProviders(data: {
+      providers: ProviderInfo[]
+      active_provider_id: string
+      active_model_id: string
+      active_model: ActiveModelInfo | null
+    }): void {
+      this.providers = data.providers || []
+      this.activeProviderId = data.active_provider_id || ''
+      this.activeModelId = data.active_model_id || ''
+      this.activeModel = data.active_model || null
+      this.needsSetup = !this.providers.some(
+        (provider) => provider.api_key_set && provider.base_url && provider.models.length,
       )
+    },
+
+    async fetchProviders(): Promise<void> {
+      const data = await api<{
+        providers: ProviderInfo[]
+        active_provider_id: string
+        active_model_id: string
+        active_model: ActiveModelInfo | null
+      }>('/api/providers')
+      this.applyProviders(data)
     },
 
     async createSession(workspaceId: string): Promise<SessionSummary> {
@@ -149,40 +173,69 @@ export const useWorkspaceStore = defineStore('workspace', {
       return api<BrowseResult>(`/api/workspaces/browse${query}`)
     },
 
-    async saveModel(payload: ModelPayload): Promise<ModelInfo> {
-      const data = await api<{ model: ModelInfo; active_id: string }>('/api/models', {
+    async saveProvider(payload: ProviderPayload): Promise<ProviderInfo> {
+      const data = await api<{
+        provider: ProviderInfo
+        providers: ProviderInfo[]
+        active_provider_id: string
+        active_model_id: string
+        active_model: ActiveModelInfo | null
+      }>('/api/providers', {
         method: 'POST',
         body: payload,
       })
-      this.activeModelId = data.active_id || this.activeModelId
-      await this.fetchModels()
-      return data.model
+      this.applyProviders(data)
+      return data.provider
     },
 
-    async deleteModel(modelId: string): Promise<void> {
-      await api(`/api/models/${encodeURIComponent(modelId)}`, { method: 'DELETE' })
-      await this.fetchModels()
+    async deleteProvider(providerId: string): Promise<void> {
+      const data = await api<{
+        providers: ProviderInfo[]
+        active_provider_id: string
+        active_model_id: string
+        active_model: ActiveModelInfo | null
+      }>(`/api/providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' })
+      this.applyProviders(data)
     },
 
-    async activateModel(modelId: string): Promise<void> {
-      await api(`/api/models/${encodeURIComponent(modelId)}/activate`, { method: 'POST' })
-      this.activeModelId = modelId
-      this.activeModel = this.models.find((item) => item.id === modelId) ?? this.activeModel
+    async activateModel(providerId: string, modelId: string): Promise<void> {
+      const data = await api<{
+        providers: ProviderInfo[]
+        active_provider_id: string
+        active_model_id: string
+        active_model: ActiveModelInfo | null
+      }>(`/api/providers/${encodeURIComponent(providerId)}/activate`, {
+        method: 'POST',
+        body: { model_id: modelId },
+      })
+      this.applyProviders(data)
     },
 
     async fetchUpstreamModels(payload: {
+      provider_id?: string
       base_url: string
       api_key: string
       provider: string
     }): Promise<FetchModelsResponse> {
-      const data = await api<FetchModelsResponse>('/api/models/fetch', {
+      return api<FetchModelsResponse>('/api/providers/fetch', {
         method: 'POST',
         body: payload,
       })
-      this.models = data.models || this.models
-      this.activeModelId = data.active_id || this.activeModelId
-      this.activeModel = this.models.find((item) => item.id === this.activeModelId) ?? null
-      return data
+    },
+
+    async setThinking(level: ThinkingLevel): Promise<void> {
+      const model = this.activeModel
+      if (!model) return
+      const data = await api<{
+        providers: ProviderInfo[]
+        active_provider_id: string
+        active_model_id: string
+        active_model: ActiveModelInfo | null
+      }>(`/api/providers/${encodeURIComponent(model.provider_id)}/models/${encodeURIComponent(model.id)}/thinking`, {
+        method: 'PATCH',
+        body: { thinking: level },
+      })
+      this.applyProviders(data)
     },
 
     async updateTool(name: string, payload: ToolUpdatePayload): Promise<void> {

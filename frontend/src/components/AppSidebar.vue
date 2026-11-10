@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { SessionSummary, WorkspaceInfo } from '../api/types'
+import { beginResize } from '../lib/resize'
 import WorkspaceGroup from './WorkspaceGroup.vue'
 import SunIcon from './SunIcon.vue'
 import { useUiStore } from '../stores/ui'
@@ -8,6 +9,10 @@ import { useWorkspaceStore } from '../stores/workspace'
 
 const ui = useUiStore()
 const workspace = useWorkspaceStore()
+
+function onResize(event: PointerEvent): void {
+  beginResize('left', event, (width) => ui.setSidebarWidth(width))
+}
 
 interface WorkspaceGroupView {
   workspace: WorkspaceInfo
@@ -91,5 +96,13 @@ const groups = computed<WorkspaceGroupView[]>(() => {
         </template>
       </nav>
     </div>
+    <div
+      class="sidebar-resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="调整左侧栏宽度"
+      title="拖动调整左侧栏宽度"
+      @pointerdown="onResize"
+    ></div>
   </aside>
 </template>

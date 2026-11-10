@@ -54,13 +54,14 @@ class WebQuestionTest(unittest.TestCase):
             runtime_factory=factory,
         )
         self.client = TestClient(self.app)
-        self.client.post("/api/models", json={
-            "name": "测试模型",
+        self.client.post("/api/providers", json={
             "provider": "openai",
-            "model": "gpt-test",
+            "name": "测试供应商",
             "base_url": "https://example.test/v1",
             "api_key": "sk-test",
+            "models": [{"model": "gpt-test", "thinking": "none"}],
         })
+        self.client.post("/api/workspaces", json={"path": str(self.tmp)})
 
     def test_question_event_then_answer(self):
         kinds: list[str] = []

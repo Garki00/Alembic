@@ -1,13 +1,11 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, ref } from 'vue'
+import type { CollapseTiming, ProviderPayload, TranscriptViewMode } from '../api/types'
 import { errorMessage } from '../api/client'
-import type { CollapseTiming, TranscriptViewMode } from '../api/types'
 import { COLLAPSE_TIMINGS, TRANSCRIPT_MODES } from '../lib/preferences'
-import { providerOf } from '../lib/providers'
 import { useUiStore } from '../stores/ui'
 import { useWorkspaceStore } from '../stores/workspace'
-import ProviderIcon from './ProviderIcon.vue'
-import ProviderPicker from './ProviderPicker.vue'
+import ProviderEditor from './ProviderEditor.vue'
 
 const store = useWorkspaceStore()
 const ui = useUiStore()
@@ -15,46 +13,18 @@ const ui = useUiStore()
 const step = ref<1 | 2>(1)
 const saving = ref(false)
 const error = ref('')
-
-const form = reactive({
-  provider: 'deepseek',
-  name: '',
-  model: '',
-  base_url: providerOf('deepseek').baseUrl,
-  api_key: '',
-  temperature: 0,
-})
+const editor = ref<{ validate: () => boolean; payload: () => ProviderPayload | null } | null>(null)
 
 const transcriptView = ref<TranscriptViewMode>(store.preferences.transcript_view)
 const collapseTiming = ref<CollapseTiming>(store.preferences.collapse_timing)
 
-const providerTemplate = computed(() => providerOf(form.provider))
-
-const canContinue = computed(() => (
-  Boolean(form.model.trim())
-  && Boolean(form.base_url.trim())
-  && Boolean(form.api_key.trim())
-))
-
 const stepTitle = computed(() => (
-  step.value === 1 ? '连接一个模型供应商' : '设置工作步骤展示'
+  step.value === 1 ? '供应商与模型' : '设置工作步骤展示'
 ))
-
-function chooseProvider(provider: string): void {
-  form.provider = provider
-  const next = providerOf(provider)
-  form.base_url = next.baseUrl
-  form.model = ''
-  form.name = ''
-}
-
-function pickExample(model: string): void {
-  form.model = model
-}
 
 function next(): void {
-  if (!canContinue.value) {
-    error.value = '请填写模型 ID、Base URL 和 API Key。'
+  if (!editor.value?.validate()) {
+    error.value = '请检查供应商、Base URL、API Key 与模型列表。'
     return
   }
   error.value = ''
@@ -67,24 +37,17 @@ function back(): void {
 }
 
 async function finish(): Promise<void> {
-  if (!canContinue.value) {
+  const payload = editor.value?.payload()
+  if (!payload) {
     step.value = 1
-    error.value = '请填写模型 ID、Base URL 和 API Key。'
+    error.value = '请检查供应商、Base URL、API Key 与模型列表。'
     return
   }
   saving.value = true
   error.value = ''
   try {
-    await store.saveModel({
-      id: null,
-      name: form.name.trim() || `${providerTemplate.value.short} · ${form.model.trim()}`,
-      provider: form.provider,
-      model: form.model.trim(),
-      base_url: form.base_url.trim(),
-      api_key: form.api_key.trim(),
-      temperature: Number(form.temperature) || 0,
-    })
-    // 模型保存成功就先关掉向导，避免偏好保存失败时重复创建模型
+    await store.saveProvider(payload)
+    // 供应商保存成功就先关掉向导，避免偏好保存失败时重复创建
     store.needsSetup = false
     try {
       await store.savePreferences({
@@ -92,7 +55,7 @@ async function finish(): Promise<void> {
         collapse_timing: collapseTiming.value,
       })
     } catch (err) {
-      ui.showToast(`模型已保存，但工作步骤偏好保存失败：${errorMessage(err)}`, true)
+      ui.showToast(`供应商已保存，但工作步骤偏好保存失败：${errorMessage(err)}`, true)
       return
     }
     ui.showToast('配置完成，开始使用吧')
@@ -111,80 +74,28 @@ async function finish(): Promise<void> {
         <div>
           <div class="eyebrow">WELCOME TO ALEMBIC</div>
           <h2 id="onboarding-title">先完成初始化</h2>
-          <p class="onboarding-sub">配置模型供应商后即可开始对话，密钥只保存在本机。</p>
+          <p class="onboarding-sub">配置一个供应商与模型后即可开始对话，密钥只保存在本机。</p>
         </div>
         <div class="onboarding-steps" aria-hidden="true">
-          <span :class="{ active: step === 1, done: step > 1 }">1 模型</span>
+          <span :class="{ active: step === 1, done: step > 1 }">1 供应商</span>
           <i></i>
           <span :class="{ active: step === 2 }">2 工作步骤</span>
         </div>
       </header>
 
       <div class="onboarding-body">
-        <section v-if="step === 1" class="onboarding-section">
+        <section v-show="step === 1" class="onboarding-section">
           <div class="onboarding-section-head">
-            <h3>模型供应商</h3>
-            <p class="muted">选择模板会自动填入 Base URL，也可以选「自定义供应商」手动填写。</p>
+            <h3>{{ stepTitle }}</h3>
+            <p class="muted">
+              选择供应商模板会自动填入 Base URL；一个供应商下可以添加多个模型，
+              每个模型可单独设置思考等级。
+            </p>
           </div>
-          <ProviderPicker :model-value="form.provider" @update:model-value="chooseProvider" />
-
-          <div class="onboarding-provider-hint">
-            <ProviderIcon :provider="form.provider" :size="28" />
-            <span>{{ providerTemplate.hint }}</span>
-          </div>
-
-          <div class="form-grid onboarding-form">
-            <label class="field">
-              <span>显示名称 <em class="muted">（可选）</em></span>
-              <input
-                v-model="form.name"
-                :placeholder="`例如：${providerTemplate.short} 主模型`"
-                autocomplete="off"
-              />
-            </label>
-            <label class="field">
-              <span>模型 ID <em class="req">*</em></span>
-              <input
-                v-model="form.model"
-                :placeholder="providerTemplate.modelPlaceholder"
-                autocomplete="off"
-              />
-            </label>
-            <label class="field span-2">
-              <span>Base URL <em class="req">*</em></span>
-              <input v-model="form.base_url" placeholder="https://api.example.com/v1" />
-            </label>
-            <label class="field span-2">
-              <span>API Key <em class="req">*</em></span>
-              <input
-                v-model="form.api_key"
-                type="password"
-                placeholder="sk-…"
-                autocomplete="new-password"
-              />
-            </label>
-            <label class="field">
-              <span>Temperature</span>
-              <input v-model.number="form.temperature" type="number" min="0" max="2" step="0.1" />
-            </label>
-            <div v-if="providerTemplate.modelExamples.length" class="field">
-              <span>常用模型</span>
-              <div class="provider-chips">
-                <button
-                  v-for="example in providerTemplate.modelExamples"
-                  :key="example"
-                  type="button"
-                  class="provider-chip"
-                  @click="pickExample(example)"
-                >
-                  {{ example }}
-                </button>
-              </div>
-            </div>
-          </div>
+          <ProviderEditor ref="editor" hide-actions />
         </section>
 
-        <section v-else class="onboarding-section">
+        <section v-show="step === 2" class="onboarding-section">
           <div class="onboarding-section-head">
             <h3>{{ stepTitle }}</h3>
             <p class="muted">这两项之后也可以在「设置 → 通用」里随时修改。</p>
@@ -247,7 +158,6 @@ async function finish(): Promise<void> {
             v-if="step === 1"
             type="button"
             class="btn-primary"
-            :disabled="!canContinue"
             @click="next"
           >
             继续

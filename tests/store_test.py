@@ -76,28 +76,81 @@ class ModelStoreTest(unittest.TestCase):
     def test_seed_is_empty_without_complete_env_config(self):
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "MODEL_NAME": ""}):
             store = ModelStore(self.path)
-            self.assertEqual(store.list(), [])
+            self.assertEqual(store.providers(), [])
             self.assertTrue(store.needs_setup())
 
     def test_seed_uses_env_only_when_key_and_model_exist(self):
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-test", "MODEL_NAME": "deepseek-chat"}):
             store = ModelStore(self.path)
-            models = store.list()
-            self.assertEqual(len(models), 1)
-            self.assertEqual(models[0].model, "deepseek-chat")
+            providers = store.providers()
+            self.assertEqual(len(providers), 1)
+            self.assertEqual(providers[0].models[0].model, "deepseek-chat")
             self.assertFalse(store.needs_setup())
 
     def test_needs_setup_requires_model_id(self):
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "MODEL_NAME": ""}):
             store = ModelStore(self.path)
-            store.upsert({
-                "name": "半配置",
+            store.upsert_provider({
                 "provider": "custom",
-                "model": "",
                 "base_url": "https://example.test/v1",
                 "api_key": "sk-test",
+                "models": [{"model": ""}],
             })
             self.assertTrue(store.needs_setup())
+
+    def test_provider_models_and_thinking_roundtrip(self):
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "MODEL_NAME": ""}):
+            store = ModelStore(self.path)
+            provider = store.upsert_provider({
+                "provider": "openai",
+                "name": "主力供应商",
+                "base_url": "https://example.test/v1",
+                "api_key": "sk-test",
+                "models": [
+                    {"model": "gpt-a", "thinking": "max"},
+                    {"model": "gpt-b", "thinking": "bogus"},
+                ],
+            })
+            self.assertEqual(
+                [item.thinking for item in provider.models],
+                ["max", "none"],
+            )
+            self.assertEqual(provider.models[0].thinking_levels, ["low", "high", "max"])
+            self.assertEqual(
+                provider.models[1].thinking_levels,
+                ["none", "low", "high", "max"],
+            )
+            self.assertEqual(store.active_model_id, provider.models[0].id)
+            self.assertEqual(store.active().thinking, "max")
+            self.assertTrue(store.set_thinking(
+                provider.id, provider.models[0].id, "low"
+            ))
+            self.assertEqual(store.active().thinking, "low")
+            self.assertFalse(store.set_thinking(
+                provider.id, provider.models[0].id, "bogus"
+            ))
+
+    def test_legacy_flat_models_are_migrated_to_one_provider(self):
+        self.path.write_text(json.dumps({
+            "models": [
+                {"id": "a", "name": "A", "provider": "deepseek", "model": "m-a",
+                 "base_url": "https://api.deepseek.com", "api_key": "sk", "temperature": 0},
+                {"id": "b", "name": "B", "provider": "deepseek", "model": "m-b",
+                 "base_url": "https://api.deepseek.com", "api_key": "sk", "temperature": 0},
+            ],
+            "active_id": "b",
+        }), encoding="utf-8")
+        store = ModelStore(self.path)
+        providers = store.providers()
+        self.assertEqual(len(providers), 1)
+        self.assertEqual([item.model for item in providers[0].models], ["m-a", "m-b"])
+        self.assertEqual(
+            providers[0].models[0].thinking_levels,
+            ["none", "low", "high", "max"],
+        )
+        self.assertEqual(store.active_model_id, "b")
+        saved = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertIn("providers", saved)
 
 
 class WorkspaceStoreTest(unittest.TestCase):
@@ -110,12 +163,12 @@ class WorkspaceStoreTest(unittest.TestCase):
         self.a.mkdir()
         self.b.mkdir()
 
-    def test_seed_has_default_workspace(self):
+    def test_seed_has_no_workspace(self):
+        """新安装不自动添加工作区，由用户自己选择目录。"""
         store = WorkspaceStore(self.path, default=self.a)
         state = store.state()
-        self.assertEqual(len(state["workspaces"]), 1)
-        self.assertEqual(Path(state["workspaces"][0]["path"]), self.a.resolve())
-        self.assertEqual(state["active_id"], state["workspaces"][0]["id"])
+        self.assertEqual(state["workspaces"], [])
+        self.assertEqual(state["active_id"], "")
 
     def test_legacy_format_is_migrated(self):
         """旧格式 current + recent 迁移成命名工作区列表。"""
@@ -136,6 +189,7 @@ class WorkspaceStoreTest(unittest.TestCase):
     def test_add_rename_activate_remove(self):
         store = WorkspaceStore(self.path, default=self.a)
 
+        first = store.add(str(self.a))
         workspace = store.add(str(self.b), "项目二")
         self.assertEqual(workspace.name, "项目二")
         self.assertEqual(store.active_id, workspace.id)
@@ -143,8 +197,8 @@ class WorkspaceStoreTest(unittest.TestCase):
         self.assertTrue(store.rename(workspace.id, "  改名了  "))
         self.assertEqual(store.get(workspace.id).name, "改名了")
 
-        self.assertTrue(store.set_active("ws-default"))
-        self.assertEqual(store.active().id, "ws-default")
+        self.assertTrue(store.set_active(first.id))
+        self.assertEqual(store.active().id, first.id)
 
         self.assertTrue(store.remove(workspace.id))
         self.assertIsNone(store.get(workspace.id))
@@ -152,14 +206,16 @@ class WorkspaceStoreTest(unittest.TestCase):
 
     def test_add_rejects_missing_and_duplicate(self):
         store = WorkspaceStore(self.path, default=self.a)
+        store.add(str(self.a))
         with self.assertRaises(ValueError):
-            store.add(str(self.a))  # 默认工作区就是 alpha
+            store.add(str(self.a))
         with self.assertRaises(ValueError):
             store.add("Z:/nope")
 
     def test_rename_rejects_empty(self):
         store = WorkspaceStore(self.path, default=self.a)
-        self.assertFalse(store.rename("ws-default", "   "))
+        workspace = store.add(str(self.a))
+        self.assertFalse(store.rename(workspace.id, "   "))
 
 
 if __name__ == "__main__":

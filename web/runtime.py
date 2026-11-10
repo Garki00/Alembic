@@ -54,6 +54,10 @@ def create_chat_model(model_cfg: ModelConfig):
         "temperature": model_cfg.temperature,
         "base_url": base_url,
     }
+    thinking = (model_cfg.thinking or "none").strip().lower()
+    if thinking in {"low", "high", "max"}:
+        # 供应商若不支持该参数会自行忽略或报错；none 表示不显式指定。
+        kwargs["reasoning_effort"] = thinking
 
     if provider == "deepseek":
         return ChatDeepSeek(**kwargs)

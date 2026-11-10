@@ -136,6 +136,7 @@ class WriteToolsTest(FilesTestBase):
     def test_write_creates_new_file_and_parents(self):
         text = self.write["write_file"].invoke({"path": "pkg/sub/new.txt", "content": "hi"})
         self.assertIn("已创建", text)
+        self.assertIn("变更：+1 -0", text)
         self.assertIn("校验：文件已存在", text)
         self.assertEqual((self.root / "pkg" / "sub" / "new.txt").read_text(encoding="utf-8"), "hi")
 
@@ -173,6 +174,7 @@ class WriteToolsTest(FilesTestBase):
             "path": "a.py", "old_string": "return 1", "new_string": "return 2",
         })
         self.assertIn("替换 1 处", text)
+        self.assertIn("变更：+1 -1", text)
         self.assertEqual(target.read_text(encoding="utf-8"), "def f():\n    return 2\n")
 
     def test_edit_file_requires_read(self):

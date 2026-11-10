@@ -10,6 +10,7 @@ const title = computed(() => {
   if (props.approval.risk === 'exec') {
     return props.approval.tool === 'stop_process' ? '需要确认 · 停止进程' : '需要确认 · 执行命令'
   }
+  if (props.approval.risk === 'read') return '需要确认 · 读取或调用工具'
   if (props.approval.tool === 'delete_file') return '需要确认 · 删除文件'
   if (['move_file', 'copy_file', 'make_dir'].includes(props.approval.tool)) {
     return '需要确认 · 整理文件'

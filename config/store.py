@@ -100,22 +100,125 @@ class _JsonFile:
 # ---------------------------------------------------------------------------
 # 模型
 # ---------------------------------------------------------------------------
+_THINKING_LEVELS = ("none", "low", "high", "max")
+_DEFAULT_THINKING_LEVELS = ["low", "high", "max"]
+
+
+def _thinking_level(value: Any) -> str:
+    text = str(value or "none").strip().lower()
+    return text if text in _THINKING_LEVELS else "none"
+
+
+def _sort_levels(values: Iterable[str]) -> list[str]:
+    chosen: list[str] = []
+    for value in values or ():
+        level = _thinking_level(value)
+        if level not in chosen:
+            chosen.append(level)
+    chosen.sort(key=_THINKING_LEVELS.index)
+    return chosen
+
+
+def _derive_thinking_levels(raw: Any, current: Any) -> tuple[list[str], str]:
+    """返回 (可选等级列表, 当前等级)。
+
+    旧数据没有 thinking_levels 时，默认 low/high/max；如果旧的当前等级
+    不在默认集合里（例如 none），把它补进去，避免升级后改变模型行为。
+    """
+    current_level = _thinking_level(current)
+    if isinstance(raw, list) and raw:
+        levels = _sort_levels(raw)
+        if not levels:
+            levels = list(_DEFAULT_THINKING_LEVELS)
+        if current_level not in levels:
+            current_level = levels[-1]
+        return levels, current_level
+    levels = list(_DEFAULT_THINKING_LEVELS)
+    if current_level not in levels:
+        levels = _sort_levels([*levels, current_level])
+    return levels, current_level
+
+
+def _slugify(text: str, fallback: str) -> str:
+    slug = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in str(text).lower())
+    return slug.strip("-")[:32] or fallback
+
+
+def _unique_id(taken: Iterable[str], base: str) -> str:
+    slug = _slugify(base, "item")
+    seen = {str(item) for item in taken if item}
+    candidate = slug
+    index = 2
+    while candidate in seen:
+        candidate = f"{slug}-{index}"
+        index += 1
+    return candidate
+
+
+@dataclass
+class ProviderModel:
+    """供应商下的一个模型条目。"""
+
+    id: str
+    model: str
+    name: str = ""
+    thinking: str = "high"
+    thinking_levels: list[str] = field(default_factory=lambda: list(_DEFAULT_THINKING_LEVELS))
+    temperature: float = 0.0
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "model": self.model,
+            "name": self.name,
+            "thinking": self.thinking,
+            "thinking_levels": list(self.thinking_levels),
+            "temperature": self.temperature,
+        }
+
+
+@dataclass
+class ProviderConfig:
+    """一个模型供应商（一组共用 Base URL / API Key 的模型）。"""
+
+    id: str
+    provider: str = "custom"
+    name: str = ""
+    base_url: str = ""
+    api_key: str = ""
+    models: list[ProviderModel] = field(default_factory=list)
+    updated_at: str = field(default_factory=_now)
+
+    def public(self) -> dict[str, Any]:
+        """对前端输出：不返回原始 API Key。"""
+        key = self.api_key or ""
+        return {
+            "id": self.id,
+            "provider": self.provider,
+            "name": self.name,
+            "base_url": self.base_url,
+            "api_key_set": bool(key),
+            "api_key_hint": _mask(key),
+            "models": [item.public() for item in self.models],
+            "updated_at": self.updated_at,
+        }
+
+
 @dataclass
 class ModelConfig:
-    """一个可切换的模型配置。
-
-    ``provider`` 是供应商标识（deepseek / openai / claude / qwen /
-    siliconflow / custom），只用于展示与默认 Base URL；实际调用走 OpenAI
-    兼容接口（Claude 使用 Anthropic 的 OpenAI 兼容端点）。
-    """
+    """当前激活模型的运行时视图（供应商配置 + 选中的模型）。"""
 
     id: str
     name: str
     provider: str = "custom"
+    provider_id: str = ""
+    provider_name: str = ""
     model: str = ""
     base_url: str = ""
     api_key: str = ""
     temperature: float = 0.0
+    thinking: str = "high"
+    thinking_levels: list[str] = field(default_factory=lambda: list(_DEFAULT_THINKING_LEVELS))
     updated_at: str = field(default_factory=_now)
 
     def public(self) -> dict[str, Any]:
@@ -123,104 +226,196 @@ class ModelConfig:
         data = asdict(self)
         key = data.pop("api_key", "") or ""
         data["api_key_set"] = bool(key)
-        data["api_key_hint"] = f"••••{key[-4:]}" if len(key) >= 4 else ("••••" if key else "")
+        data["api_key_hint"] = _mask(key)
         return data
 
 
 class ModelStore:
-    """模型列表与当前激活模型。"""
+    """供应商列表、每个供应商的模型列表，以及当前激活模型。"""
 
-    DEFAULT_ID = "deepseek-default"
+    SCHEMA_VERSION = 2
+    DEFAULT_PROVIDER_ID = "prov-deepseek"
+    DEFAULT_MODEL_ID = "deepseek-default"
 
     def __init__(self, path: str | Path | None = None) -> None:
         self.file = _JsonFile(path or settings.models_file)
 
     # ---- 读取 ----
-    def list(self) -> list[ModelConfig]:
+    def _load(self) -> dict[str, Any]:
         data = self.file.load(self._seed())
-        return [self._parse(item) for item in data.get("models", []) if item.get("id")]
+        if "providers" not in data:
+            data = self._migrate(data)
+            self.file.save(data)
+        return data
 
-    def get(self, model_id: str) -> ModelConfig | None:
-        for item in self.list():
-            if item.id == model_id:
-                return item
+    def providers(self) -> list[ProviderConfig]:
+        data = self._load()
+        return [
+            self._parse_provider(item)
+            for item in data.get("providers", [])
+            if isinstance(item, dict) and item.get("id")
+        ]
+
+    def get_provider(self, provider_id: str) -> ProviderConfig | None:
+        for provider in self.providers():
+            if provider.id == provider_id:
+                return provider
         return None
 
     @property
-    def active_id(self) -> str:
-        data = self.file.load(self._seed())
-        models = data.get("models", [])
-        active = data.get("active_id")
+    def active_provider_id(self) -> str:
+        data = self._load()
+        providers = data.get("providers", [])
+        active = data.get("active_provider_id")
+        if active and any(item.get("id") == active for item in providers):
+            return str(active)
+        return str(providers[0]["id"]) if providers else ""
+
+    @property
+    def active_model_id(self) -> str:
+        data = self._load()
+        provider_id = self.active_provider_id
+        provider = next(
+            (item for item in data.get("providers", []) if item.get("id") == provider_id),
+            None,
+        )
+        models = (provider or {}).get("models", [])
+        active = data.get("active_model_id")
         if active and any(item.get("id") == active for item in models):
-            return active
-        return models[0]["id"] if models else ""
+            return str(active)
+        return str(models[0]["id"]) if models else ""
 
     def active(self) -> ModelConfig | None:
-        model_id = self.active_id
-        return self.get(model_id) if model_id else None
+        provider_id = self.active_provider_id
+        model_id = self.active_model_id
+        if not provider_id or not model_id:
+            return None
+        provider = self.get_provider(provider_id)
+        if provider is None:
+            return None
+        model = next((item for item in provider.models if item.id == model_id), None)
+        if model is None:
+            return None
+        return ModelConfig(
+            id=model.id,
+            name=model.name or model.model,
+            provider=provider.provider,
+            provider_id=provider.id,
+            provider_name=provider.name,
+            model=model.model,
+            base_url=provider.base_url,
+            api_key=provider.api_key,
+            temperature=model.temperature,
+            thinking=model.thinking,
+            thinking_levels=list(model.thinking_levels),
+            updated_at=provider.updated_at,
+        )
 
     def needs_setup(self) -> bool:
-        """是否还没有一个可用的模型（初始化向导据此决定是否弹出）。"""
-        for model in self.list():
-            if (
-                model.api_key.strip()
-                and model.model.strip()
-                and model.base_url.strip()
-            ):
+        """是否还没有一个可用的供应商（Key + Base URL + 至少一个模型）。"""
+        for provider in self.providers():
+            if provider.api_key.strip() and provider.base_url.strip() and provider.models:
                 return False
         return True
 
     # ---- 写入 ----
-    def upsert(self, payload: dict[str, Any]) -> ModelConfig:
-        data = self.file.load(self._seed())
-        models: list[dict[str, Any]] = list(data.get("models", []))
-        model_id = (payload.get("id") or "").strip()
+    def upsert_provider(self, payload: dict[str, Any]) -> ProviderConfig:
+        data = self._load()
+        providers: list[dict[str, Any]] = list(data.get("providers", []))
+        provider_id = str(payload.get("id") or "").strip()
         existing: dict[str, Any] | None = None
-        if model_id:
-            existing = next((m for m in models if m.get("id") == model_id), None)
+        if provider_id:
+            existing = next((item for item in providers if item.get("id") == provider_id), None)
         if existing is None:
-            model_id = model_id or self._new_id(models, payload)
-            existing = {"id": model_id, "api_key": ""}
-            models.append(existing)
+            provider_id = provider_id or _unique_id(
+                (item.get("id") for item in providers),
+                f"prov-{payload.get('provider') or 'custom'}",
+            )
+            existing = {"id": provider_id, "api_key": ""}
+            providers.append(existing)
 
-        api_key = (payload.get("api_key") or "").strip()
+        api_key = str(payload.get("api_key") or "").strip()
         if not api_key:  # 留空表示沿用旧 Key
-            api_key = existing.get("api_key", "")
+            api_key = str(existing.get("api_key") or "")
+
+        raw_models = payload.get("models")
+        if raw_models is None:
+            models = list(existing.get("models", []))
+        else:
+            models = self._normalize_models(raw_models, existing.get("models", []))
 
         existing.update(
             {
-                "id": model_id,
-                "name": (payload.get("name") or existing.get("name") or model_id).strip(),
-                "provider": (payload.get("provider") or existing.get("provider") or "custom").strip(),
-                "model": (payload.get("model") or existing.get("model") or "").strip(),
-                "base_url": (payload.get("base_url") or "").strip(),
+                "id": provider_id,
+                "provider": str(payload.get("provider") or existing.get("provider") or "custom").strip(),
+                "name": str(payload.get("name") or "").strip(),
+                "base_url": str(payload.get("base_url") or "").strip(),
                 "api_key": api_key,
-                "temperature": float(payload.get("temperature") or 0),
+                "models": models,
                 "updated_at": _now(),
             }
         )
-        data["models"] = models
-        if not data.get("active_id"):
-            data["active_id"] = model_id
+        data["providers"] = providers
+        self._ensure_active(data)
         self.file.save(data)
-        return self._parse(existing)
+        return self._parse_provider(existing)
 
-    def delete(self, model_id: str) -> bool:
-        data = self.file.load(self._seed())
-        models = [item for item in data.get("models", []) if item.get("id") != model_id]
-        if len(models) == len(data.get("models", [])):
+    def delete_provider(self, provider_id: str) -> bool:
+        data = self._load()
+        providers = [item for item in data.get("providers", []) if item.get("id") != provider_id]
+        if len(providers) == len(data.get("providers", [])):
             return False
-        data["models"] = models
-        if data.get("active_id") == model_id:
-            data["active_id"] = models[0]["id"] if models else ""
+        data["providers"] = providers
+        if data.get("active_provider_id") == provider_id:
+            data["active_provider_id"] = ""
+            data["active_model_id"] = ""
+        self._ensure_active(data)
         self.file.save(data)
         return True
 
-    def set_active(self, model_id: str) -> bool:
-        data = self.file.load(self._seed())
-        if not any(item.get("id") == model_id for item in data.get("models", [])):
+    def set_active(self, provider_id: str, model_id: str = "") -> bool:
+        data = self._load()
+        provider = next(
+            (item for item in data.get("providers", []) if item.get("id") == provider_id),
+            None,
+        )
+        if provider is None:
             return False
-        data["active_id"] = model_id
+        models = provider.get("models", [])
+        if model_id and not any(item.get("id") == model_id for item in models):
+            return False
+        if not model_id:
+            model_id = str(models[0]["id"]) if models else ""
+        if not model_id:
+            return False
+        data["active_provider_id"] = provider_id
+        data["active_model_id"] = model_id
+        self.file.save(data)
+        return True
+
+    def set_thinking(self, provider_id: str, model_id: str, thinking: str) -> bool:
+        """只更新某个模型的当前推理等级（必须在它的可选等级里）。"""
+        data = self._load()
+        provider = next(
+            (item for item in data.get("providers", []) if item.get("id") == provider_id),
+            None,
+        )
+        if provider is None:
+            return False
+        model = next(
+            (item for item in provider.get("models", []) if item.get("id") == model_id),
+            None,
+        )
+        if model is None:
+            return False
+        levels, _current = _derive_thinking_levels(
+            model.get("thinking_levels"), model.get("thinking")
+        )
+        level = _thinking_level(thinking)
+        if level not in levels:
+            return False
+        model["thinking_levels"] = levels
+        model["thinking"] = level
         self.file.save(data)
         return True
 
@@ -228,57 +423,199 @@ class ModelStore:
         """首次运行时把默认配置落盘，便于用户直接编辑或备份。"""
         if not self.file.path.exists():
             self.file.save(self._seed())
+            return
+        self._load()
 
     # ---- 内部 ----
     def _seed(self) -> dict[str, Any]:
-        """首次运行时的空配置；只有显式配置了 Key 与模型名才自动建一条。
-
-        不再内置 ``deepseek-v4-flash`` 之类的默认模型名：新设备首次启动会走
-        网页初始化向导，由用户选择供应商并填写模型与密钥。
-        """
+        """首次运行时的空配置；只有显式配置了 Key 与模型名才自动建一条。"""
         key = os.getenv("DEEPSEEK_API_KEY", "").strip()
         model_name = os.getenv("MODEL_NAME", "").strip()
         if not (key and model_name):
-            return {"models": [], "active_id": ""}
+            return {
+                "version": self.SCHEMA_VERSION,
+                "providers": [],
+                "active_provider_id": "",
+                "active_model_id": "",
+            }
         base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip()
         return {
-            "models": [
+            "version": self.SCHEMA_VERSION,
+            "providers": [
                 {
-                    "id": self.DEFAULT_ID,
-                    "name": f"DeepSeek · {model_name}",
+                    "id": self.DEFAULT_PROVIDER_ID,
                     "provider": "deepseek",
-                    "model": model_name,
+                    "name": "",
                     "base_url": base_url,
                     "api_key": key,
-                    "temperature": 0,
+                    "models": [
+                        {
+                            "id": self.DEFAULT_MODEL_ID,
+                            "model": model_name,
+                            "name": "",
+                            "thinking": "high",
+                            "thinking_levels": list(_DEFAULT_THINKING_LEVELS),
+                            "temperature": 0,
+                        }
+                    ],
                     "updated_at": _now(),
                 }
             ],
-            "active_id": self.DEFAULT_ID,
+            "active_provider_id": self.DEFAULT_PROVIDER_ID,
+            "active_model_id": self.DEFAULT_MODEL_ID,
         }
 
-    def _new_id(self, models: Iterable[dict[str, Any]], payload: dict[str, Any]) -> str:
-        base = (payload.get("model") or payload.get("name") or "model").strip().lower()
-        slug = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in base)[:32].strip("-")
-        slug = slug or "model"
-        taken = {item.get("id") for item in models}
-        candidate = slug
-        index = 2
-        while candidate in taken:
-            candidate = f"{slug}-{index}"
-            index += 1
-        return candidate
+    def _migrate(self, data: dict[str, Any]) -> dict[str, Any]:
+        """把旧的「扁平模型列表」迁移成「供应商 + 模型列表」。"""
+        legacy = data.get("models") or []
+        groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for item in legacy:
+            if not isinstance(item, dict):
+                continue
+            provider = str(item.get("provider") or "custom").strip()
+            base_url = str(item.get("base_url") or "").strip()
+            api_key = str(item.get("api_key") or "")
+            groups.setdefault((provider, base_url, api_key), []).append(item)
+
+        providers: list[dict[str, Any]] = []
+        active_legacy = str(data.get("active_id") or "")
+        active_provider_id = ""
+        active_model_id = ""
+        for index, ((provider, base_url, api_key), items) in enumerate(groups.items(), 1):
+            provider_id = f"prov-{index}-{_slugify(provider, 'provider')}"
+            models: list[dict[str, Any]] = []
+            seen_models: set[str] = set()
+            for item in items:
+                model = str(item.get("model") or "").strip()
+                if not model or model in seen_models:
+                    continue
+                seen_models.add(model)
+                model_id = str(item.get("id") or "").strip() or _unique_id(
+                    (row["id"] for row in models), model
+                )
+                models.append(
+                    {
+                        "id": model_id,
+                        "model": model,
+                        "name": str(item.get("name") or "").strip(),
+                        "thinking": "none",
+                        "temperature": float(item.get("temperature") or 0),
+                    }
+                )
+            if not models:
+                continue
+            providers.append(
+                {
+                    "id": provider_id,
+                    "provider": provider,
+                    "name": "",
+                    "base_url": base_url,
+                    "api_key": api_key,
+                    "models": models,
+                    "updated_at": str(items[0].get("updated_at") or _now()),
+                }
+            )
+            if active_legacy and any(row["id"] == active_legacy for row in models):
+                active_provider_id = provider_id
+                active_model_id = active_legacy
+
+        if not active_provider_id and providers:
+            active_provider_id = str(providers[0]["id"])
+            active_model_id = str(providers[0]["models"][0]["id"])
+        return {
+            "version": self.SCHEMA_VERSION,
+            "providers": providers,
+            "active_provider_id": active_provider_id,
+            "active_model_id": active_model_id,
+        }
+
+    def _normalize_models(
+        self,
+        raw_models: Any,
+        existing_models: Any,
+    ) -> list[dict[str, Any]]:
+        existing = {
+            str(item.get("id")): item
+            for item in (existing_models or [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        result: list[dict[str, Any]] = []
+        seen_models: set[str] = set()
+        for item in raw_models or []:
+            if not isinstance(item, dict):
+                continue
+            model = str(item.get("model") or "").strip()
+            if not model or model in seen_models:
+                continue
+            seen_models.add(model)
+            model_id = str(item.get("id") or "").strip()
+            if not model_id or any(row.get("id") == model_id for row in result):
+                model_id = _unique_id((row.get("id", "") for row in result), model)
+            previous = existing.get(model_id, {})
+            raw_levels = item.get("thinking_levels")
+            if raw_levels is None:
+                raw_levels = previous.get("thinking_levels")
+            current = item.get("thinking", previous.get("thinking", "max"))
+            levels, current = _derive_thinking_levels(raw_levels, current)
+            result.append(
+                {
+                    "id": model_id,
+                    "model": model,
+                    "name": str(item.get("name") or previous.get("name") or "").strip(),
+                    "thinking": current,
+                    "thinking_levels": levels,
+                    "temperature": float(
+                        item.get("temperature", previous.get("temperature", 0)) or 0
+                    ),
+                }
+            )
+        return result
+
+    def _ensure_active(self, data: dict[str, Any]) -> None:
+        providers = data.get("providers", [])
+        provider = next(
+            (item for item in providers if item.get("id") == data.get("active_provider_id")),
+            None,
+        )
+        if provider is None or not provider.get("models"):
+            provider = next((item for item in providers if item.get("models")), None)
+            data["active_provider_id"] = provider["id"] if provider else ""
+        if provider is None:
+            data["active_model_id"] = ""
+            return
+        models = provider.get("models", [])
+        if not any(item.get("id") == data.get("active_model_id") for item in models):
+            data["active_model_id"] = models[0]["id"]
 
     @staticmethod
-    def _parse(item: dict[str, Any]) -> ModelConfig:
-        return ModelConfig(
+    def _parse_provider(item: dict[str, Any]) -> ProviderConfig:
+        models: list[ProviderModel] = []
+        for row in item.get("models", []):
+            if not isinstance(row, dict):
+                continue
+            model = str(row.get("model") or "").strip()
+            if not model:
+                continue
+            levels, current = _derive_thinking_levels(
+                row.get("thinking_levels"), row.get("thinking")
+            )
+            models.append(
+                ProviderModel(
+                    id=str(row.get("id") or model),
+                    model=model,
+                    name=str(row.get("name") or ""),
+                    thinking=current,
+                    thinking_levels=levels,
+                    temperature=float(row.get("temperature") or 0),
+                )
+            )
+        return ProviderConfig(
             id=str(item.get("id", "")),
-            name=str(item.get("name") or item.get("id", "")),
             provider=str(item.get("provider") or "custom"),
-            model=str(item.get("model") or ""),
+            name=str(item.get("name") or ""),
             base_url=str(item.get("base_url") or ""),
             api_key=str(item.get("api_key") or ""),
-            temperature=float(item.get("temperature") or 0),
+            models=models,
             updated_at=str(item.get("updated_at") or ""),
         )
 
@@ -658,12 +995,11 @@ class WorkspaceStore:
         return migrated
 
     def _seed(self) -> dict[str, Any]:
-        path = Path(self.default_path)
-        workspace = Workspace(id="ws-default", name=path.name or "workspace", path=str(path))
+        """新安装不自动添加工作区：由用户在界面上选择目录后再创建。"""
         return {
             "version": _WORKSPACE_SCHEMA_VERSION,
-            "active_id": workspace.id,
-            "workspaces": [workspace.public()],
+            "active_id": "",
+            "workspaces": [],
         }
 
 
@@ -672,8 +1008,10 @@ class WorkspaceStore:
 # ---------------------------------------------------------------------------
 TRANSCRIPT_VIEW_MODES = ("compact", "standard", "detailed", "verbose")
 COLLAPSE_TIMINGS = ("completion", "next_input")
+PERMISSION_MODES = ("read_only", "workspace_write", "full_access")
 DEFAULT_TRANSCRIPT_VIEW = "detailed"
 DEFAULT_COLLAPSE_TIMING = "completion"
+DEFAULT_PERMISSION_MODE = "workspace_write"
 
 
 def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -683,12 +1021,16 @@ def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
     timing = str(data.get("collapse_timing") or DEFAULT_COLLAPSE_TIMING).strip().lower()
     if timing not in COLLAPSE_TIMINGS:
         timing = DEFAULT_COLLAPSE_TIMING
+    permission = str(data.get("permission_mode") or DEFAULT_PERMISSION_MODE).strip().lower()
+    if permission not in PERMISSION_MODES:
+        permission = DEFAULT_PERMISSION_MODE
     developer = data.get("developer_tools", False)
     if isinstance(developer, str):
         developer = developer.strip().lower() in {"1", "true", "on", "yes"}
     return {
         "transcript_view": mode,
         "collapse_timing": timing,
+        "permission_mode": permission,
         "developer_tools": bool(developer),
     }
 
@@ -709,6 +1051,7 @@ class PreferencesStore:
                 {
                     "transcript_view": DEFAULT_TRANSCRIPT_VIEW,
                     "collapse_timing": DEFAULT_COLLAPSE_TIMING,
+                    "permission_mode": DEFAULT_PERMISSION_MODE,
                     "developer_tools": False,
                 }
             )
@@ -726,6 +1069,11 @@ class PreferencesStore:
             if timing not in COLLAPSE_TIMINGS:
                 raise ValueError("collapse_timing 只能是 completion / next_input")
             current["collapse_timing"] = timing
+        if "permission_mode" in patch:
+            permission = str(patch["permission_mode"]).strip().lower()
+            if permission not in PERMISSION_MODES:
+                raise ValueError("permission_mode 只能是 read_only / workspace_write / full_access")
+            current["permission_mode"] = permission
         if "developer_tools" in patch:
             value = patch["developer_tools"]
             current["developer_tools"] = value if isinstance(value, bool) else (

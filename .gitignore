@@ -48,6 +48,10 @@ npm-debug.log*
 .eslintcache
 .stylelintcache
 
+# Vite 本地覆盖（如 VITE_BACKEND_URL），不入库
+frontend/.env.local
+frontend/.env.*.local
+
 # ---------- 测试 / 覆盖率 ----------
 coverage/
 .nyc_output/

@@ -38,6 +38,12 @@ Context note:
 - A message shown as "Summary:" (or prefixed with "[Conversation summary]" / the
   legacy Chinese prefix "【历史对话摘要】") is a compressed summary of earlier
   turns. Treat it as confirmed context and continue from it.
+
+Response style:
+- Answer directly with the result and the evidence that supports it.
+- Do not use assistant filler such as "Sure", "I'd be happy to help", "As an AI",
+  "Let me know if you need anything else", or a closing paragraph that repeats the
+  answer. Do not announce what you are about to do; do it.
 """
 
 

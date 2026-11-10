@@ -8,26 +8,61 @@ export type ModelProvider =
   | 'siliconflow'
   | 'custom'
 
-export interface ModelInfo {
+export type ThinkingLevel = 'none' | 'low' | 'high' | 'max'
+
+export interface ProviderModelInfo {
+  id: string
+  model: string
+  name: string
+  thinking: ThinkingLevel
+  thinking_levels: ThinkingLevel[]
+  temperature: number
+}
+
+export interface ProviderInfo {
+  id: string
+  provider: ModelProvider | string
+  name: string
+  base_url: string
+  api_key_set: boolean
+  api_key_hint: string
+  models: ProviderModelInfo[]
+  updated_at: string
+}
+
+export interface ProviderModelPayload {
+  id?: string | null
+  model: string
+  name?: string
+  thinking: ThinkingLevel
+  thinking_levels: ThinkingLevel[]
+  temperature?: number
+}
+
+export interface ProviderPayload {
+  id?: string | null
+  provider: string
+  name: string
+  base_url: string
+  api_key: string
+  models: ProviderModelPayload[]
+}
+
+/** 当前激活模型的运行时视图（供应商配置 + 选中的模型）。 */
+export interface ActiveModelInfo {
   id: string
   name: string
-  provider: ModelProvider | string
+  provider: string
+  provider_id: string
+  provider_name: string
   model: string
   base_url: string
   temperature: number
+  thinking: ThinkingLevel
+  thinking_levels: ThinkingLevel[]
   updated_at: string
   api_key_set: boolean
   api_key_hint: string
-}
-
-export interface ModelPayload {
-  id?: string | null
-  name: string
-  provider: string
-  model: string
-  base_url: string
-  api_key: string
-  temperature: number
 }
 
 export type ToolFieldKind = 'text' | 'number' | 'select' | 'switch'
@@ -75,10 +110,36 @@ export interface SessionSummary {
   workspace_id: string
 }
 
+export interface WorkspaceEntry {
+  name: string
+  path: string
+  type: 'file' | 'dir'
+  size: number
+  mtime: string
+}
+
+export interface WorkspaceDirListing {
+  path: string
+  entries: WorkspaceEntry[]
+  truncated: boolean
+}
+
+export interface WorkspaceFilePreview {
+  path: string
+  name: string
+  size: number
+  supported: boolean
+  kind: 'text' | 'markdown' | 'unsupported'
+  content: string
+  truncated: boolean
+  reason?: string
+}
+
 export interface BootstrapData {
-  models: ModelInfo[]
-  active_id: string
-  active_model: ModelInfo | null
+  providers: ProviderInfo[]
+  active_provider_id: string
+  active_model_id: string
+  active_model: ActiveModelInfo | null
   needs_setup: boolean
   tools: ToolInfo[]
   workspaces: WorkspaceInfo[]
@@ -89,10 +150,12 @@ export interface BootstrapData {
 
 export type TranscriptViewMode = 'compact' | 'standard' | 'detailed' | 'verbose'
 export type CollapseTiming = 'completion' | 'next_input'
+export type PermissionMode = 'read_only' | 'workspace_write' | 'full_access'
 
 export interface Preferences {
   transcript_view: TranscriptViewMode
   collapse_timing: CollapseTiming
+  permission_mode: PermissionMode
   developer_tools: boolean
 }
 
@@ -119,11 +182,7 @@ export interface BrowseResult {
 
 export interface FetchModelsResponse {
   base_url: string
-  fetched: string[]
-  added: string[]
-  skipped: string[]
-  models: ModelInfo[]
-  active_id: string
+  models: string[]
 }
 
 export type ApprovalDecision = 'once' | 'always' | 'deny'

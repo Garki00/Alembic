@@ -15,6 +15,7 @@ from agents.approval import (
     console_asker,
     describe_call,
     gated_tools,
+    permission_tools,
 )
 
 
@@ -72,6 +73,19 @@ class GatingTest(unittest.TestCase):
     def test_disabled_tool_is_not_gated(self):
         gated = gated_tools({"file_read"})
         self.assertEqual(gated, {})
+
+    def test_permission_modes(self):
+        enabled = {"file_read", "file_write", "run_command"}
+        read_only = permission_tools(enabled, "read_only")
+        self.assertIn("read_file", read_only)
+        self.assertIn("write_file", read_only)
+        self.assertIn("run_command", read_only)
+
+        workspace = permission_tools(enabled, "workspace_write")
+        self.assertNotIn("write_file", workspace)
+        self.assertIn("run_command", workspace)
+
+        self.assertEqual(permission_tools(enabled, "full_access"), {})
 
 
 class PolicyTest(unittest.TestCase):

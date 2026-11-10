@@ -3,7 +3,7 @@
 > 给接手的智能体 / 开发者：先读这一份，再动代码。
 > 最后更新：2026-11-07，默认引擎改回 `tool_calling`（结构化工具调用），原生 ReAct
 > 文本循环保留为可选模式并做了协议硬化（stop 序列 / 严格单步解析 / 纠错重试）；
-> 295 个后端测试全绿。
+> 301 个后端测试全绿。
 
 ## 1. 这是什么
 
@@ -13,9 +13,10 @@
   **模型原生工具调用**（结构化 `tool_calls`，观测只能由运行时产生）；设置
   `AGENT_ENGINE=react` 可切到 `agents/react.py` 的文本 ReAct 循环（已硬化）。
   模型供应商支持深度求索 / OpenAI / Claude / 千问 / 硅基流动 / 自定义，统一走
-  OpenAI 兼容接口（Claude 走 Anthropic 兼容端点）；
-- 首次启动且没有可用模型时，前端显示**初始化向导**：选择带图标的供应商模板、
-  填模型 ID / Base URL / API Key，再设置工作步骤展示与收起时机；
+  OpenAI 兼容接口（Claude 走 Anthropic 兼容端点）；一个供应商下可挂多个模型，
+  每个模型有独立的可选推理等级集合（none/low/high/max）、当前等级与温度；
+- 首次启动且没有可用供应商时，前端显示**初始化向导**：选择带图标的供应商模板、
+  维护模型列表、填写 Base URL / API Key，再设置工作步骤展示与收起时机；
 - 前端：Vue 3.5 + Vite 7 + TypeScript + Pinia（`frontend/`）；
 - 两者通过 `/api` 通信：开发时前端跑 5173，后端跑 8000，Vite 代理 `/api`；
 - 后端**不再提供 HTML / 静态资源**，只提供 JSON 与 SSE；
@@ -46,7 +47,7 @@ cd frontend; npm run dev                             # http://127.0.0.1:5173
 验证：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 295 个测试
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 301 个测试
 cd frontend
 npm run build                                        # vue-tsc + vite build
 ```
@@ -86,7 +87,7 @@ tools/
   time.py weather.py mock.py
 web/
   __main__.py            自己 bind socket（支持 port=0）、写端口文件、ensure_storage、跑 uvicorn
-  server.py              只提供 /api：路由、SSE 对话、审批、工作区、模型导入、CORS
+  server.py              只提供 /api：路由、SSE 对话、审批、工作区、供应商、CORS
   auth.py                可选 token 中间件（Bearer / Cookie；放行 OPTIONS 与 /api/health）
   approvals.py           ApprovalRegistry / ApprovalBroker（SSE ↔ HTTP 回执）
   questions.py           QuestionRegistry / QuestionBroker（ask_user_question 的 SSE ↔ HTTP 回执）
@@ -102,10 +103,10 @@ frontend/
       client.ts          fetch 封装、鉴权头、错误信息
       chat.ts            POST /api/chat 的 SSE 解析
       types.ts           后端 snake_case 数据结构类型
-    components/          侧边栏、对话流、审批卡、问答卡、任务清单、工作步骤、代码工作视图、通用设置、输入区、设置、初始化向导、供应商图标/选择器、Toast
+    components/          侧边栏、对话流、审批卡、问答卡、任务清单、工作步骤、代码工作视图、通用设置、输入区、设置、初始化向导、供应商编辑器/图标/选择器、Toast
     lib/
       markdown.ts        轻量 Markdown 渲染（从旧 app.js 迁移，无第三方依赖）
-      providers.ts       ★ 供应商模板唯一事实来源：名称 / Base URL / 示例模型 / 图标
+      providers.ts       ★ 供应商模板唯一事实来源：名称 / Base URL / 图标
       preferences.ts     工作步骤展示与收起时机的选项（通用设置 + 初始化向导共用）
     stores/
       workspace.ts       Pinia：模型 / 工具 / 工作区 / 会话列表 / 通用设置与 CRUD
@@ -114,6 +115,7 @@ frontend/
     assets/main.css      设计系统（纸白 + 薄荷绿）
 scripts/
   dev.ps1 / dev.cmd      一键启动本地开发环境
+  reset-config.ps1/.cmd  清除 Alembic / SmartAgent 配置，重新查看初始化向导
 desktop/                 Electron 外壳（旧版，未适配 Vue 前端）
 packaging/               PyInstaller（已移除 web/static；桌面打包未适配）
 tests/                   *_test.py，全部离线（不调真实模型）
@@ -205,25 +207,45 @@ ReActAgent._gate_tool（tool_calling 模式则是 ApprovalMiddleware.wrap_tool_c
 
 ```
 App.vue onMounted
-  → GET /api/bootstrap → workspace store（models/tools/workspaces/sessions/preferences/needs_setup）
-  → needs_setup=true → 渲染 OnboardingModal（保存模型与偏好后关闭）
-  → 打开第一个会话 → GET /api/sessions/{id}/messages
+  → GET /api/bootstrap → workspace store（providers/tools/workspaces/sessions/preferences/needs_setup）
+  → needs_setup=true → 渲染 OnboardingModal（保存供应商与偏好后关闭）
+  → 没有工作区 → WelcomePanel 显示「选择工作区」，composer 隐藏
+  → 有工作区 → 打开第一个会话 → GET /api/sessions/{id}/messages
   → history 消息按「user 一轮 / assistant+tool 聚合」映射为 ChatTurn[]
   → 后续 POST /api/chat 的 SSE 事件直接改当前 assistant turn
 ```
 
-- `needs_setup` 由后端 `ModelStore.needs_setup()` 判定：没有「API Key + 模型 ID +
-  Base URL」齐全的模型时为 true；`/api/models` 增删后前端也会重算并自动弹出向导。
-- 供应商模板只在前端 `lib/providers.ts` 维护（名称、Base URL、示例模型、图标）；
-  设置 → 模型与初始化向导共用同一份，新增供应商只改这一处。
-- 前端保存模型时仍走 `POST /api/models`，后端只存 `provider` 字符串与 Base URL；
-  运行时在 `web/runtime.py` 里按 provider 决定 `ChatDeepSeek` / `ChatOpenAI`。
+- 数据单位是**供应商**：`providers[].models[]`，每个模型有 `thinking_levels`
+  （可多选）与当前 `thinking`（none/low/high/max），以及 temperature；
+  `active_provider_id` + `active_model_id` 指向当前模型。
+- 新安装**不自动创建工作区**：`WorkspaceStore._seed()` 返回空列表；前端
+  `App.initialize()` 在没有工作区时直接显示 `WelcomePanel` 的「选择工作区」按钮，
+  并隐藏输入框。添加工作区后才出现 composer。
+- `needs_setup` 由后端 `ModelStore.needs_setup()` 判定：没有「API Key + Base URL +
+  至少一个模型」齐全的供应商时为 true；供应商增删改后前端会重算并自动弹出向导。
+- 供应商模板只在前端 `lib/providers.ts` 维护（名称、Base URL、图标）；设置 → 供应商
+  与初始化向导共用 `ProviderEditor`，新增供应商只改这一处。
+- 前端保存供应商走 `POST /api/providers`（模型列表随供应商整包提交）；
+  激活模型走 `POST /api/providers/{id}/activate`；从上游获取走
+  `POST /api/providers/fetch`（只返回候选模型 ID，不写库）；
+  调整当前推理等级走 `PATCH /api/providers/{id}/models/{model_id}/thinking`。
+- `POST /api/chat` 的 `session_id` 为空/null 时由后端生成新会话 ID：在工作区里
+  直接输入发送即等于新建对话，不再要求先点左侧「＋」。
+- 运行时在 `web/runtime.py` 里按 provider 决定 `ChatDeepSeek` / `ChatOpenAI`，
+  当前 `thinking != none` 时映射为 `reasoning_effort`。
+- 旧的扁平 `models` 列表会在 `ModelStore._load()` 里自动迁移成供应商 + 模型列表。
 
 - 会话切换时 `chat.ts` 会递增内部 `activeStream`，旧流的回调不会污染新会话。
 - 左栏搜索同时匹配工作区名与对话标题；工作区名命中时展示该工作区全部对话。
 - 旧的会话没有 `workspace_id` 时，前端按「归到第一个工作区」显示（与后端兼容策略一致）。
 - 通用设置保存在 `data/preferences.json`，后端通过 `GET/PUT /api/preferences` 读写；
   前端 `workspace.preferences` 是唯一数据源，`WorkSteps` / `CodeWorkView` 只读它。
+- `permission_mode` 决定审批范围：`read_only` 全部工具、`workspace_write` 只审批
+  执行命令、`full_access` 不审批；服务端在每轮聊天开始时按它构造 `ApprovalGate`。
+- 审批 / 提问卡渲染在 `ChatComposer`，待处理时替换输入栏；助手消息只保留已处理结果。
+- 右侧边栏 `InspectorSidebar` 通过 `/api/workspace/files` 与 `/api/workspace/file`
+  浏览工作区；标签页最多 3 个。文件树、预览、浏览器都是独立组件。
+- 文件工具的返回值带 `变更：+N -M`，`TurnSummary` 据此在完成轮次后汇总修改文件。
 - `AssistantTurn.workEvents` 按发生顺序保存 `thought` 与 `tool` 事件；
   `tool_result` 按 `tool_call_id` 回填到对应工具事件，而不是单独堆在末尾。
 - `tool_result` 事件让工作步骤在流式期间就能显示结果；历史会话通过
@@ -274,14 +296,25 @@ App.vue onMounted
     单独堆在顶部；每行先给动作标签 + 一行摘要，详情按需展开。
 26. **工具返回的事实才算事实**：`write_file` 落盘后会 stat 校验，失败返回
     `write_unverified`；不要在提示词或前端里把模型的「已保存」当作写入成功的证据。
-27. **供应商模板只有一处**：前端 `lib/providers.ts`（名称 / Base URL / 示例模型 /
-    图标）。初始化向导与设置 → 模型都从它派生；后端只存 `provider` 字符串。
-    不要把供应商清单或 Base URL 再写进组件或后端。
-28. **首次初始化由 `needs_setup` 驱动**：没有「Key + 模型 ID + Base URL」齐全的
-    模型就显示向导；不要自动生成默认模型（`MODEL_NAME` 默认空）。
+27. **供应商模板只有一处**：前端 `lib/providers.ts`（名称 / Base URL / 图标）。
+    初始化向导与设置 → 供应商都从它派生；后端存供应商对象（Base URL + Key + 模型列表），
+    不要把供应商清单或 Base URL 再写进组件。
+28. **首次初始化由 `needs_setup` 驱动**：没有「Key + Base URL + 至少一个模型」齐全的
+    供应商就显示向导；不要自动生成默认模型（`MODEL_NAME` 默认空）。
 29. **实时天气默认关闭**：`get_weather.default_enabled=False`，API Host 没有默认值；
     tools 配置 v3 迁移会把旧配置里的 `get_weather` 关闭一次。启用前必须填写
     用户自己的 QWeather 凭据与 API Host。
+30. **模型属于供应商**：API/前端都以供应商为单位；模型列表、思考等级
+    （none/low/high/max）、温度在供应商编辑里维护。不要再增加独立的「导入单个模型」入口。
+31. **新安装没有默认工作区**：`WorkspaceStore._seed()` 必须保持空列表；前端在
+    `workspaces` 为空时显示「选择工作区」按钮并隐藏 composer，不能把仓库目录
+    自动当工作区。
+32. **直接发送即创建对话**：`/api/chat` 收到空/null `session_id` 时必须生成新的
+    `chat-*` 会话，而不是落到固定的 `default` 会话；工作区归属由请求里的
+    `workspace_id` 决定。
+33. **推理等级是可选集合 + 当前值**：`thinking_levels` 定义滑块吸附点，`thinking`
+    是当前档位；默认集合为 low/high/max（不含 none），当前值默认 high。设置里
+    多选集合，composer 的滑条只改当前值，二者都走供应商 API。
 
 ## 6. 环境坑（这台机器上真实踩过的）
 
@@ -347,12 +380,28 @@ App.vue onMounted
     `write_file` 落盘后 stat 校验；`ask_user_question` 超限改为报错而非静默截断；
     两条引擎都能派生 `thought` 工作步骤；测试从 284 增至 291。**
 13. **新设备初始化向导：供应商模板（带图标）— 深度求索 / OpenAI / Claude / 千问 /
-    硅基流动 / 自定义；设置 → 模型同步图标选择器；不再内置默认模型名，新增
+    硅基流动 / 自定义；设置 → 供应商同步图标选择器；不再内置默认模型名，新增
     `needs_setup`；实时天气默认关闭、API Host 无默认值；tests 从 291 增至 295。**
+14. **模型管理改为「供应商 + 模型列表」：一个供应商共用 Base URL/Key，模型列表
+    支持上游获取、单独思考等级（none/low/high/max）与温度；输入框模型切换先选
+    供应商再列该供应商的模型；初始化向导复用 `ProviderEditor`；旧扁平模型列表
+    自动迁移；tests 从 295 增至 298。**
+15. **新增 `scripts/reset-config.ps1/.cmd`：清理 Alembic / SmartAgent 配置与仓库
+    示例 data，默认保留 memory，支持 DryRun / Backup / IncludeSessions / Force，
+    方便重新查看初始化向导。**
+16. **修复初始化后首条消息的 422：`ChatPayload.session_id` 允许 null，后端生成
+    新的 chat-* 会话；前端 API 错误会展开 FastAPI 的 422 校验详情；tests 从
+    298 增至 299。**
+17. **新安装不自动建工作区；工作区里直接发送即创建对话；推理等级改为
+    「可选集合 + 当前值」：设置里多选（默认 low/high/max），composer 增加
+    推理按钮 + 可拖动吸附滑条；测试 299。**
+18. **审批/提问移到输入栏；右侧边栏支持工作区文件树、文件预览、内置浏览器与
+    最多 3 个标签页；对话内文件可点击预览；轮次结束显示修改文件与 +/- 行数；
+    通用设置加入只读 / 工作区内修改 / 完全权限三档；测试 301。**
 
 ## 10. 给接手者的建议顺序
 
-1. 跑一遍后端测试，确认 295 全绿；再 `cd frontend && npm run build`；
+1. 跑一遍后端测试，确认 301 全绿；再 `cd frontend && npm run build`；
 2. 读 `web/runtime.py`（默认 `create_agent`）、`agents/react.py`（可选文本 ReAct）、
    `tools/registry.py`、`web/server.py`、`agents/context.py`，够理解后端 85%；
 3. 读 `frontend/src/stores/chat.ts`、`frontend/src/api/chat.ts`、`frontend/src/App.vue`，

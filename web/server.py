@@ -26,10 +26,11 @@ from agents.approval import (
     VALID_DECISIONS,
     ApprovalGate,
     ApprovalPolicy,
-    gated_tools,
+    permission_tools,
 )
 from agents.context import ChatSession, SessionStore, message_text
 from config.settings import settings
+from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
 from config.store import (
     AppPaths,
     ModelStore,
@@ -50,20 +51,37 @@ from web.runtime import build_runtime
 # ---------------------------------------------------------------------------
 # 请求体
 # ---------------------------------------------------------------------------
-class ModelPayload(BaseModel):
+class ProviderModelPayload(BaseModel):
     id: str | None = None
-    name: str = ""
-    provider: str = "deepseek"
     model: str = ""
-    base_url: str = ""
-    api_key: str = ""
+    name: str = ""
+    thinking: str = "high"
+    thinking_levels: list[str] | None = None
     temperature: float = 0.0
 
 
-class FetchModelsPayload(BaseModel):
+class ProviderPayload(BaseModel):
+    id: str | None = None
+    provider: str = "custom"
+    name: str = ""
     base_url: str = ""
     api_key: str = ""
-    provider: str = "deepseek"
+    models: list[ProviderModelPayload] | None = None
+
+
+class ActivateModelPayload(BaseModel):
+    model_id: str = ""
+
+
+class ThinkingPayload(BaseModel):
+    thinking: str = "max"
+
+
+class FetchModelsPayload(BaseModel):
+    provider_id: str = ""
+    provider: str = "custom"
+    base_url: str = ""
+    api_key: str = ""
 
 
 class ToolPayload(BaseModel):
@@ -73,7 +91,7 @@ class ToolPayload(BaseModel):
 
 
 class ChatPayload(BaseModel):
-    session_id: str = "default"
+    session_id: str | None = "default"
     message: str
     workspace_id: str | None = None
     workspace: str | None = None  # 旧字段，仅用于兼容
@@ -104,6 +122,7 @@ class AnswerPayload(BaseModel):
 class PreferencesPayload(BaseModel):
     transcript_view: str | None = None
     collapse_timing: str | None = None
+    permission_mode: str | None = None
     developer_tools: bool | None = None
 
 
@@ -241,7 +260,7 @@ def create_app(
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "model": models.active_id, "time": datetime.now().isoformat(timespec="seconds")}
+        return {"ok": True, "model": models.active_model_id, "time": datetime.now().isoformat(timespec="seconds")}
 
     # ---- 初始化数据 ----
     @app.get("/api/bootstrap")
@@ -252,8 +271,9 @@ def create_app(
         workspaces.ensure_saved()
         active = models.active()
         return {
-            "models": [item.public() for item in models.list()],
-            "active_id": models.active_id,
+            "providers": [item.public() for item in models.providers()],
+            "active_provider_id": models.active_provider_id,
+            "active_model_id": models.active_model_id,
             "active_model": active.public() if active else None,
             "needs_setup": models.needs_setup(),
             "tools": tools.public(),
@@ -263,44 +283,68 @@ def create_app(
             "preferences": preferences.get(),
         }
 
-    # ---- 模型 ----
-    @app.get("/api/models")
-    def list_models():
-        return {"models": [item.public() for item in models.list()], "active_id": models.active_id}
+    # ---- 供应商与模型 ----
+    def _providers_payload() -> dict[str, Any]:
+        active = models.active()
+        return {
+            "providers": [item.public() for item in models.providers()],
+            "active_provider_id": models.active_provider_id,
+            "active_model_id": models.active_model_id,
+            "active_model": active.public() if active else None,
+        }
 
-    @app.post("/api/models")
-    def save_model(payload: ModelPayload):
-        if not payload.model and not payload.name:
-            raise HTTPException(400, "请至少填写模型名称")
-        saved = models.upsert(payload.model_dump())
-        return {"model": saved.public(), "active_id": models.active_id}
+    @app.get("/api/providers")
+    def list_providers():
+        return _providers_payload()
 
-    @app.delete("/api/models/{model_id}")
-    def delete_model(model_id: str):
-        if not models.delete(model_id):
-            raise HTTPException(404, "模型不存在")
-        return {"ok": True, "active_id": models.active_id}
+    @app.post("/api/providers")
+    def save_provider(payload: ProviderPayload):
+        existing = models.get_provider(payload.id) if payload.id else None
+        if not payload.base_url.strip():
+            raise HTTPException(400, "请填写 Base URL")
+        if not payload.api_key.strip() and existing is None:
+            raise HTTPException(400, "新建供应商需要填写 API Key")
+        if payload.models is not None and not any(
+            item.model.strip() for item in payload.models
+        ):
+            raise HTTPException(400, "请至少添加一个模型")
+        if payload.models is None and existing is None:
+            raise HTTPException(400, "请至少添加一个模型")
+        saved = models.upsert_provider(payload.model_dump())
+        return {"provider": saved.public(), **_providers_payload()}
 
-    @app.post("/api/models/{model_id}/activate")
-    def activate_model(model_id: str):
-        if not models.set_active(model_id):
-            raise HTTPException(404, "模型不存在")
-        return {"ok": True, "active_id": model_id}
+    @app.delete("/api/providers/{provider_id}")
+    def delete_provider(provider_id: str):
+        if not models.delete_provider(provider_id):
+            raise HTTPException(404, "供应商不存在")
+        return {"ok": True, **_providers_payload()}
 
-    @app.post("/api/models/fetch")
+    @app.post("/api/providers/{provider_id}/activate")
+    def activate_model(provider_id: str, payload: ActivateModelPayload):
+        if not models.set_active(provider_id, payload.model_id):
+            raise HTTPException(404, "供应商或模型不存在")
+        return {"ok": True, **_providers_payload()}
+
+    @app.patch("/api/providers/{provider_id}/models/{model_id}/thinking")
+    def set_model_thinking(provider_id: str, model_id: str, payload: ThinkingPayload):
+        if not models.set_thinking(provider_id, model_id, payload.thinking):
+            raise HTTPException(404, "供应商、模型或推理等级不存在")
+        return {"ok": True, **_providers_payload()}
+
+    @app.post("/api/providers/fetch")
     def fetch_models(payload: FetchModelsPayload):
-        """从上游拉取模型列表，并**全部**加入可选模型（已存在的跳过）。"""
-        base_url = (payload.base_url.strip()).rstrip("/")
+        """只从上游获取模型 ID 列表，不写库；由供应商编辑表单决定添加哪些。"""
+        base_url = payload.base_url.strip().rstrip("/")
+        api_key = payload.api_key.strip()
+        if not api_key and payload.provider_id:
+            provider = models.get_provider(payload.provider_id)
+            api_key = provider.api_key if provider else ""
         if not base_url:
             raise HTTPException(400, "请填写 Base URL")
-        api_key = payload.api_key.strip()
         if not api_key:
-            active = models.active()
-            api_key = active.api_key if active else ""
-        if not api_key:
-            raise HTTPException(400, "请先填写 API Key，或先配置一个可用模型")
+            raise HTTPException(400, "请先填写 API Key")
 
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        headers = {"Authorization": f"Bearer {api_key}"}
         url = base_url + "/models"
         try:
             with httpx.Client(timeout=20) as client:
@@ -323,34 +367,7 @@ def create_app(
             elif isinstance(item, str):
                 ids.add(item)
 
-        existing = {(item.base_url.rstrip("/"), item.model) for item in models.list()}
-        added: list[str] = []
-        skipped: list[str] = []
-        for model_id in sorted(ids):
-            if (base_url, model_id) in existing:
-                skipped.append(model_id)
-                continue
-            models.upsert(
-                {
-                    "name": model_id,
-                    "provider": payload.provider,
-                    "model": model_id,
-                    "base_url": base_url,
-                    "api_key": api_key,
-                    "temperature": 0,
-                }
-            )
-            added.append(model_id)
-            existing.add((base_url, model_id))
-
-        return {
-            "base_url": base_url,
-            "fetched": sorted(ids),
-            "added": added,
-            "skipped": skipped,
-            "models": [item.public() for item in models.list()],
-            "active_id": models.active_id,
-        }
+        return {"base_url": base_url, "models": sorted(ids)}
 
     # ---- 工具 ----
     @app.get("/api/tools")
@@ -441,6 +458,105 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    # ---- 工作区文件浏览（右侧边栏） ----
+    _SKIP_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".tmp", ".idea"}
+    _UNSUPPORTED_SUFFIXES = {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg",
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".zip", ".7z", ".rar", ".gz", ".tar", ".exe", ".dll", ".so",
+        ".woff", ".woff2", ".ttf", ".otf", ".mp3", ".mp4", ".mov",
+    }
+
+    def _workspace_root(workspace_id: str | None) -> Path:
+        _, root = resolve_workspace(workspace_id, None)
+        return Path(root)
+
+    @app.get("/api/workspace/files")
+    def list_workspace_files(path: str = "", workspace_id: str | None = None):
+        root = _workspace_root(workspace_id)
+        try:
+            target = resolve_in_workspace(root, path or ".")
+        except WorkspacePathError as exc:
+            raise HTTPException(400, exc.message) from exc
+        if not target.exists() or not target.is_dir():
+            raise HTTPException(404, "目录不存在")
+        entries = []
+        try:
+            children = sorted(
+                target.iterdir(),
+                key=lambda item: (not item.is_dir(), item.name.lower()),
+            )
+        except OSError as exc:
+            raise HTTPException(400, f"无法读取目录：{exc}") from exc
+        for child in children:
+            if child.is_dir() and child.name in _SKIP_DIRS:
+                continue
+            try:
+                stat = child.stat()
+            except OSError:
+                continue
+            entries.append({
+                "name": child.name,
+                "path": display_path(root, child),
+                "type": "dir" if child.is_dir() else "file",
+                "size": 0 if child.is_dir() else stat.st_size,
+                "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+            })
+            if len(entries) >= 500:
+                break
+        return {
+            "path": display_path(root, target),
+            "entries": entries,
+            "truncated": len(entries) >= 500,
+        }
+
+    @app.get("/api/workspace/file")
+    def read_workspace_file(path: str, workspace_id: str | None = None):
+        root = _workspace_root(workspace_id)
+        try:
+            target = resolve_in_workspace(root, path)
+        except WorkspacePathError as exc:
+            raise HTTPException(400, exc.message) from exc
+        if not target.exists() or not target.is_file():
+            raise HTTPException(404, "文件不存在")
+        try:
+            size = target.stat().st_size
+            with target.open("rb") as handle:
+                sample = handle.read(8192)
+        except OSError as exc:
+            raise HTTPException(400, f"无法读取文件：{exc}") from exc
+        suffix = target.suffix.lower()
+        binary = b"\x00" in sample or suffix in _UNSUPPORTED_SUFFIXES
+        name = target.name
+        markdown = suffix in {".md", ".markdown", ".mdx"} or name.lower().startswith("readme")
+        if binary:
+            return {
+                "path": display_path(root, target),
+                "name": name,
+                "size": size,
+                "supported": False,
+                "kind": "unsupported",
+                "content": "",
+                "truncated": False,
+                "reason": "该格式暂不支持预览",
+            }
+        limit = 400_000
+        try:
+            with target.open("r", encoding="utf-8", errors="replace") as handle:
+                content = handle.read(limit + 1)
+        except OSError as exc:
+            raise HTTPException(400, f"无法读取文件：{exc}") from exc
+        truncated = len(content) > limit or size > 2_000_000
+        return {
+            "path": display_path(root, target),
+            "name": name,
+            "size": size,
+            "supported": True,
+            "kind": "markdown" if markdown else "text",
+            "content": content[:limit],
+            "truncated": truncated,
+        }
+
     # ---- 会话 ----
     @app.get("/api/sessions")
     def list_sessions(workspace_id: str | None = None):
@@ -498,7 +614,8 @@ def create_app(
         if model_cfg is None:
             raise HTTPException(400, "还没有可用的模型，请先在设置里添加")
 
-        session_id = (payload.session_id or "").strip() or "default"
+        # 没有 session_id 时直接创建新会话：在工作区里直接输入发送即可开始对话。
+        session_id = (payload.session_id or "").strip() or _new_session_id()
         workspace_id, workspace = resolve_workspace(payload.workspace_id, payload.workspace)
 
         # 审批要在「流还在 yield」的时候等浏览器回执，所以把对话放进工作线程，
@@ -519,10 +636,14 @@ def create_app(
             timeout=settings.question_timeout,
         )
         gate: ApprovalGate | None = None
-        if settings.approval_enabled:
+        permission_mode = str(
+            preferences.get().get("permission_mode") or "workspace_write"
+        )
+        gated = permission_tools(tools.enabled_tools(), permission_mode)
+        if settings.approval_enabled and gated:
             memo = app.state.approval_memo.setdefault(session_id, {})
             gate = ApprovalGate(
-                policy=ApprovalPolicy(gated_tools(tools.enabled_tools()), memo),
+                policy=ApprovalPolicy(gated, memo),
                 ask=broker.ask,
             )
 

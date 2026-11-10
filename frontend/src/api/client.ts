@@ -56,6 +56,25 @@ export class ApiError extends Error {
   }
 }
 
+/** 把 FastAPI 的 detail（字符串或校验错误数组）转成可读文本。 */
+export function errorDetail(data: unknown): string {
+  if (!data || typeof data !== 'object') return ''
+  const detail = (data as { detail?: unknown }).detail
+  if (typeof detail === 'string') return detail
+  if (!Array.isArray(detail)) return ''
+  return detail
+    .map((item) => {
+      if (typeof item === 'string') return item
+      if (!item || typeof item !== 'object') return ''
+      const entry = item as { loc?: unknown; msg?: unknown }
+      const location = Array.isArray(entry.loc) ? entry.loc.join('.') : ''
+      const message = typeof entry.msg === 'string' ? entry.msg : ''
+      return location ? `${location}: ${message}` : message
+    })
+    .filter(Boolean)
+    .join('；')
+}
+
 interface ApiOptions extends Omit<RequestInit, 'body'> {
   body?: unknown
 }
@@ -79,7 +98,7 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
     let message = response.statusText || `HTTP ${response.status}`
     try {
       const data = await response.json()
-      if (data && typeof data.detail === 'string' && data.detail) message = data.detail
+      message = errorDetail(data) || message
     } catch (_) { /* 忽略非 JSON 错误体 */ }
     throw new ApiError(message, response.status)
   }

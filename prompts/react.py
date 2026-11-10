@@ -22,6 +22,9 @@ Rules:
 - Keep thoughts short and operational; they are shown to the user as progress.
   Never put secrets, API keys or private file contents in a Thought.
 - The final answer must be self-contained and written in the user's language.
+- No assistant filler ("Sure", "I'd be happy to help", "As an AI", "Let me know
+  if you need anything else"). Do not repeat the request or announce the answer;
+  state the result and evidence directly.
 """
 
 REACT_PROMPT_TEMPLATE = """You have access to these tools:

@@ -17,6 +17,7 @@ import re
 import shutil
 import threading
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from langchain.tools import tool
@@ -88,6 +89,19 @@ def _check_read(path: Path) -> tuple[str | None, bool]:
 
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _diff_stats(before: str, after: str) -> tuple[int, int]:
+    """按行统计新增 / 删除，用于对话结束后的修改摘要。"""
+    old_lines = before.splitlines()
+    new_lines = after.splitlines()
+    added = removed = 0
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, old_lines, new_lines).get_opcodes():
+        if tag in {"replace", "delete"}:
+            removed += i2 - i1
+        if tag in {"replace", "insert"}:
+            added += j2 - j1
+    return added, removed
 
 
 def _looks_binary(path: Path) -> bool:
@@ -399,11 +413,16 @@ def build_file_write_tools(ctx: ToolContext) -> list:
 
         existed = target.exists()
         partial_warning = False
+        old_text = ""
         if existed:
             error, partial = _check_read(target)
             if error:
                 return error
             partial_warning = partial
+            try:
+                old_text = _read_text(target)
+            except OSError:
+                old_text = ""
 
         payload = content.encode("utf-8")
         try:
@@ -429,9 +448,11 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         _mark_read(target, complete=True)
         action = "已覆盖" if existed else "已创建"
         lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+        added, removed = _diff_stats(old_text, content)
         result = [
             f"{action}：{display_path(ctx.workspace, target)}",
             f"行数：{lines}，字节数：{actual}",
+            f"变更：+{added} -{removed}",
             "校验：文件已存在，大小与写入内容一致。",
         ]
         if partial_warning:
@@ -507,7 +528,11 @@ def build_file_write_tools(ctx: ToolContext) -> list:
 
         _mark_read(target, complete=True)
         replaced = count if replace_all else 1
-        return f"已修改：{display_path(ctx.workspace, target)}，替换 {replaced} 处。"
+        added, removed = _diff_stats(text, updated)
+        return (
+            f"已修改：{display_path(ctx.workspace, target)}，替换 {replaced} 处。\n"
+            f"变更：+{added} -{removed}"
+        )
 
     @tool
     def make_dir(path: str) -> str:

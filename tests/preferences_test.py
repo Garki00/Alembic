@@ -33,6 +33,7 @@ class PreferencesStoreTest(unittest.TestCase):
             {
                 "transcript_view": "detailed",
                 "collapse_timing": "completion",
+                "permission_mode": "workspace_write",
                 "developer_tools": False,
             },
         )
@@ -42,10 +43,12 @@ class PreferencesStoreTest(unittest.TestCase):
             {
                 "transcript_view": "verbose",
                 "collapse_timing": "next_input",
+                "permission_mode": "full_access",
                 "developer_tools": True,
             }
         )
         self.assertEqual(updated["transcript_view"], "verbose")
+        self.assertEqual(updated["permission_mode"], "full_access")
         self.assertTrue(updated["developer_tools"])
 
         reopened = PreferencesStore(self.tmp / "preferences.json")
@@ -64,6 +67,8 @@ class PreferencesStoreTest(unittest.TestCase):
             self.store.update({"transcript_view": "huge"})
         with self.assertRaises(ValueError):
             self.store.update({"collapse_timing": "later"})
+        with self.assertRaises(ValueError):
+            self.store.update({"permission_mode": "root"})
 
 
 class PreferencesApiTest(unittest.TestCase):
@@ -77,6 +82,7 @@ class PreferencesApiTest(unittest.TestCase):
         data = self.client.get("/api/bootstrap").json()
         self.assertEqual(data["preferences"]["transcript_view"], "detailed")
         self.assertEqual(data["preferences"]["collapse_timing"], "completion")
+        self.assertEqual(data["preferences"]["permission_mode"], "workspace_write")
         self.assertFalse(data["preferences"]["developer_tools"])
 
     def test_get_and_put(self):

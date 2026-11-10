@@ -7,6 +7,7 @@ const emit = defineEmits<{ answer: [value: string] }>()
 
 const text = ref('')
 const resolved = computed(() => props.question.status !== 'pending')
+const title = computed(() => (props.question.options.length ? '请选择' : '请回答'))
 const canSubmit = computed(
   () => !resolved.value && !props.question.submitting && text.value.trim().length > 0,
 )
@@ -22,7 +23,7 @@ function submit(value: string): void {
 <template>
   <div class="question-card" :class="{ resolved }" :data-question-id="question.id">
     <div class="question-head">
-      <span class="question-title">需要你的输入</span>
+      <span class="question-title">{{ title }}</span>
     </div>
     <div class="question-text">{{ question.question }}</div>
 
@@ -62,7 +63,7 @@ function submit(value: string): void {
       已回答：{{ question.answer || '（空）' }}
     </div>
     <div v-else class="question-result">
-      等待超时，模型将按自己的假设继续
+      等待超时，已跳过
     </div>
   </div>
 </template>

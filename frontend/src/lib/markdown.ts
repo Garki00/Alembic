@@ -342,14 +342,27 @@ function mdEmphasis(text: string): string {
     .replace(/(^|[^_\w])_(?!\s)([^_\n]*[^\s_])_(?![_\w])/g, '$1<em>$2</em>')
 }
 
+function looksLikeFilePath(text: unknown, requireExtension = false): boolean {
+  const value = String(text || '').trim()
+  if (!value || /\s/.test(value) || /^https?:\/\//i.test(value)) return false
+  const base = value.replace(/\\/g, '/').split('/').pop() || ''
+  const hasExtension = /^[\w.-]+\.(?:md|markdown|txt|py|js|ts|tsx|jsx|vue|json|ya?ml|toml|css|html|sh|ps1|go|rs|java|c|cpp|h|sql|ini|env|log|csv)$/i.test(base)
+  if (requireExtension) return hasExtension
+  if (/[\\/]/.test(value)) return true
+  return hasExtension
+}
+
 function mdInline(text: string): string {
   const tokens: string[] = []
   const hold = (html: string) => `${MD_HOLD}${tokens.push(html) - 1}${MD_HOLD}`
 
   let out = escapeHtml(String(text))
 
-  // 行内代码
-  out = out.replace(/`([^`\n]+)`/g, (_match, code) => hold(`<code>${code}</code>`))
+  // 行内代码：像工作区文件路径的片段可点击预览
+  out = out.replace(/`([^`\n]+)`/g, (_match, code) => {
+    const file = looksLikeFilePath(code) ? ` data-file="${code}"` : ''
+    return hold(`<code${file}>${code}</code>`)
+  })
 
   // 图片
   out = out.replace(
@@ -361,8 +374,13 @@ function mdInline(text: string): string {
   out = out.replace(
     /\[([^\]]*)\]\(\s*((?:[^()\s]|\([^()\s]*\))+)(?:\s+&quot;.*?&quot;)?\s*\)/g,
     (match, label, url) => {
-      if (!mdSafeUrl(url, false)) return match
-      return hold(`<a href="${url}" target="_blank" rel="noopener noreferrer">${mdEmphasis(label)}</a>`)
+      if (mdSafeUrl(url, false)) {
+        return hold(`<a href="${url}" target="_blank" rel="noopener noreferrer">${mdEmphasis(label)}</a>`)
+      }
+      if (looksLikeFilePath(url)) {
+        return hold(`<a href="#" data-file="${url}">${mdEmphasis(label)}</a>`)
+      }
+      return match
     },
   )
 
@@ -380,6 +398,18 @@ function mdInline(text: string): string {
     if (!/^https?:\/\/[^/]/.test(href)) return match
     return `${prefix}${hold(`<a href="${href}" target="_blank" rel="noopener noreferrer">${href}</a>`)}${tail}`
   })
+
+  // 普通文本里的工作区路径也变成可点击预览
+  out = out.replace(
+    /(^|[\s(（])([^\s<>"'`，。；：！？、()（）[\]【】]+)(?=$|[\s)）.,;:!?，。；：！？、])/g,
+    (match, prefix, value) => {
+      const trailing = /[.,;:!?]+$/.exec(value)
+      const tail = trailing ? trailing[0] : ''
+      const path = tail ? value.slice(0, -tail.length) : value
+      if (!looksLikeFilePath(path, true)) return match
+      return `${prefix}${hold(`<a href="#" data-file="${path}">${path}</a>`)}${tail}`
+    },
+  )
 
   out = mdEmphasis(out)
 

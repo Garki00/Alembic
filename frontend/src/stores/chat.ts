@@ -140,6 +140,28 @@ export const useChatStore = defineStore('chat', {
     todos: [] as TodoItem[],
   }),
 
+  getters: {
+    pendingApproval(state): ChatApproval | null {
+      for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+        const turn = state.messages[index]
+        if (turn.kind !== 'assistant') continue
+        const found = turn.approvals.find((item) => item.status === 'pending')
+        if (found) return found
+      }
+      return null
+    },
+
+    pendingQuestion(state): ChatQuestion | null {
+      for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+        const turn = state.messages[index]
+        if (turn.kind !== 'assistant') continue
+        const found = turn.questions.find((item) => item.status === 'pending')
+        if (found) return found
+      }
+      return null
+    },
+  },
+
   actions: {
     bump(): void {
       this.streamTick += 1
@@ -212,6 +234,18 @@ export const useChatStore = defineStore('chat', {
           if (turn.kind === 'assistant' && !turn.stepsManual) turn.stepsOpen = false
         }
       }
+
+      // 在工作区里直接发送时，先真正创建一个会话，避免把 null 传给后端。
+      if (!this.sessionId && workspaceId) {
+        try {
+          const session = await workspace.createSession(workspaceId)
+          this.sessionId = session.id
+        } catch (error) {
+          ui.showToast(errorMessage(error), true)
+          return
+        }
+      }
+
       // 先把消息推进响应式数组，再从数组里取回代理对象；
       // 直接改 createAssistantTurn() 返回的原始对象不会触发 Vue 更新。
       this.messages.push(
@@ -250,7 +284,7 @@ export const useChatStore = defineStore('chat', {
       try {
         await streamChat(
           {
-            session_id: this.sessionId,
+            session_id: this.sessionId || undefined,
             message: text,
             workspace_id: workspaceId,
           },

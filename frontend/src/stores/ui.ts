@@ -2,11 +2,26 @@ import { defineStore } from 'pinia'
 
 export type SettingsTab = 'general' | 'models' | 'tools'
 
+export const SIDEBAR_WIDTH_KEY = 'alembic.sidebar-width'
+export const SIDEBAR_MIN = 220
+export const SIDEBAR_MAX = 420
+
+function storedWidth(key: string, fallback: number, min: number, max: number): number {
+  try {
+    const value = Number(window.localStorage.getItem(key))
+    if (!Number.isFinite(value)) return fallback
+    return Math.min(max, Math.max(min, value))
+  } catch (_) {
+    return fallback
+  }
+}
+
 let toastTimer: number | undefined
 
 export const useUiStore = defineStore('ui', {
   state: () => ({
     sidebarOpen: false,
+    sidebarWidth: storedWidth(SIDEBAR_WIDTH_KEY, 272, SIDEBAR_MIN, SIDEBAR_MAX),
     search: '',
     expanded: {} as Record<string, boolean>,
     settingsOpen: false,
@@ -21,6 +36,15 @@ export const useUiStore = defineStore('ui', {
   }),
 
   actions: {
+    setSidebarWidth(width: number): void {
+      this.sidebarWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(width)))
+      try {
+        window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(this.sidebarWidth))
+      } catch (_) {
+        // 隐私模式下 localStorage 可能不可用；缩放仍然生效
+      }
+    },
+
     isExpanded(workspaceId: string): boolean {
       return this.expanded[workspaceId] !== false
     },

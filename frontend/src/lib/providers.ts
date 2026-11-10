@@ -1,10 +1,12 @@
 /**
  * 模型供应商模板。
  *
- * 前端与供应商相关的展示（初始化向导、设置 → 模型）都从这里派生：
- * - baseUrl / modelPlaceholder / modelExamples 用于表单自动填充；
+ * 前端与供应商相关的展示（初始化向导、设置 → 供应商）都从这里派生：
+ * - baseUrl / hint 用于表单自动填充与说明；
+ * - modelPlaceholder / modelExamples 仅作为模板元数据保留，界面不再展示
+ *   「常用模型」选项；
  * - iconPaths 是 24×24 viewBox 的品牌图形（OpenAI / Anthropic / DeepSeek /
- *   Qwen / SiliconCloud 来自公开图标集，自定义供应商为通用滑块图形）；
+ *   Qwen / SiliconCloud 来自公开图标集，自定义供应商为通用描边图形）；
  * - 实际请求都走 OpenAI 兼容接口，Claude 使用 Anthropic 的兼容端点。
  */
 

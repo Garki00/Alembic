@@ -1,7 +1,7 @@
-import { ApiError, apiUrl, authHeaders } from './client'
+import { ApiError, apiUrl, authHeaders, errorDetail } from './client'
 
 export interface ChatPayload {
-  session_id: string | null
+  session_id?: string | null
   message: string
   workspace_id?: string
 }
@@ -23,7 +23,7 @@ export async function streamChat(
     },
     credentials: 'include',
     body: JSON.stringify({
-      session_id: payload.session_id,
+      session_id: payload.session_id || undefined,
       message: payload.message,
       workspace_id: payload.workspace_id || undefined,
     }),
@@ -34,7 +34,7 @@ export async function streamChat(
     let message = response.statusText || `HTTP ${response.status}`
     try {
       const data = await response.json()
-      if (data && typeof data.detail === 'string' && data.detail) message = data.detail
+      message = errorDetail(data) || message
     } catch (_) { /* 忽略非 JSON 错误体 */ }
     throw new ApiError(message, response.status)
   }

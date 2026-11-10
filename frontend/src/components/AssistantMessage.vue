@@ -1,30 +1,54 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { ApprovalDecision } from '../api/types'
 import { renderMarkdown } from '../lib/markdown'
-import type { AssistantTurn } from '../types/chat'
-import { useChatStore } from '../stores/chat'
+import { useInspectorStore } from '../stores/inspector'
+import type { AssistantTurn, ChatApproval, ChatQuestion } from '../types/chat'
 import { useWorkspaceStore } from '../stores/workspace'
-import ApprovalCard from './ApprovalCard.vue'
 import CodeWorkView from './CodeWorkView.vue'
-import QuestionCard from './QuestionCard.vue'
 import SunIcon from './SunIcon.vue'
+import TurnSummary from './TurnSummary.vue'
 import WorkSteps from './WorkSteps.vue'
 
 const props = defineProps<{ turn: AssistantTurn }>()
-const chat = useChatStore()
 const workspace = useWorkspaceStore()
+const inspector = useInspectorStore()
 
 const html = computed(() => renderMarkdown(props.turn.content))
+const resolvedApprovals = computed(
+  () => props.turn.approvals.filter((item) => item.status !== 'pending'),
+)
+const resolvedQuestions = computed(
+  () => props.turn.questions.filter((item) => item.status !== 'pending'),
+)
 
-function decide(approvalId: string, decision: ApprovalDecision): void {
-  const approval = props.turn.approvals.find((item) => item.id === approvalId)
-  if (approval) void chat.decideApproval(approval, decision)
+function approvalResult(approval: ChatApproval): string {
+  switch (approval.status) {
+    case 'always':
+      return '已允许，本会话内同类操作不再询问'
+    case 'once':
+      return '已允许本次'
+    case 'denied':
+      return '已拒绝，工具未执行'
+    case 'expired':
+      return '等待超时，已按拒绝处理'
+    default:
+      return ''
+  }
 }
 
-function answer(questionId: string, value: string): void {
-  const question = props.turn.questions.find((item) => item.id === questionId)
-  if (question) void chat.answerQuestion(question, value)
+function questionResult(question: ChatQuestion): string {
+  if (question.status === 'answered') return `已回答：${question.answer || '（空）'}`
+  if (question.status === 'expired') return '提问超时，已跳过'
+  return ''
+}
+
+function openFileLink(event: MouseEvent): void {
+  const target = event.target as HTMLElement | null
+  const element = target?.closest<HTMLElement>('[data-file]')
+  const path = element?.dataset.file
+  if (!path) return
+  event.preventDefault()
+  inspector.openFile(path)
 }
 </script>
 
@@ -34,23 +58,26 @@ function answer(questionId: string, value: string): void {
     <div class="content">
       <WorkSteps :turn="turn" />
 
-      <ApprovalCard
-        v-for="approval in turn.approvals"
+      <div
+        v-for="approval in resolvedApprovals"
         :key="approval.id"
-        :approval="approval"
-        @decide="decide(approval.id, $event)"
-      />
+        class="decision-note"
+      >
+        审批结果：{{ approvalResult(approval) }}
+      </div>
 
-      <QuestionCard
-        v-for="question in turn.questions"
+      <div
+        v-for="question in resolvedQuestions"
         :key="question.id"
-        :question="question"
-        @answer="answer(question.id, $event)"
-      />
+        class="decision-note"
+      >
+        {{ questionResult(question) }}
+      </div>
 
       <CodeWorkView v-if="workspace.preferences.developer_tools" :turn="turn" />
 
-      <div class="prose" v-html="html"></div>
+      <div class="prose" v-html="html" @click="openFileLink"></div>
+      <TurnSummary :turn="turn" />
       <div v-if="turn.error" class="error-note">{{ turn.error }}</div>
     </div>
   </div>

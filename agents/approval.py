@@ -29,7 +29,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
 from tools.errors import tool_error
-from tools.registry import RISK_EXEC, RISK_WRITE, TOOL_SPECS
+from tools.registry import RISK_EXEC, RISK_READ, RISK_WRITE, TOOL_SPECS
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +129,26 @@ def gated_tools(enabled: set[str] | None = None) -> dict[str, str]:
         if name not in names:
             continue
         if spec.risk not in {RISK_WRITE, RISK_EXEC}:
+            continue
+        for tool_name in spec.tool_names:
+            gated[tool_name] = spec.risk
+    return gated
+
+
+def permission_tools(enabled: set[str] | None, mode: str) -> dict[str, str]:
+    """权限模式 → 需要审批的工具。
+
+    - ``read_only``：所有工具都要人确认（用户明确要求最严格模式）；
+    - ``workspace_write``：默认；只对执行命令类工具审批，工作区内写文件免审批；
+    - ``full_access``：完全不审批。
+    """
+    if mode == "full_access":
+        return {}
+    names = set(TOOL_SPECS) if enabled is None else set(enabled)
+    allowed_risks = {RISK_EXEC} if mode == "workspace_write" else {RISK_READ, RISK_WRITE, RISK_EXEC}
+    gated: dict[str, str] = {}
+    for name, spec in TOOL_SPECS.items():
+        if name not in names or spec.risk not in allowed_risks:
             continue
         for tool_name in spec.tool_names:
             gated[tool_name] = spec.risk
