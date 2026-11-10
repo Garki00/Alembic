@@ -1,7 +1,7 @@
 // lib/diff.ts
 // 轻量的行级 diff 与 unified diff 解析：文件查看器、变更总结和悬停预览共用。
 
-export type DiffRowType = 'context' | 'add' | 'remove'
+export type DiffRowType = 'context' | 'add' | 'remove' | 'gap'
 
 export interface DiffRow {
   type: DiffRowType
@@ -146,6 +146,46 @@ export function diffStats(rows: DiffRow[]): { added: number; removed: number } {
     else if (row.type === 'remove') removed += 1
   }
   return { added, removed }
+}
+
+/**
+ * Collapse long unchanged runs while retaining context around each change.
+ * A synthetic gap row keeps the skipped range visible without rendering it.
+ */
+export function collapseDiffContext(rows: DiffRow[], contextLines = 3): DiffRow[] {
+  if (!rows.length) return []
+  const keep = Math.max(0, contextLines)
+  const collapseAbove = keep * 2 + 1
+  const collapsed: DiffRow[] = []
+  let index = 0
+
+  while (index < rows.length) {
+    if (rows[index].type !== 'context') {
+      collapsed.push(rows[index])
+      index += 1
+      continue
+    }
+
+    const start = index
+    while (index < rows.length && rows[index].type === 'context') index += 1
+    const run = rows.slice(start, index)
+    if (run.length <= collapseAbove) {
+      collapsed.push(...run)
+      continue
+    }
+
+    collapsed.push(...run.slice(0, keep))
+    const skipped = run.length - keep * 2
+    collapsed.push({
+      type: 'gap',
+      oldLine: null,
+      newLine: null,
+      text: `略过 ${skipped} 行未改动内容`,
+    })
+    collapsed.push(...run.slice(run.length - keep))
+  }
+
+  return collapsed
 }
 
 function cleanPatchPath(raw: string): string {

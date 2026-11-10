@@ -6,6 +6,8 @@ export interface FilesTab {
   id: string
   kind: 'files'
   title: string
+  /** 是否由用户主动创建（点加号）vs 程序打开 */
+  userCreated?: boolean
 }
 
 export interface FileTab {
@@ -15,6 +17,8 @@ export interface FileTab {
   path: string
   /** 从变更总结打开时携带的本轮 diff；普通浏览文件时为 undefined。 */
   diff?: FileDiff
+  /** 是否由用户主动创建（点加号）vs 程序打开 */
+  userCreated?: boolean
 }
 
 export interface BrowserTab {
@@ -22,6 +26,8 @@ export interface BrowserTab {
   kind: 'browser'
   title: string
   url: string
+  /** 是否由用户主动创建（点加号）vs 程序打开 */
+  userCreated?: boolean
 }
 
 export type InspectorTab = FilesTab | FileTab | BrowserTab
@@ -80,8 +86,12 @@ export const useInspectorStore = defineStore('inspector', {
     activeTab(state): InspectorTab | null {
       return state.tabs.find((tab) => tab.id === state.activeId) || null
     },
-    canAddTab(state): boolean {
-      return state.tabs.length < 3
+    // 只计算用户主动创建的标签页（点加号创建），不计算程序打开的文件链接
+    userCreatedTabCount(state): number {
+      return state.tabs.filter((tab) => tab.userCreated !== false).length
+    },
+    canAddTab(): boolean {
+      return this.userCreatedTabCount < 3
     },
   },
 
@@ -111,11 +121,24 @@ export const useInspectorStore = defineStore('inspector', {
       if (this.tabs.some((tab) => tab.id === id)) this.activeId = id
     },
 
-    addTab(tab: InspectorTab): boolean {
-      if (this.tabs.length >= 3) {
-        useUiStore().showToast('最多打开 3 个标签页', true)
+    addTab(tab: InspectorTab, userCreated = true): boolean {
+      // 如果超过总数限制，拒绝
+      if (this.tabs.length >= 10) {
+        useUiStore().showToast('标签页数量已达上限', true)
         return false
       }
+
+      // 如果是用户创建的标签页，检查用户创建数量限制
+      if (userCreated && this.userCreatedTabCount >= 3) {
+        useUiStore().showToast('最多打开 3 个标签页（从链接打开的文件不计入限制）', true)
+        return false
+      }
+
+      // 添加 userCreated 标记
+      if (typeof tab === 'object') {
+        tab.userCreated = userCreated
+      }
+
       this.tabs.push(tab)
       this.activeId = tab.id
       this.open = true
@@ -129,7 +152,7 @@ export const useInspectorStore = defineStore('inspector', {
         this.open = true
         return
       }
-      this.addTab({ id: tabId('files'), kind: 'files', title: '工作区文件' })
+      this.addTab({ id: tabId('files'), kind: 'files', title: '工作区文件' }, true)
     },
 
     openFile(path: string, diff?: FileDiff): void {
@@ -142,23 +165,30 @@ export const useInspectorStore = defineStore('inspector', {
         this.open = true
         return
       }
-      this.addTab({
-        id: tabId('file'),
-        kind: 'file',
-        title: baseName(clean),
-        path: clean,
-        diff,
-      })
+      // 从链接打开的文件不计入用户创建的标签页限制
+      this.addTab(
+        {
+          id: tabId('file'),
+          kind: 'file',
+          title: baseName(clean),
+          path: clean,
+          diff,
+        },
+        false, // userCreated = false
+      )
     },
 
     openBrowser(url = ''): void {
       const target = normalizeBrowserUrl(url)
-      this.addTab({
-        id: tabId('browser'),
-        kind: 'browser',
-        title: browserTitle(target),
-        url: target,
-      })
+      this.addTab(
+        {
+          id: tabId('browser'),
+          kind: 'browser',
+          title: browserTitle(target),
+          url: target,
+        },
+        true, // userCreated = true (手动打开浏览器)
+      )
     },
 
     updateBrowser(id: string, url: string): void {

@@ -1,6 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { diffLines, parsePatch, type DiffRow, type FileDiff } from '../lib/diff'
+import { computed, onBeforeUnmount, ref } from 'vue'
+import {
+  collapseDiffContext,
+  diffLines,
+  parsePatch,
+  type DiffRow,
+  type FileDiff,
+} from '../lib/diff'
 import { useInspectorStore } from '../stores/inspector'
 import type { AssistantTurn } from '../types/chat'
 import DiffView from './DiffView.vue'
@@ -95,6 +101,8 @@ const totalAdded = computed(() => changes.value.reduce((sum, item) => sum + item
 const totalRemoved = computed(() => changes.value.reduce((sum, item) => sum + item.removed, 0))
 
 const hover = ref<HoverState | null>(null)
+const HOVER_HIDE_DELAY = 220
+let hideTimer: ReturnType<typeof setTimeout> | null = null
 
 function previewRows(change: FileChange): DiffRow[] {
   const diff = change.diff
@@ -102,17 +110,20 @@ function previewRows(change: FileChange): DiffRow[] {
   if (diff.patch) {
     const parsed = parsePatch(diff.patch)
     const match = parsed.find((item) => item.path === diff.path) || parsed[0]
-    return match ? match.rows : []
+    return collapseDiffContext(match ? match.rows : [])
   }
-  return diffLines(diff.before || '', diff.after || '')
+  return collapseDiffContext(diffLines(diff.before || '', diff.after || ''))
 }
 
 function open(change: FileChange): void {
+  cancelHide()
+  hover.value = null
   inspector.openFile(change.path, change.diff)
 }
 
 function showHover(change: FileChange, event: Event): void {
   if (!change.diff) return
+  cancelHide()
   const element = event.currentTarget as HTMLElement | null
   if (!element) return
   const rect = element.getBoundingClientRect()
@@ -121,18 +132,35 @@ function showHover(change: FileChange, event: Event): void {
   const estimated = 260
   const top = rect.bottom + estimated + 16 > window.innerHeight
     ? Math.max(8, rect.top - estimated - 6)
-    : rect.bottom + 6
+    : rect.bottom + 4
   hover.value = {
     path: change.path,
-    rows: previewRows(change).slice(0, 14),
+    rows: previewRows(change),
     left,
     top,
   }
 }
 
+function cancelHide(): void {
+  if (hideTimer === null) return
+  clearTimeout(hideTimer)
+  hideTimer = null
+}
+
+function scheduleHide(): void {
+  cancelHide()
+  hideTimer = setTimeout(() => {
+    hideTimer = null
+    hover.value = null
+  }, HOVER_HIDE_DELAY)
+}
+
 function hideHover(): void {
+  cancelHide()
   hover.value = null
 }
+
+onBeforeUnmount(cancelHide)
 </script>
 
 <template>
@@ -151,7 +179,7 @@ function hideHover(): void {
         :title="`${file.path}（点击查看 Diff）`"
         @click="open(file)"
         @mouseenter="showHover(file, $event)"
-        @mouseleave="hideHover"
+        @mouseleave="scheduleHide"
         @focus="showHover(file, $event)"
         @blur="hideHover"
       >
@@ -167,12 +195,14 @@ function hideHover(): void {
       class="diff-hover"
       :style="{ left: `${hover.left}px`, top: `${hover.top}px`, width: '420px' }"
       role="tooltip"
+      @mouseenter="cancelHide"
+      @mouseleave="scheduleHide"
     >
       <div class="diff-hover-head">
         <span class="diff-hover-path">{{ hover.path }}</span>
         <span class="diff-hover-hint">Diff 预览</span>
       </div>
-      <DiffView :rows="hover.rows" compact :max-rows="14" />
+      <DiffView :rows="hover.rows" compact :max-rows="hover.rows.length" />
     </div>
   </Teleport>
 </template>

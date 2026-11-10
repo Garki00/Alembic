@@ -23,6 +23,7 @@ from agents.context import (
     compact_messages,
     context_tokens,
     estimate_tokens,
+    reasoning_text,
     session_slug,
 )
 
@@ -530,6 +531,82 @@ class StepThoughtTest(unittest.TestCase):
             self.assertEqual(tools[0]["name"], "read_file")
             done = next(payload for kind, payload in events if kind == "done")
             self.assertEqual(done.text, "完成")
+
+    def test_native_reasoning_content_becomes_thought(self):
+        class NativeReasoningAgent:
+            emits_thought_events = False
+
+            def stream(self, payload, stream_mode=None):
+                history = list(payload["messages"])
+                final = AIMessage(
+                    content="完成",
+                    additional_kwargs={"reasoning_content": "先分析依赖，再给出结论。"},
+                )
+                yield ("messages", (AIMessageChunk(content="完成"), None))
+                yield ("values", {"messages": [*history, final]})
+
+        with workspace_tempdir() as tmp:
+            session = ChatSession(
+                NativeReasoningAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                hydrate=False,
+            )
+            events = list(session.ask_stream("分析一下"))
+
+        self.assertEqual(
+            [payload for kind, payload in events if kind == "thought"],
+            ["先分析依赖，再给出结论。"],
+        )
+
+    def test_native_reasoning_stream_updates_one_thought(self):
+        class NativeReasoningStreamAgent:
+            emits_thought_events = False
+
+            def stream(self, payload, stream_mode=None):
+                history = list(payload["messages"])
+                parts = ["Let", " us", " inspect", " the dependency first."]
+                for part in parts:
+                    yield (
+                        "messages",
+                        (
+                            AIMessageChunk(
+                                content="",
+                                id="reasoning-run",
+                                additional_kwargs={"reasoning_content": part},
+                            ),
+                            None,
+                        ),
+                    )
+                final = AIMessage(
+                    content="完成",
+                    additional_kwargs={"reasoning_content": f"  {''.join(parts)}\n"},
+                )
+                yield ("values", {"messages": [*history, final]})
+
+        with workspace_tempdir() as tmp:
+            session = ChatSession(
+                NativeReasoningStreamAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                hydrate=False,
+            )
+            events = list(session.ask_stream("分析一下"))
+
+        thoughts = [payload for kind, payload in events if kind == "thought"]
+        self.assertEqual({item["id"] for item in thoughts}, {"reasoning-run"})
+        self.assertTrue(all(item["append"] for item in thoughts))
+        self.assertEqual(
+            "".join(item["text"] for item in thoughts),
+            "Let us inspect the dependency first.",
+        )
+
+    def test_reasoning_text_supports_content_blocks(self):
+        message = AIMessage(content=[{
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": "检查配置。"}],
+        }])
+        self.assertEqual(reasoning_text(message), "检查配置。")
 
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ from agents.approval import (
     ApprovalPolicy,
     permission_tools,
 )
-from agents.context import ChatSession, SessionStore, message_text
+from agents.context import ChatSession, SessionStore, message_text, reasoning_text
 from config.settings import settings
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
 from config.store import (
@@ -161,6 +161,9 @@ def _serialize_messages(messages: Iterable[Any]) -> list[dict[str, Any]]:
     for message in messages:
         role = role_map.get(getattr(message, "type", ""), getattr(message, "type", "unknown"))
         item: dict[str, Any] = {"role": role, "content": message_text(message)}
+        reasoning = reasoning_text(message)
+        if reasoning:
+            item["reasoning"] = reasoning
         calls = getattr(message, "tool_calls", None)
         if calls:
             item["tool_calls"] = [
@@ -648,6 +651,17 @@ def create_app(
             )
 
         try:
+            history, _meta = sessions.load(session_id)
+            recent_requests: list[str] = []
+            for item in reversed(history):
+                if getattr(item, "type", "") != "human":
+                    continue
+                text = message_text(item).strip()
+                if text:
+                    recent_requests.append(text)
+                if len(recent_requests) == 2:
+                    break
+            request_text = "\n".join([*reversed(recent_requests), message])
             agent, summarizer = app.state.runtime_factory(
                 model_cfg,
                 tools.enabled_tools(),
@@ -659,6 +673,7 @@ def create_app(
                 todo_store=app.state.todos,
                 process_manager=app.state.processes,
                 emit=emit,
+                request_text=request_text,
             )
         except Exception as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -679,7 +694,10 @@ def create_app(
                         if kind == "delta":
                             events.put(("delta", {"text": data}))
                         elif kind == "thought":
-                            events.put(("thought", {"text": data}))
+                            events.put((
+                                "thought",
+                                data if isinstance(data, dict) else {"text": data},
+                            ))
                         elif kind == "tool":
                             events.put(("tool", data))
                         elif kind == "tool_result":

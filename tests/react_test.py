@@ -280,6 +280,14 @@ class PromptTest(unittest.TestCase):
         for summary in TOOL_SUMMARIES.values():
             self.assertTrue(summary.strip())
 
+    def test_prompt_and_tool_description_budgets(self):
+        from prompts.react import REACT_SYSTEM_PROMPT, TOOL_SUMMARIES
+        from prompts.system import SYSTEM_PROMPT
+
+        self.assertLess(len(SYSTEM_PROMPT), 1500)
+        self.assertLess(len(REACT_SYSTEM_PROMPT), 400)
+        self.assertTrue(all(len(text) < 120 for text in TOOL_SUMMARIES.values()))
+
 
 class ApprovalTest(unittest.TestCase):
     def gate(self, decision: str) -> tuple[ApprovalGate, ApprovalPolicy]:

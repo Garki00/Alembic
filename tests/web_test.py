@@ -36,6 +36,23 @@ class StubStreamAgent:
         yield ("values", {"messages": [*messages, AIMessage(content="你好")]})
 
 
+class StubThoughtStreamAgent:
+    emits_thought_events = True
+
+    def stream(self, payload, stream_mode=None):
+        messages = list(payload["messages"])
+        yield (
+            "thought",
+            {"id": "reasoning-1", "text": "先检查", "append": True},
+        )
+        yield (
+            "thought",
+            {"id": "reasoning-1", "text": "项目结构。", "append": True},
+        )
+        yield ("messages", (AIMessageChunk(content="完成"), None))
+        yield ("values", {"messages": [*messages, AIMessage(content="完成")]})
+
+
 def stub_factory(model_cfg, enabled_tools, workspace, **kwargs):
     return StubStreamAgent(), None
 
@@ -378,6 +395,43 @@ class WebWorkspaceTest(unittest.TestCase):
         roles = [item["role"] for item in history["messages"]]
         self.assertEqual(roles, ["user", "assistant"])
         self.assertEqual(history["messages"][1]["content"], "你好")
+
+    def test_chat_stream_exposes_thought_as_sse_event(self):
+        """工作步骤所需的思考内容必须作为独立 SSE 事件送达前端。"""
+        app = create_app(
+            data_dir=self.tmp / "thought-data",
+            memory_dir=self.tmp / "thought-memory",
+            runtime_factory=lambda *args, **kwargs: (StubThoughtStreamAgent(), None),
+        )
+        client = TestClient(app)
+        client.post("/api/providers", json={
+            "provider": "openai",
+            "name": "测试供应商",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-test-1234",
+            "models": [{"model": "gpt-test", "thinking": "high"}],
+        })
+        client.post("/api/workspaces", json={"path": str(self.tmp)})
+
+        with client.stream("POST", "/api/chat", json={"message": "检查项目"}) as response:
+            body = "".join(response.iter_text())
+
+        self.assertIn("event: thought", body)
+        self.assertIn(
+            json.dumps(
+                {"id": "reasoning-1", "text": "先检查", "append": True},
+                ensure_ascii=False,
+            ),
+            body,
+        )
+        self.assertIn(
+            json.dumps(
+                {"id": "reasoning-1", "text": "项目结构。", "append": True},
+                ensure_ascii=False,
+            ),
+            body,
+        )
+        self.assertIn("event: done", body)
 
     def test_chat_accepts_null_session_id(self):
         """工作区里直接发送消息应自动创建会话，而不是要求先点新建。"""

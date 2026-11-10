@@ -46,9 +46,9 @@ from tools.errors import tool_error, truncate
 
 logger = logging.getLogger(__name__)
 
-_MAX_HISTORY_MESSAGES = 40
-_MAX_HISTORY_CHARS = 16000
-_MAX_THOUGHT_CHARS = 1200
+_MAX_HISTORY_MESSAGES = 24
+_MAX_HISTORY_CHARS = 10000
+_MAX_THOUGHT_CHARS = 600
 
 #: Stop sequences that keep the model from writing the *next* ReAct step
 #: (notably ``Observation:``) inside the same completion. Observations must

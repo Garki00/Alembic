@@ -64,6 +64,13 @@ function mapHistory(items: HistoryMessage[]): ChatTurn[] {
         assistant = createAssistantTurn()
         turns.push(assistant)
       }
+      if (message.reasoning?.trim()) {
+        assistant.workEvents.push({
+          kind: 'thought',
+          id: newId('thought'),
+          text: message.reasoning.trim(),
+        })
+      }
       if (message.content) {
         if (message.tool_calls?.length) {
           assistant.workEvents.push({
@@ -302,11 +309,22 @@ export const useChatStore = defineStore('chat', {
                 break
               }
               case 'thought': {
-                const text = String(data.text || '').trim()
-                if (text) {
-                  assistant.workEvents.push({ kind: 'thought', id: newId('thought'), text })
-                  this.bump()
+                const text = String(data.text || '')
+                if (!text) break
+                const id = data.id ? String(data.id) : newId('thought')
+                const existing = data.append
+                  ? assistant.workEvents.find(
+                      (event) => event.kind === 'thought' && event.id === id,
+                    )
+                  : undefined
+                if (existing?.kind === 'thought') {
+                  existing.text += text
+                } else if (text.trim()) {
+                  assistant.workEvents.push({ kind: 'thought', id, text })
+                } else {
+                  break
                 }
+                this.bump()
                 break
               }
               case 'tool': {

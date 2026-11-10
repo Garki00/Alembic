@@ -162,6 +162,7 @@ export interface Preferences {
 export interface HistoryMessage {
   role: 'user' | 'assistant' | 'tool' | 'system' | string
   content: string
+  reasoning?: string
   tool_calls?: Array<{ id?: string; name: string; args: Record<string, unknown> }>
   tool_name?: string
   tool_call_id?: string

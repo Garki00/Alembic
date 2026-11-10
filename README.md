@@ -474,11 +474,11 @@ CLI 不再有默认模型名：需要在 `.env` 里显式配置 `DEEPSEEK_API_KE
 - **多轮记忆**：每轮把历史（长会话先压缩）格式化后交给 Agent，因此追问、指代（“它”“刚才那个”）都能延续。
 - **token 统计**：优先使用模型 API 返回的 `usage`（包含系统提示词、工具 schema 与回复，
   与计费口径一致），拿不到时才退回本地字符估算；`/status` 会标明数据来源。
-- **压缩边界**：默认按模型窗口推导——`131072 × 80% − 8000 预留 ≈ 96857 tokens`，
-  或历史超过 40 条消息时触发；两次自动压缩之间至少间隔 2 轮，避免“压完立刻再压”。
-- **压缩方式**：较早对话压缩成摘要（以 `[Conversation summary]` 开头）并保留最近 8 条消息；
+- **压缩边界**：默认按模型窗口推导——`200000 × 70% − 12000 预留 = 128000 tokens`，
+  或历史超过 60 条消息时触发；两次自动压缩之间至少间隔 2 轮，避免“压完立刻再压”。
+- **压缩方式**：较早对话压缩成摘要（以 `[Conversation summary]` 开头）并保留最近 12 条消息；
   摘要语言跟随对话语言；摘要失败时降级为“省略更早消息 + 明确提示”，对话不中断。
-- **工具输出预算**：单条工具结果超过 8000 tokens 会先截断再写入历史并留下标记
+- **工具输出预算**：单条工具结果超过 12000 tokens 会先截断再写入历史并留下标记
   （类似 Codex 的 `tool_output_token_limit`），避免一次大输出撑爆窗口。
 - **本地持久化**：会话历史保存在 `memory/<会话ID>.json`（可用 `MEMORY_DIR` 改目录），
   进程重启或换终端后仍可继续；文件里包含消息类型、工具调用参数与结果。
@@ -494,14 +494,15 @@ CLI 不再有默认模型名：需要在 `.env` 里显式配置 `DEEPSEEK_API_KE
 | `AGENT_ENGINE` | `tool_calling` | `tool_calling` 使用 `create_agent` 的模型原生工具调用；`react` 走加固后的文本 ReAct |
 | `SESSION_ID` | `default` | 默认会话 ID |
 | `MEMORY_DIR` | `<home>/memory` | 会话历史目录（覆盖用户级默认） |
-| `MODEL_CONTEXT_WINDOW` | `131072` | 模型上下文窗口（token） |
-| `COMPACT_TRIGGER_RATIO` | `0.8` | 触发压缩的窗口占比 |
-| `COMPACT_RESERVE_TOKENS` | `8000` | 为回复与摘要请求预留的 token |
+| `MODEL_CONTEXT_WINDOW` | `200000` | 模型上下文窗口（token） |
+| `COMPACT_TRIGGER_RATIO` | `0.7` | 触发压缩的窗口占比 |
+| `COMPACT_RESERVE_TOKENS` | `12000` | 为回复与摘要请求预留的 token |
 | `MAX_CONTEXT_TOKENS` | `0` | 绝对阈值覆盖；`0` 表示按窗口比例推导 |
-| `MAX_CONTEXT_MESSAGES` | `40` | 触发压缩的消息条数阈值 |
-| `KEEP_RECENT_MESSAGES` | `8` | 压缩后保留的最近消息数 |
-| `MAX_TOOL_OUTPUT_TOKENS` | `8000` | 单条工具输出写入历史的预算 |
-| `MAX_TOOL_OUTPUT_CHARS` | `20000` | 单个工具返回的字符上限（超出截断并标注） |
+| `MAX_CONTEXT_MESSAGES` | `60` | 触发压缩的消息条数阈值 |
+| `KEEP_RECENT_MESSAGES` | `12` | 压缩后保留的最近消息数 |
+| `MAX_TOOL_OUTPUT_TOKENS` | `12000` | 单条工具输出写入历史的预算 |
+| `MAX_TOOL_OUTPUT_CHARS` | `48000` | 单个工具返回的字符上限（超出截断并标注） |
+| `DYNAMIC_TOOL_PACKS` | `1` | 按请求动态加载相关工具；设为 `0` 时加载全部已启用工具 |
 | `APPROVAL_ENABLED` | `1` | 设为 `0` 关闭工具审批（自动化场景） |
 | `APPROVAL_TIMEOUT` | `300` | 等待人确认的秒数，超时按拒绝处理 |
 | `QUESTION_TIMEOUT` | `300` | `ask_user_question` 等待回答的秒数，超时按未回答处理 |

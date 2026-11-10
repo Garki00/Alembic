@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
+from uuid import uuid4
 
 from langchain_core.messages import (
     AIMessage,
@@ -48,17 +49,12 @@ _SESSION_ID_UNSAFE = re.compile(r"[^0-9A-Za-z_.\-]+")
 #: 压缩摘要消息的固定前缀，方便提示词与调试时识别
 SUMMARY_PREFIX = "[Conversation summary]"
 
-_SUMMARY_PROMPT = """You are a conversation summarizer. Compress the history below into concise bullet points for continuing the conversation.
+_SUMMARY_PROMPT = """Summarize this conversation for continuation.
+Keep only: user goals, confirmed facts and decisions, changed files, verification
+results, and unresolved next steps. Omit greetings, repetition, raw tool output,
+and secrets. Use the conversation language. Output bullets only.
 
-Requirements:
-1. Preserve the user's identity, preferences, confirmed facts and conclusions.
-2. Preserve key data returned by tools (time, weather, locations, etc.); do not invent.
-3. Record unfinished tasks and the next step so work is not repeated.
-4. Remove greetings, repetition and irrelevant details.
-5. Write the summary in the same language as the conversation.
-6. Output only the summary body; no title, prefix or explanation.
-
-Conversation history:
+Conversation:
 {messages}
 """
 
@@ -86,6 +82,45 @@ def message_text(message: Any) -> str:
                     parts.append(text)
         return "".join(parts)
     return str(content or "")
+
+
+def reasoning_text(message: Any) -> str:
+    """提取供应商返回的可见推理文本，兼容常见 OpenAI/DeepSeek 结构。"""
+    parts: list[str] = []
+
+    def append(value: Any) -> None:
+        if isinstance(value, str):
+            if value:
+                parts.append(value)
+            return
+        if isinstance(value, list):
+            for item in value:
+                append(item)
+            return
+        if not isinstance(value, dict):
+            return
+        block_type = str(value.get("type") or "").lower()
+        if block_type in {"reasoning", "reasoning_content", "thinking", "summary_text"}:
+            for key in ("text", "content", "reasoning", "reasoning_content", "summary"):
+                append(value.get(key))
+        elif "summary" in value:
+            append(value.get("summary"))
+
+    for container_name in ("additional_kwargs", "response_metadata"):
+        container = getattr(message, container_name, None)
+        if isinstance(container, dict):
+            for key in ("reasoning_content", "reasoning", "thinking", "reasoning_text"):
+                append(container.get(key))
+
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        for block in content:
+            append(block)
+
+    unique = [part for part in dict.fromkeys(parts) if part.strip()]
+    if len(unique) == 1:
+        return unique[0]
+    return "\n\n".join(part.strip() for part in unique)
 
 
 def _approx_tokens(text: str) -> int:
@@ -493,6 +528,9 @@ class ChatSession:
         emitted_tools: set[str] = set()
         emitted_results: set[str] = set()
         emitted_thoughts: set[str] = set()
+        streamed_reasonings: set[str] = set()
+        reasoning_buffers: dict[str, str] = {}
+        fallback_reasoning_id = ""
         # ReAct emits its own ``thought`` events. Native tool-calling agents do
         # not, so derive them from AI messages that carry tool calls: that text
         # is the model's reasoning for the action, not part of the final answer.
@@ -508,11 +546,33 @@ class ChatSession:
                 ):
                     if mode == "thought":
                         if payload:
-                            yield ("thought", str(payload))
+                            yield (
+                                "thought",
+                                payload if isinstance(payload, dict) else str(payload),
+                            )
                         continue
                     if mode == "messages":
                         chunk, _meta = payload
                         if isinstance(chunk, AIMessageChunk):
+                            native_reasoning_delta = reasoning_text(chunk)
+                            if native_reasoning_delta:
+                                reasoning_id = (
+                                    str(getattr(chunk, "id", "") or fallback_reasoning_id)
+                                    or f"reasoning-{uuid4().hex[:12]}"
+                                )
+                                fallback_reasoning_id = reasoning_id
+                                reasoning_buffers[reasoning_id] = (
+                                    reasoning_buffers.get(reasoning_id, "")
+                                    + native_reasoning_delta
+                                )
+                                yield (
+                                    "thought",
+                                    {
+                                        "id": reasoning_id,
+                                        "text": native_reasoning_delta,
+                                        "append": True,
+                                    },
+                                )
                             delta = message_text(chunk)
                             if delta:
                                 yield ("delta", delta)
@@ -542,6 +602,20 @@ class ChatSession:
                         if not isinstance(message, AIMessage):
                             continue
                         calls = list(message.tool_calls or [])
+                        native_reasoning = reasoning_text(message).strip()
+                        if native_reasoning:
+                            streamed_reasonings.update(
+                                buffer.strip()
+                                for buffer in reasoning_buffers.values()
+                                if buffer.strip()
+                            )
+                        if (
+                            native_reasoning
+                            and native_reasoning not in streamed_reasonings
+                            and native_reasoning not in emitted_thoughts
+                        ):
+                            emitted_thoughts.add(native_reasoning)
+                            yield ("thought", native_reasoning)
                         if derive_step_thoughts and calls:
                             thought_text = message_text(message).strip()
                             if thought_text and thought_text not in emitted_thoughts:

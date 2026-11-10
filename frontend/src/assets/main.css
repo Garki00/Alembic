@@ -887,6 +887,8 @@ html.resizing .inspector-resizer::after {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    max-height: 50vh;
+    overflow-y: auto;
 }
 .composer-request .approval-card,
 .composer-request .question-card {
@@ -1960,6 +1962,12 @@ html.resizing .inspector-resizer::after {
 .diff-row.add .diff-sign { color: var(--emerald); }
 .diff-row.remove { background: var(--danger-bg); }
 .diff-row.remove .diff-sign { color: var(--danger); }
+.diff-row.gap {
+    background: var(--paper-deep);
+    color: var(--soft);
+}
+.diff-row.gap .diff-sign { color: var(--soft); }
+.diff-row.gap .diff-text { padding: 2px 8px; }
 .diff-more, .diff-empty {
     margin: 0;
     padding: 7px 12px;
@@ -1975,7 +1983,7 @@ html.resizing .inspector-resizer::after {
     background: var(--card);
     box-shadow: var(--shadow);
     overflow: hidden;
-    pointer-events: none;
+    pointer-events: auto;
 }
 .diff-hover-head {
     display: flex;
@@ -1996,7 +2004,12 @@ html.resizing .inspector-resizer::after {
     font-size: 10px;
 }
 .diff-hover-hint { flex: none; color: var(--soft); font-size: 9px; letter-spacing: 0.04em; }
-.diff-hover .diff-view { max-height: 232px; border: 0; }
+.diff-hover .diff-view {
+    max-height: 232px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    border: 0;
+}
 .diff-hover .diff-num { width: 32px; }
 .diff-hover .diff-text { padding-right: 8px; }
 .file-markdown { padding: 14px 16px 24px; }

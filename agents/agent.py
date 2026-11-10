@@ -23,6 +23,7 @@ from config.settings import settings
 from prompts.system import build_system_prompt
 from tools.context import SessionRef, ToolContext
 from tools.images import vision_from_model
+from tools.model_view import with_compact_descriptions
 from tools.registry import build_tools, default_enabled_names
 
 from agents.approval import ApprovalGate, gate_from
@@ -149,9 +150,10 @@ def build_agent(
 
     if middleware is None:
         middleware = build_middleware(approval)
+    model_tools = with_compact_descriptions(tools)
     return create_agent(
         chat_model,
-        tools=tools,
+        tools=model_tools,
         system_prompt=system_prompt,
         middleware=middleware,
     )

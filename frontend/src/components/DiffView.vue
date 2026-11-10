@@ -20,6 +20,7 @@ const hidden = computed(() => Math.max(0, props.rows.length - shown.value.length
 function signOf(row: DiffRow): string {
   if (row.type === 'add') return '+'
   if (row.type === 'remove') return '−'
+  if (row.type === 'gap') return '…'
   return ' '
 }
 </script>

@@ -18,7 +18,9 @@ from config.store import ModelConfig
 from prompts.system import build_system_prompt
 from tools.context import SessionRef, ToolContext
 from tools.images import vision_from_model
+from tools.model_view import with_compact_descriptions
 from tools.registry import build_tools
+from tools.selection import select_tool_entries
 
 
 #: 各供应商的默认 Base URL。所有供应商都走 OpenAI 兼容的 /chat/completions；
@@ -104,6 +106,7 @@ def build_runtime(
     process_manager=None,
     emit=None,
     engine: str | None = None,
+    request_text: str | None = None,
 ):
     """返回 ``(agent, summarizer)``，供一轮对话使用。
 
@@ -128,7 +131,8 @@ def build_runtime(
         emit=emit,
         vision=vision_from_model(model),
     )
-    tools = build_tools(set(enabled_tools), tool_configs or {}, ctx)
+    selected_entries = select_tool_entries(set(enabled_tools), request_text)
+    tools = build_tools(selected_entries, tool_configs or {}, ctx)
     system_prompt = build_system_prompt(str(ctx.workspace) if ctx.workspace else "")
 
     resolved_engine = (engine or settings.agent_engine).strip().lower()
@@ -144,9 +148,10 @@ def build_runtime(
             max_output_chars=settings.max_tool_output_chars,
         )
     else:
+        model_tools = with_compact_descriptions(tools)
         agent = create_agent(
             model,
-            tools=tools,
+            tools=model_tools,
             system_prompt=system_prompt,
             middleware=build_middleware(approval),
         )
