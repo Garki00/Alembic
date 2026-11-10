@@ -13,11 +13,14 @@ type ToolEvent = Extract<WorkEvent, { kind: 'tool' }>
 const TOOL_LABELS: Record<string, string> = {
   read_file: '读取',
   read_document: '读取文档',
+  read_image: '读取图片',
   list_dir: '浏览目录',
   search_files: '搜索',
+  find_files: '查找文件',
   file_stat: '查看信息',
   write_file: '写入',
   edit_file: '修改',
+  apply_patch: '应用补丁',
   move_file: '移动',
   copy_file: '复制',
   delete_file: '删除',
@@ -27,7 +30,13 @@ const TOOL_LABELS: Record<string, string> = {
   stop_process: '停止进程',
   list_processes: '查看进程',
   read_process_logs: '读取日志',
+  wait_process: '等待进程',
   fetch_url: '抓取网页',
+  web_search: '搜索网页',
+  download_file: '下载文件',
+  git_status: 'Git 状态',
+  git_diff: 'Git 差异',
+  git_commit: 'Git 提交',
   todo_write: '更新任务',
   ask_user_question: '询问用户',
   get_current_time: '查询时间',
@@ -73,6 +82,7 @@ function detailOf(event: WorkEvent): string {
   switch (event.name) {
     case 'read_file':
     case 'read_document':
+    case 'read_image':
     case 'list_dir':
     case 'file_stat':
     case 'write_file':
@@ -82,6 +92,16 @@ function detailOf(event: WorkEvent): string {
       return path || '(工作区根目录)'
     case 'search_files':
       return [args.pattern, args.glob].filter(Boolean).join(' · ') || path
+    case 'find_files':
+      return [args.pattern, args.path].filter(Boolean).join(' · ') || '工作区'
+    case 'web_search':
+      return String(args.query || '')
+    case 'download_file':
+      return String(args.url || args.path || '')
+    case 'apply_patch': {
+      const lines = String(args.patch || '').split('\n').filter(Boolean).length
+      return `${lines} 行补丁`
+    }
     case 'move_file':
     case 'copy_file':
       return `${source || '?'} → ${destination || '?'}`
@@ -89,6 +109,7 @@ function detailOf(event: WorkEvent): string {
     case 'start_process':
       return String(args.command || '')
     case 'stop_process':
+    case 'wait_process':
       return String(args.process_id || '')
     case 'list_processes':
       return '全部'
@@ -96,6 +117,12 @@ function detailOf(event: WorkEvent): string {
       return String(args.process_id || '')
     case 'fetch_url':
       return String(args.url || '')
+    case 'git_status':
+      return '工作区'
+    case 'git_diff':
+      return args.staged ? '暂存区' : String(args.path || '工作区')
+    case 'git_commit':
+      return String(args.message || '')
     case 'todo_write': {
       const todos = Array.isArray(args.todos) ? args.todos : []
       return `${todos.length} 项`

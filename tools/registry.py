@@ -23,11 +23,16 @@ from typing import Callable, Mapping, Sequence
 
 from tools.context import ToolContext
 from tools.documents import build_document_tools
+from tools.download import build_download_tools
 from tools.fetch import build_fetch_tools
 from tools.files import build_file_read_tools, build_file_write_tools
+from tools.git import build_git_tools
+from tools.images import build_image_tools
 from tools.mock import build_mock_tools
+from tools.patch import build_patch_tools
 from tools.processes import build_process_tools
 from tools.questions import build_question_tools
+from tools.search import build_search_tools
 from tools.shell import build_shell_tools
 from tools.time import get_current_time, list_timezones
 from tools.todo import build_todo_tools
@@ -166,8 +171,24 @@ def _build_documents(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
     return build_document_tools(ctx)
 
 
+def _build_images(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
+    return build_image_tools(ctx)
+
+
 def _build_fetch(config: Mapping[str, str], ctx: ToolContext) -> Sequence:
     return build_fetch_tools(dict(config), ctx)
+
+
+def _build_search(config: Mapping[str, str], ctx: ToolContext) -> Sequence:
+    return build_search_tools(dict(config), ctx)
+
+
+def _build_download(config: Mapping[str, str], ctx: ToolContext) -> Sequence:
+    return build_download_tools(dict(config), ctx)
+
+
+def _build_patch(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
+    return build_patch_tools(ctx)
 
 
 def _build_todo(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
@@ -183,7 +204,15 @@ def _build_process_exec(_config: Mapping[str, str], ctx: ToolContext) -> Sequenc
 
 
 def _build_process_inspect(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
-    return build_process_tools(ctx, only={"list_processes", "read_process_logs"})
+    return build_process_tools(ctx, only={"list_processes", "read_process_logs", "wait_process"})
+
+
+def _build_git_read(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
+    return build_git_tools(ctx, only={"git_status", "git_diff"})
+
+
+def _build_git_commit(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
+    return build_git_tools(ctx, only={"git_commit"})
 
 
 def _build_shell(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
@@ -234,9 +263,9 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "file_read": ToolSpec(
         name="file_read",
         label="文件读取",
-        description="浏览工作区目录、按行读取文本、按正则搜索内容、查看文件元信息。",
+        description="浏览工作区目录、按行读取文本、按正则搜索内容、按文件名查找、查看文件元信息。",
         risk=RISK_READ,
-        tool_names=("list_dir", "read_file", "search_files", "file_stat"),
+        tool_names=("list_dir", "read_file", "search_files", "find_files", "file_stat"),
         builder=_build_file_read,
     ),
     "read_document": ToolSpec(
@@ -246,6 +275,14 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         risk=RISK_READ,
         tool_names=("read_document",),
         builder=_build_documents,
+    ),
+    "read_image": ToolSpec(
+        name="read_image",
+        label="图片读取",
+        description="用视觉模型描述工作区图片并转写文字，需要支持图片输入的模型。",
+        risk=RISK_READ,
+        tool_names=("read_image",),
+        builder=_build_images,
     ),
     "file_write": ToolSpec(
         name="file_write",
@@ -261,6 +298,14 @@ TOOL_SPECS: dict[str, ToolSpec] = {
             "copy_file",
         ),
         builder=_build_file_write,
+    ),
+    "apply_patch": ToolSpec(
+        name="apply_patch",
+        label="补丁编辑",
+        description="应用标准 unified diff，一次修改多个文件或多个 hunk。",
+        risk=RISK_WRITE,
+        tool_names=("apply_patch",),
+        builder=_build_patch,
     ),
     "fetch_url": ToolSpec(
         name="fetch_url",
@@ -285,6 +330,58 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         risk=RISK_READ,
         tool_names=("fetch_url",),
         builder=_build_fetch,
+    ),
+    "web_search": ToolSpec(
+        name="web_search",
+        label="网页搜索",
+        description="按关键词搜索网页，返回标题、链接与摘要；默认 Bing，可切换其他服务。",
+        fields=(
+            ToolField(
+                "SEARCH_PROVIDER",
+                "搜索服务",
+                kind=FIELD_SELECT,
+                options=(
+                    ("bing", "Bing（免密钥）"),
+                    ("duckduckgo", "DuckDuckGo（免密钥）"),
+                    ("tavily", "Tavily"),
+                    ("brave", "Brave Search"),
+                    ("serper", "Serper"),
+                    ("searxng", "SearXNG"),
+                ),
+                default="bing",
+            ),
+            ToolField("SEARCH_API_KEY", "API Key", secret=True),
+            ToolField(
+                "SEARCH_ENDPOINT",
+                "SearXNG 地址",
+                placeholder="https://searx.example.com",
+            ),
+            ToolField("SEARCH_TIMEOUT", "超时（秒）", kind=FIELD_NUMBER, default="15"),
+            ToolField("SEARCH_MAX_RESULTS", "默认结果数", kind=FIELD_NUMBER, default="5"),
+        ),
+        risk=RISK_READ,
+        tool_names=("web_search",),
+        builder=_build_search,
+    ),
+    "download_file": ToolSpec(
+        name="download_file",
+        label="文件下载",
+        description="把远程 PDF / 图片 / 压缩包等下载到工作区，带 SSRF 与大小限制。",
+        fields=(
+            ToolField("DOWNLOAD_TIMEOUT", "超时（秒）", kind=FIELD_NUMBER, default="60"),
+            ToolField("DOWNLOAD_MAX_BYTES", "最大字节", kind=FIELD_NUMBER, default="20000000"),
+            ToolField(
+                "DOWNLOAD_ALLOW_PRIVATE",
+                "允许内网地址",
+                kind=FIELD_SWITCH,
+                default="false",
+                placeholder="仅在本机接口调试时打开",
+            ),
+            ToolField("DOWNLOAD_USER_AGENT", "User-Agent", default="ALEMBIC/0.1 (+local)"),
+        ),
+        risk=RISK_WRITE,
+        tool_names=("download_file",),
+        builder=_build_download,
     ),
     "todo_write": ToolSpec(
         name="todo_write",
@@ -322,10 +419,26 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "process_inspect": ToolSpec(
         name="process_inspect",
         label="进程查看",
-        description="列出后台进程、读取进程日志（只读）。",
+        description="列出后台进程、读取进程日志、等待进程退出或日志匹配（只读）。",
         risk=RISK_READ,
-        tool_names=("list_processes", "read_process_logs"),
+        tool_names=("list_processes", "read_process_logs", "wait_process"),
         builder=_build_process_inspect,
+    ),
+    "git_read": ToolSpec(
+        name="git_read",
+        label="Git 查看",
+        description="查看分支与工作区改动、读取 unified diff（只读）。",
+        risk=RISK_READ,
+        tool_names=("git_status", "git_diff"),
+        builder=_build_git_read,
+    ),
+    "git_commit": ToolSpec(
+        name="git_commit",
+        label="Git 提交",
+        description="暂存指定路径并提交；不会自动 git add -A。执行前需要确认。",
+        risk=RISK_EXEC,
+        tool_names=("git_commit",),
+        builder=_build_git_commit,
     ),
     # 模拟工具：验证「注册表声明字段 → 设置面板 → 工具读到」这条链路，
     # 同时也是新增工具只写 Python 的样板。默认关闭，避免干扰日常使用。

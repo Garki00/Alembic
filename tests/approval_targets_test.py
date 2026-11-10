@@ -43,10 +43,49 @@ class ApprovalTargetTest(unittest.TestCase):
 
     def test_new_write_and_process_tools_are_gated(self):
         gated = gated_tools(set(TOOL_SPECS))
-        for name in ("delete_file", "move_file", "copy_file", "make_dir", "start_process", "stop_process"):
+        for name in (
+            "delete_file",
+            "move_file",
+            "copy_file",
+            "make_dir",
+            "start_process",
+            "stop_process",
+            "apply_patch",
+            "download_file",
+            "git_commit",
+        ):
             self.assertIn(name, gated, name)
-        for name in ("file_stat", "read_document", "fetch_url", "todo_write", "ask_user_question"):
+        for name in (
+            "file_stat",
+            "read_document",
+            "read_image",
+            "fetch_url",
+            "web_search",
+            "git_status",
+            "git_diff",
+            "todo_write",
+            "ask_user_question",
+            "wait_process",
+        ):
             self.assertNotIn(name, gated, name)
+
+    def test_patch_and_download_have_readable_summaries(self):
+        target, summary, preview = describe_call(
+            "apply_patch",
+            {"patch": "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"},
+        )
+        self.assertEqual(target, "a.py")
+        self.assertIn("应用补丁", summary)
+        self.assertIn("-x", preview)
+
+        target, summary, _preview = describe_call(
+            "download_file", {"url": "https://example.com/a.pdf", "path": "docs/a.pdf"}
+        )
+        self.assertEqual(target, "docs/a.pdf")
+        self.assertIn("下载文件", summary)
+
+        _target, summary, _preview = describe_call("git_commit", {"message": "feat: x"})
+        self.assertIn("提交 Git", summary)
 
 
 if __name__ == "__main__":

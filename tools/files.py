@@ -112,6 +112,22 @@ def _looks_binary(path: Path) -> bool:
         return False
 
 
+def _glob_match(relative: str, name: str, pattern: str) -> bool:
+    """文件名 / 相对路径的 glob 匹配，支持 ``**/`` 与无通配符的子串写法。"""
+    text = (pattern or "").strip().replace("\\", "/")
+    if not text:
+        return False
+    if not any(char in text for char in "*?[]"):
+        return text.lower() in name.lower()
+    if fnmatch.fnmatch(relative, text) or fnmatch.fnmatch(name, text):
+        return True
+    # ``**/*.py`` 在 fnmatch 里要求至少一级目录；根目录下的 a.py 也应当命中
+    if text.startswith("**/"):
+        rest = text[3:]
+        return fnmatch.fnmatch(relative, rest) or fnmatch.fnmatch(name, rest)
+    return False
+
+
 def _as_error(exc: WorkspacePathError) -> str:
     return tool_error(exc.code, exc.message, hint=exc.hint)
 
@@ -345,6 +361,74 @@ def build_file_read_tools(ctx: ToolContext) -> list:
         return truncate("\n".join([header, *matches]), ctx.max_output_chars)
 
     @tool
+    def find_files(pattern: str, path: str = ".", max_results: int = 100) -> str:
+        """按文件名或相对路径查找文件，支持通配符（如 *.py、**/*.test.ts）。
+
+        和 search_files 的区别：search_files 搜的是文件**内容**，本工具只按
+        路径/文件名匹配，适合在不知道文件在哪时先定位。
+
+        Args:
+            pattern: 文件名或相对路径的 glob；不含通配符时按文件名子串匹配。
+            path: 查找起点（目录），默认工作区根目录。
+            max_results: 最多返回多少条（上限 300）。
+
+        Returns:
+            每行一个相对路径与大小；没有匹配时说明已扫描的文件数。
+        """
+        text = (pattern or "").strip()
+        if not text:
+            return tool_error("empty_pattern", "pattern 不能为空。", hint="例如 *.py 或 **/*.test.ts。")
+        target = _resolve_or_none(ctx, path)
+        if isinstance(target, str):
+            return target
+        if not target.exists():
+            return tool_error("not_found", f"查找路径不存在：{path}。")
+        if not target.is_dir():
+            return tool_error("not_a_directory", f"{path} 不是目录。", hint="查找起点需要是目录。")
+
+        limit = max(1, min(int(max_results or 100), 300))
+        found: list[tuple[str, int]] = []
+        scanned = 0
+        truncated = False
+        try:
+            for root, dirs, files in os.walk(target):
+                dirs[:] = sorted(item for item in dirs if item not in _SKIP_DIRS)
+                for name in sorted(files):
+                    scanned += 1
+                    if scanned > _MAX_SCAN_FILES:
+                        truncated = True
+                        break
+                    if not _glob_match(
+                        (Path(root) / name).relative_to(target).as_posix(),
+                        name,
+                        text,
+                    ):
+                        continue
+                    try:
+                        size = (Path(root) / name).stat().st_size
+                    except OSError:
+                        size = 0
+                    found.append(((Path(root) / name).relative_to(target).as_posix(), size))
+                    if len(found) >= limit:
+                        truncated = True
+                        break
+                if truncated:
+                    break
+        except OSError as exc:
+            return tool_error("search_failed", f"查找失败：{exc}。")
+
+        shown = found[:limit]
+        header = f"匹配 {text}：找到 {len(shown)} 个文件（已扫描 {scanned} 个）"
+        if not shown:
+            return header + "\n没有匹配的文件。"
+        lines = [header]
+        for relative, size in shown:
+            lines.append(f"{relative}  ({_format_size(size)})")
+        if truncated:
+            lines.append(f"…结果或扫描范围已达到上限（{limit} 条 / {_MAX_SCAN_FILES} 个文件），请缩小查找范围。")
+        return truncate("\n".join(lines), ctx.max_output_chars)
+
+    @tool
     def file_stat(path: str = ".") -> str:
         """查看文件或目录的元信息：类型、大小、修改时间、行数。
 
@@ -382,7 +466,7 @@ def build_file_read_tools(ctx: ToolContext) -> list:
                     pass
         return "\n".join(lines)
 
-    return [list_dir, read_file, search_files, file_stat]
+    return [list_dir, read_file, search_files, find_files, file_stat]
 
 
 # --------------------------------------------------------------------- 写入组

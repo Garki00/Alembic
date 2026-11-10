@@ -29,9 +29,13 @@ const FILE_ACTIONS: Record<string, string> = {
   make_dir: '新建目录',
   read_file: '读取',
   read_document: '解析文档',
+  read_image: '读取图片',
   list_dir: '浏览目录',
   search_files: '搜索',
+  find_files: '查找文件',
   fetch_url: '抓取',
+  web_search: '搜索网页',
+  download_file: '下载',
 }
 
 function findResult(
@@ -98,6 +102,18 @@ const entries = computed<CodeEntry[]>(() => {
         result: clip(content, 1200),
         error,
       })
+    } else if (call.name === 'apply_patch') {
+      const patch = String(call.args.patch || '')
+      const first = /^\+\+\+ (?:b\/)?(.+)$/m.exec(patch)?.[1] || '多个文件'
+      output.push({
+        id: call.id || `patch-${output.length}`,
+        kind: 'edit',
+        title: `补丁 ${first}`,
+        detail: `${patch.split('\n').filter(Boolean).length} 行`,
+        code: clip(patch, 4000),
+        result: clip(content, 1200),
+        error,
+      })
     } else if (call.name === 'run_command') {
       output.push({
         id: call.id || `cmd-${output.length}`,
@@ -108,22 +124,22 @@ const entries = computed<CodeEntry[]>(() => {
         result: clip(content, 2000),
         error,
       })
-    } else if (['move_file', 'copy_file', 'delete_file', 'make_dir'].includes(call.name)) {
+    } else if (['move_file', 'copy_file', 'delete_file', 'make_dir', 'download_file'].includes(call.name)) {
       output.push({
         id: call.id || `file-${output.length}`,
         kind: 'file',
         title: FILE_ACTIONS[call.name] || call.name,
-        detail: source || destination || path,
+        detail: source || destination || path || String(call.args.url || ''),
         code: '',
         result: clip(content, 1200),
         error,
       })
-    } else if (['read_file', 'read_document', 'list_dir', 'search_files', 'fetch_url'].includes(call.name)) {
+    } else if (['read_file', 'read_document', 'read_image', 'list_dir', 'search_files', 'find_files', 'fetch_url', 'web_search'].includes(call.name)) {
       output.push({
         id: call.id || `read-${output.length}`,
         kind: 'file',
         title: FILE_ACTIONS[call.name] || call.name,
-        detail: String(call.args.path || call.args.url || call.args.pattern || ''),
+        detail: String(call.args.path || call.args.url || call.args.pattern || call.args.query || ''),
         code: '',
         result: clip(content, 1200),
         error,

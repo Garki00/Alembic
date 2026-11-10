@@ -47,6 +47,7 @@ class ToolContext:
         todo_store: 任务清单存储；``None`` 时退化为进程内存储。
         process_manager: 后台进程管理器；``None`` 时按工作区创建默认实例。
         emit: 工具事件出口，网页端用它推送 ``todo`` 等 SSE 事件。
+        vision: 视觉通道，``read_image`` 用它把图片交给当前模型理解。
     """
 
     workspace: Path | None = None
@@ -57,6 +58,9 @@ class ToolContext:
     todo_store: TodoStore | None = None
     process_manager: ProcessManager | None = None
     emit: Callable[[str, dict[str, Any]], None] | None = None
+    #: 视觉通道：``(data_url, prompt) -> 文字描述``。由运行时用当前模型注入；
+    #: ``None`` 时 ``read_image`` 返回 ``vision_unavailable``。
+    vision: Callable[[str, str], str] | None = None
 
     @property
     def session_id(self) -> str:

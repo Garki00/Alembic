@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from langchain.agents import create_agent
@@ -21,6 +22,7 @@ from langchain_deepseek import ChatDeepSeek
 from config.settings import settings
 from prompts.system import build_system_prompt
 from tools.context import SessionRef, ToolContext
+from tools.images import vision_from_model
 from tools.registry import build_tools, default_enabled_names
 
 from agents.approval import ApprovalGate, gate_from
@@ -125,11 +127,13 @@ def build_agent(
     兼容模式）。传了 ``middleware`` 时按 tool_calling 处理。
     """
     resolved_engine = (engine or settings.agent_engine).strip().lower()
+    chat_model = model or build_model()
     tool_ctx = ctx or cli_tool_context()
+    if tool_ctx.vision is None:
+        tool_ctx = replace(tool_ctx, vision=vision_from_model(chat_model))
     if tools is None:
         tools = build_default_tools(tool_ctx)
     system_prompt = build_system_prompt(str(tool_ctx.workspace) if tool_ctx.workspace else "")
-    chat_model = model or build_model()
 
     if resolved_engine == "react" and middleware is None:
         return ReActAgent(

@@ -42,10 +42,12 @@ _PREVIEW_LIMIT = 800
 _KEY_PREFIX = {
     "write_file": "file",
     "edit_file": "file",
+    "apply_patch": "patch",
     "delete_file": "delete",
     "move_file": "move",
     "copy_file": "copy",
     "make_dir": "mkdir",
+    "download_file": "download",
 }
 _FILE_VERBS = {
     "delete_file": "删除",
@@ -102,6 +104,29 @@ def describe_call(tool: str, args: Mapping) -> tuple[str, str, str]:
     process_id = args.get("process_id")
     if process_id is not None:
         return str(process_id), f"停止后台进程：{process_id}", _clip(json.dumps(args, ensure_ascii=False))
+
+    if tool == "apply_patch":
+        patch = str(args.get("patch") or "")
+        names: list[str] = []
+        try:
+            from tools.patch import parse_unified_diff
+
+            names = [item.display_path for item in parse_unified_diff(patch)]
+        except Exception:
+            names = []
+        target = "、".join(names) if names else "补丁"
+        return target, f"应用补丁：{len(names) or '?'} 个文件", _clip(patch)
+
+    if tool == "download_file":
+        url = str(args.get("url") or "")
+        path = str(args.get("path") or "(自动命名)")
+        return path, f"下载文件：{path}", _clip(f"{url}\n→ {path}")
+
+    if tool == "git_commit":
+        message = str(args.get("message") or "")
+        files = args.get("files") or []
+        target = ", ".join(str(item) for item in files) if files else "已暂存改动"
+        return target, f"提交 Git：{message}", _clip(message)
 
     path = args.get("path")
     if tool == "write_file":

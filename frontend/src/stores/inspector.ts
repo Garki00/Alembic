@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import type { FileDiff } from '../lib/diff'
 import { useUiStore } from './ui'
 
 export interface FilesTab {
@@ -12,6 +13,8 @@ export interface FileTab {
   kind: 'file'
   title: string
   path: string
+  /** 从变更总结打开时携带的本轮 diff；普通浏览文件时为 undefined。 */
+  diff?: FileDiff
 }
 
 export interface BrowserTab {
@@ -129,11 +132,12 @@ export const useInspectorStore = defineStore('inspector', {
       this.addTab({ id: tabId('files'), kind: 'files', title: '工作区文件' })
     },
 
-    openFile(path: string): void {
+    openFile(path: string, diff?: FileDiff): void {
       const clean = String(path || '').replace(/\\/g, '/').replace(/^\.?\//, '')
       if (!clean) return
       const existing = this.tabs.find((tab) => tab.kind === 'file' && tab.path === clean)
       if (existing) {
+        if (existing.kind === 'file') existing.diff = diff
         this.activeId = existing.id
         this.open = true
         return
@@ -143,6 +147,7 @@ export const useInspectorStore = defineStore('inspector', {
         kind: 'file',
         title: baseName(clean),
         path: clean,
+        diff,
       })
     },
 

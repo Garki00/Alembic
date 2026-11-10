@@ -3,7 +3,7 @@
 > 给接手的智能体 / 开发者：先读这一份，再动代码。
 > 最后更新：2026-11-07，默认引擎改回 `tool_calling`（结构化工具调用），原生 ReAct
 > 文本循环保留为可选模式并做了协议硬化（stop 序列 / 严格单步解析 / 纠错重试）；
-> 301 个后端测试全绿。
+> 338 个后端测试全绿。
 
 ## 1. 这是什么
 
@@ -47,7 +47,7 @@ cd frontend; npm run dev                             # http://127.0.0.1:5173
 验证：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 301 个测试
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 338 个测试
 cd frontend
 npm run build                                        # vue-tsc + vite build
 ```
@@ -73,16 +73,21 @@ prompts/system.py        英文系统提示词（工作区边界、工具原则�
 prompts/react.py         英文 ReAct 格式与工具目录模板
 tools/
   registry.py            ★ 工具清单唯一事实来源：TOOL_SPECS / ToolField / build_tools
-  context.py             ToolContext（workspace、输出预算、会话引用、提问通道、进程管理器）
+  context.py             ToolContext（workspace、输出预算、会话引用、提问通道、进程管理器、视觉通道）
   errors.py              统一错误契约 tool_error() / truncate()
   paths.py               工作区路径解析与逃逸防护
-  files.py               list_dir / read_file / search_files / file_stat
+  files.py               list_dir / read_file / search_files / find_files / file_stat
                          write_file / edit_file / make_dir / delete_file / move_file / copy_file
   documents.py           read_document（PDF / DOCX / XLSX / PPTX / 文本，按字符偏移分段）
+  images.py              read_image（把图片交给当前视觉模型，返回文字描述）
   fetch.py               fetch_url（SSRF 防护、重定向校验、HTML 转文本）
+  search.py              web_search（Bing / DuckDuckGo / Tavily / Brave / Serper / SearXNG）
+  download.py            download_file（流式下载、SSRF、大小上限、.part 保护）
+  patch.py               apply_patch（标准 unified diff，多文件 / 多 hunk）
+  git.py                 git_status / git_diff / git_commit（参数列表调用，不走 shell）
   todo.py                todo_write + TodoStore（会话级任务清单）
   questions.py           ask_user_question / Question / 终端提问通道
-  processes.py           start_process / list_processes / read_process_logs / stop_process
+  processes.py           start_process / list_processes / read_process_logs / wait_process / stop_process
   shell.py               run_command（超时、输出截断、退出码）
   time.py weather.py mock.py
 web/
@@ -397,11 +402,11 @@ App.vue onMounted
     推理按钮 + 可拖动吸附滑条；测试 299。**
 18. **审批/提问移到输入栏；右侧边栏支持工作区文件树、文件预览、内置浏览器与
     最多 3 个标签页；对话内文件可点击预览；轮次结束显示修改文件与 +/- 行数；
-    通用设置加入只读 / 工作区内修改 / 完全权限三档；测试 301。**
+    通用设置加入只读 / 工作区内修改 / 完全权限三档；测试 338。**
 
 ## 10. 给接手者的建议顺序
 
-1. 跑一遍后端测试，确认 301 全绿；再 `cd frontend && npm run build`；
+1. 跑一遍后端测试，确认 338 全绿；再 `cd frontend && npm run build`；
 2. 读 `web/runtime.py`（默认 `create_agent`）、`agents/react.py`（可选文本 ReAct）、
    `tools/registry.py`、`web/server.py`、`agents/context.py`，够理解后端 85%；
 3. 读 `frontend/src/stores/chat.ts`、`frontend/src/api/chat.ts`、`frontend/src/App.vue`，

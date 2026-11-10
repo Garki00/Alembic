@@ -17,6 +17,7 @@ from config.settings import settings
 from config.store import ModelConfig
 from prompts.system import build_system_prompt
 from tools.context import SessionRef, ToolContext
+from tools.images import vision_from_model
 from tools.registry import build_tools
 
 
@@ -72,6 +73,7 @@ def tool_context(
     todo_store=None,
     process_manager=None,
     emit=None,
+    vision=None,
 ) -> ToolContext:
     """把网页端的工作区字符串变成工具上下文。"""
     text = (workspace or "").strip()
@@ -85,6 +87,7 @@ def tool_context(
         todo_store=todo_store,
         process_manager=process_manager,
         emit=emit,
+        vision=vision,
     )
 
 
@@ -123,6 +126,7 @@ def build_runtime(
         todo_store=todo_store,
         process_manager=process_manager,
         emit=emit,
+        vision=vision_from_model(model),
     )
     tools = build_tools(set(enabled_tools), tool_configs or {}, ctx)
     system_prompt = build_system_prompt(str(ctx.workspace) if ctx.workspace else "")

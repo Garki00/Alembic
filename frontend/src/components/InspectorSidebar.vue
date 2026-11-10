@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { beginResize } from '../lib/resize'
 import { useInspectorStore } from '../stores/inspector'
 import BrowserView from './BrowserView.vue'
@@ -8,7 +8,27 @@ import FileViewer from './FileViewer.vue'
 
 const inspector = useInspectorStore()
 const addOpen = ref(false)
+const tabsEl = ref<HTMLElement | null>(null)
 const activeTab = computed(() => inspector.activeTab)
+
+watch(
+  () => inspector.activeId,
+  () => {
+    nextTick(() => {
+      const container = tabsEl.value
+      const active = container?.querySelector<HTMLElement>('.inspector-tab.active')
+      if (!container || !active) return
+      const left = active.offsetLeft
+      const right = left + active.offsetWidth
+      if (left < container.scrollLeft) {
+        container.scrollLeft = Math.max(0, left - 6)
+      } else if (right > container.scrollLeft + container.clientWidth) {
+        container.scrollLeft = right - container.clientWidth + 6
+      }
+    })
+  },
+  { flush: 'post' },
+)
 
 function onResize(event: PointerEvent): void {
   beginResize('right', event, (width) => inspector.setWidth(width))
@@ -35,20 +55,8 @@ function chooseBrowser(): void {
       title="拖动调整右侧栏宽度"
       @pointerdown="onResize"
     ></div>
-    <header class="inspector-head">
-      <span class="inspector-title">侧边栏</span>
-      <button
-        type="button"
-        class="icon-btn inspector-close"
-        title="收起侧边栏"
-        @click="inspector.hide()"
-      >
-        ×
-      </button>
-    </header>
-
-    <div v-if="inspector.tabs.length" class="inspector-tabbar">
-      <div class="inspector-tabs">
+    <header class="inspector-bar">
+      <div v-if="inspector.tabs.length" ref="tabsEl" class="inspector-tabs">
         <div
           v-for="tab in inspector.tabs"
           :key="tab.id"
@@ -58,7 +66,7 @@ function chooseBrowser(): void {
           @click="inspector.setActive(tab.id)"
         >
           <span class="inspector-tab-icon">
-            {{ tab.kind === 'files' ? '▤' : tab.kind === 'browser' ? '◎' : '·' }}
+            {{ tab.kind === 'files' ? '▤' : tab.kind === 'browser' ? '◎' : tab.diff ? '±' : '·' }}
           </span>
           <span class="inspector-tab-title">{{ tab.title }}</span>
           <button
@@ -71,6 +79,7 @@ function chooseBrowser(): void {
           </button>
         </div>
       </div>
+      <span v-else class="inspector-bar-spacer"></span>
       <div v-if="inspector.canAddTab" class="inspector-add">
         <button
           type="button"
@@ -85,7 +94,16 @@ function chooseBrowser(): void {
           <button type="button" @click="chooseBrowser">浏览器</button>
         </div>
       </div>
-    </div>
+      <button
+        type="button"
+        class="icon-btn inspector-close"
+        title="收起侧边栏"
+        aria-label="收起侧边栏"
+        @click="inspector.hide()"
+      >
+        ×
+      </button>
+    </header>
 
     <div class="inspector-body">
       <div v-if="!activeTab" class="inspector-options">
@@ -106,7 +124,7 @@ function chooseBrowser(): void {
       </div>
 
       <FileExplorer v-else-if="activeTab.kind === 'files'" />
-      <FileViewer v-else-if="activeTab.kind === 'file'" :path="activeTab.path" />
+      <FileViewer v-else-if="activeTab.kind === 'file'" :path="activeTab.path" :diff="activeTab.diff" />
       <BrowserView v-else :tab="activeTab" />
     </div>
   </aside>

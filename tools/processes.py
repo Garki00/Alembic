@@ -21,6 +21,7 @@ import locale
 import os
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -338,6 +339,93 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
         return truncate("\n".join([*header, body]), ctx.max_output_chars, keep_tail=True)
 
     @tool
+    def wait_process(process_id: str, timeout: int = 30, pattern: str = "", tail: int = 60) -> str:
+        """等待后台进程退出，或等待日志中出现某个模式。
+
+        适合启动 dev server 后等「Listening on ...」、跑构建后等结束，
+        避免模型反复调用 read_process_logs 轮询。
+
+        Args:
+            process_id: start_process 返回的进程 ID。
+            timeout: 最长等待秒数（1-120），默认 30。
+            pattern: 可选的正则；日志中出现匹配行时立即返回。
+            tail: 返回最后多少行日志（10-500），默认 60。
+
+        Returns:
+            进程状态、命中的日志行与日志尾部。等待超时不算工具错误，
+            会明确说明进程仍在运行。
+        """
+        record = manager.get(process_id)
+        if record is None:
+            return tool_error(
+                "unknown_process",
+                f"找不到进程 {process_id!r}。",
+                hint="先用 list_processes 查看现有进程 ID。",
+            )
+        regex = None
+        if (pattern or "").strip():
+            import re
+
+            try:
+                regex = re.compile(pattern)
+            except re.error as exc:
+                return tool_error(
+                    "bad_pattern",
+                    f"正则表达式无法编译：{exc}。",
+                    hint="请检查括号、方括号是否配对，或留空 pattern 只等进程退出。",
+                )
+
+        limit = max(1, min(int(timeout or 30), 120))
+        deadline = time.monotonic() + limit
+        matched = ""
+        timed_out = False
+
+        def log_text() -> str:
+            try:
+                size = record.log_path.stat().st_size
+                with record.log_path.open("rb") as handle:
+                    if size > _MAX_LOG_BYTES:
+                        handle.seek(size - _MAX_LOG_BYTES)
+                    return _decode(handle.read())
+            except OSError:
+                return ""
+
+        text = log_text().replace("\r\n", "\n")
+        if regex is not None:
+            for line in text.splitlines():
+                if regex.search(line):
+                    matched = line
+                    break
+        while not matched and record.running and time.monotonic() < deadline:
+            time.sleep(0.3)
+            if regex is not None:
+                text = log_text().replace("\r\n", "\n")
+                for line in text.splitlines():
+                    if regex.search(line):
+                        matched = line
+                        break
+        if record.running and not matched and time.monotonic() >= deadline:
+            timed_out = True
+
+        status = f"运行中 (PID {record.pid})" if record.running else f"已退出 (code {record.exit_code})"
+        header = [f"进程：{record.id} · {status}"]
+        if matched:
+            header.append(f"命中：{matched.strip()}")
+        elif regex is not None:
+            header.append(f"未命中模式：{pattern}")
+        if timed_out:
+            header.append(f"等待超时：进程在 {limit}s 内没有退出，也没有命中模式。")
+
+        text = log_text().replace("\r\n", "\n")
+        lines = text.rstrip("\n").splitlines()
+        keep = max(10, min(int(tail or 60), 500))
+        if len(lines) > keep:
+            lines = [f"…[日志共 {len(lines)} 行，只显示最后 {keep} 行]…", *lines[-keep:]]
+        header.append("--- 日志 ---")
+        header.append("\n".join(lines) if lines else "(暂无输出)")
+        return truncate("\n".join(header), ctx.max_output_chars, keep_tail=True)
+
+    @tool
     def stop_process(process_id: str) -> str:
         """停止一个由本应用启动的后台进程（会结束其子进程）。
 
@@ -360,7 +448,7 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
         code = stopped.exit_code if stopped else None
         return f"已停止进程：{record.id}（退出码 {code}）。"
 
-    tools = [start_process, list_processes, read_process_logs, stop_process]
+    tools = [start_process, list_processes, read_process_logs, wait_process, stop_process]
     if only is None:
         return tools
     return [tool for tool in tools if tool.name in only]

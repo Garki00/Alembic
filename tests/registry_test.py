@@ -27,13 +27,19 @@ class RegistryTest(unittest.TestCase):
                 "get_weather",
                 "file_read",
                 "read_document",
+                "read_image",
                 "file_write",
+                "apply_patch",
                 "fetch_url",
+                "web_search",
+                "download_file",
                 "todo_write",
                 "ask_user_question",
                 "run_command",
                 "background_process",
                 "process_inspect",
+                "git_read",
+                "git_commit",
                 "mock_data",
             ],
         )
@@ -53,10 +59,16 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(TOOL_SPECS["file_write"].risk, "write")
         self.assertEqual(
             set(TOOL_SPECS["file_read"].tool_names),
-            {"list_dir", "read_file", "search_files", "file_stat"},
+            {"list_dir", "read_file", "search_files", "find_files", "file_stat"},
         )
         self.assertEqual(TOOL_SPECS["read_document"].risk, "read")
+        self.assertEqual(TOOL_SPECS["read_image"].risk, "read")
+        self.assertEqual(TOOL_SPECS["apply_patch"].risk, "write")
         self.assertEqual(TOOL_SPECS["fetch_url"].risk, "read")
+        self.assertEqual(TOOL_SPECS["web_search"].risk, "read")
+        self.assertEqual(TOOL_SPECS["download_file"].risk, "write")
+        self.assertEqual(TOOL_SPECS["git_read"].risk, "read")
+        self.assertEqual(TOOL_SPECS["git_commit"].risk, "exec")
         self.assertEqual(TOOL_SPECS["background_process"].risk, "exec")
         self.assertFalse(TOOL_SPECS["get_weather"].default_enabled)
         self.assertIsNotNone(spec_of("get_weather"))
@@ -67,7 +79,7 @@ class RegistryTest(unittest.TestCase):
         only_read = build_tools({"file_read"}, {}, ctx)
         self.assertEqual(
             {tool.name for tool in only_read},
-            {"list_dir", "read_file", "search_files", "file_stat"},
+            {"list_dir", "read_file", "search_files", "find_files", "file_stat"},
         )
 
         # 期望集合从注册表派生，新增工具不需要改这条断言

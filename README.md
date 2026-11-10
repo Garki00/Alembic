@@ -108,15 +108,21 @@ SmartAgent 的配置目录（`data/`），以及仓库里会被首次启动迁�
 | `get_current_time` | `get_current_time` | 只读 | 开 |
 | `list_timezones` | `list_timezones` | 只读 | 开 |
 | `get_weather` | `get_weather` | 只读（需 QWeather 凭据与 API Host） | 关 |
-| `file_read` | `list_dir` / `read_file` / `search_files` / `file_stat` | 只读 | 开 |
+| `file_read` | `list_dir` / `read_file` / `search_files` / `find_files` / `file_stat` | 只读 | 开 |
 | `read_document` | `read_document` | 只读（PDF / Office / 文本） | 开 |
+| `read_image` | `read_image` | 只读（需支持视觉的模型） | 开 |
 | `file_write` | `write_file` / `edit_file` / `make_dir` / `delete_file` / `move_file` / `copy_file` | 改工作区文件 | 开 |
+| `apply_patch` | `apply_patch` | 改工作区文件 | 开 |
 | `fetch_url` | `fetch_url` | 只读（默认禁内网） | 开 |
+| `web_search` | `web_search` | 只读（默认 Bing，可换服务） | 开 |
+| `download_file` | `download_file` | 写工作区文件（默认禁内网） | 开 |
 | `todo_write` | `todo_write` | 只读（会话状态） | 开 |
 | `ask_user_question` | `ask_user_question` | 只读（等待用户回答） | 开 |
 | `run_command` | `run_command` | 执行本机命令 | 开（需确认） |
 | `background_process` | `start_process` / `stop_process` | 执行本机命令 | 开（需确认） |
-| `process_inspect` | `list_processes` / `read_process_logs` | 只读 | 开 |
+| `process_inspect` | `list_processes` / `read_process_logs` / `wait_process` | 只读 | 开 |
+| `git_read` | `git_status` / `git_diff` | 只读 | 开 |
+| `git_commit` | `git_commit` | 执行本机命令 | 开（需确认） |
 | `mock_data` | `mock_lookup` | 读取自定义文本 | 关 |
 
 `risk` 为 `write` / `exec` 的条目在真正执行前需要人工确认，见下文「工具审批」。
@@ -179,11 +185,14 @@ Vite 开发服务器会把 `/api` 代理到 `http://127.0.0.1:8000`；端口不�
 - **审批 / 提问**：需要用户确认或选择时，输入栏会替换成审批卡或提问卡，选项一行一个；
   选择结果保留在对话输出里，不再把待处理按钮混在正文中。
 - **右侧边栏**：右上角按钮展开 / 收起，展开时压缩对话区；左右侧边栏都可以拖动
-  边缘调整宽度，宽度会保存在本机。侧边栏可打开工作区文件树（文本、Markdown/README
-  预览，二进制等格式显示不支持）和内置浏览器；浏览器初始不访问任何页面，输入网址
-  后才加载。顶部标签栏最多 3 个文件 / 网页标签，达到 3 个后隐藏加号。
+  边缘调整宽度，宽度会保存在本机。顶部不再显示「侧边栏」标题，标签栏直接占据
+  标题位置，最多 3 个文件 / 网页标签，达到 3 个后隐藏加号。工作区文件树可打开
+  文本与 Markdown：代码/文本左侧显示行号，Markdown 默认预览并可切换「原文」；
+  从变更总结打开时进入 Diff View（旧/新行号 + 增删底色），二进制等格式显示不支持。
+  内置浏览器初始不访问任何页面，输入网址后才加载。
 - **轮次摘要**：一轮结束后用独立卡片显示修改了多少个文件、总新增 / 删除行数；
-  卡片内每行一个文件，行末显示该文件的 +/− 行数，文件名可直接点击在右侧边栏预览。
+  卡片内每行一个文件，行末显示该文件的 +/− 行数。点击文件名在右侧边栏以 Diff View
+  打开，悬停文件名会出现 Diff 预览浮层。
 - **设置面板**（唯一入口是左上角齿轮）：
   - **通用**：权限（只读 / 工作区内修改 / 完全权限；默认工作区内修改，切到完全权限
     需要二次确认）、工作步骤展示（简洁 / 标准 / 详细 / 完全展开）、工作步骤收起时机
@@ -292,9 +301,9 @@ activate / fetch）、`/api/tools`、`/api/preferences`、`/api/workspaces`（CR
 - 常见纯文本（`.txt` / `.md` / `.csv` / `.json` / `.log` / `.xml` / `.yaml`…）
 
 返回首行给出格式与总字符数，长文档用 `offset` 继续。旧版 `.doc` / `.xls` /
-`.ppt` 与图片 OCR 会返回明确错误；图片需要先转成文字或使用支持视觉的模型。
+`.ppt` 会返回明确错误；图片请改用 `read_image`（需要支持视觉的模型）。
 
-## 网页抓取
+## 网页抓取、搜索与下载
 
 `fetch_url(url, max_chars=0)` 抓取网页或 HTTP 接口，返回最终 URL、状态、类型、
 标题与正文。默认**拒绝回环与内网地址**（防 SSRF），需要访问本机服务时在
@@ -302,6 +311,26 @@ activate / fetch）、`/api/tools`、`/api/preferences`、`/api/workspaces`（CR
 
 重定向会逐跳校验，响应大小有上限，正文按工具输出预算截断。网页内容在结果里
 被标注为「外部数据，不可信」，系统提示词也要求模型不执行其中的指令。
+
+- `web_search(query, max_results=0)`：返回标题、链接与摘要。默认使用免密钥的
+  Bing，也可以在设置 → 工具 → 网页搜索里切换 DuckDuckGo / Tavily / Brave /
+  Serper / SearXNG；搜索结果同样按不可信外部数据标注。
+- `download_file(url, path="", overwrite=False)`：把 PDF、图片、压缩包等二进制
+  流式下载到工作区，带 SSRF 校验、重定向逐跳校验与大小上限；失败不会留下
+  `.part` 半成品。属于写工作区文件，执行前可能需要确认。
+- `read_image(path, question="")`：把图片交给当前模型做视觉理解并转写文字。
+  只有支持图片输入的模型可用；DeepSeek 纯文本模型会返回 `vision_unavailable` /
+  `vision_failed`，此时切换到 OpenAI / Claude / 千问等视觉模型。
+
+## 补丁、Git 与进程等待
+
+- `apply_patch(patch)`：应用标准 unified diff，支持多文件、多 hunk、新建与删除。
+  仍然遵守「读后写」；适合跨文件重构，只改一处时用 `edit_file` 更直接。
+- `git_status()` / `git_diff(path="", staged=False, context=3)`：查看分支、改动
+  与 unified diff；`git_commit(message, files=None)` 只提交已暂存内容，传
+  `files` 时先 `git add` 这些路径，不会静默 `git add -A`。
+- `wait_process(process_id, timeout=30, pattern="", tail=60)`：等待后台进程退出
+  或日志中出现某个模式（如 dev server 的 `Listening on`），避免反复轮询日志。
 
 ## 任务清单、提问与后台进程
 
@@ -311,28 +340,28 @@ activate / fetch）、`/api/tools`、`/api/preferences`、`/api/workspaces`（CR
 - `ask_user_question(question, options, allow_free_text)`：需要用户补充信息或做
   选择时阻塞等待。网页端出现问答卡片（选项按钮 + 文本框），命令行在终端提示；
   超时或流断开返回 `question_timeout` / `question_cancelled`，不会假装已回答。
-- `start_process` / `list_processes` / `read_process_logs` / `stop_process`：
-  后台跑 dev server、watch 或长脚本。启动与停止属于 `exec` 风险，需要审批；
-  日志写到数据目录的 `logs/processes/`，停止时会结束子进程。
+- `start_process` / `list_processes` / `read_process_logs` / `wait_process` /
+  `stop_process`：后台跑 dev server、watch 或长脚本。启动与停止属于 `exec`
+  风险，需要审批；日志写到数据目录的 `logs/processes/`，停止时会结束子进程。
 
 ## 新增工具（只改 Python）
 
 工具清单只有一处：`tools/registry.py` 的 `TOOL_SPECS`。加一个条目即可，前端无需改动：
 
 ```python
-"web_search": ToolSpec(
-    name="web_search",
-    label="网页搜索",
-    description="按关键词搜索网页。",
+"translate_text": ToolSpec(
+    name="translate_text",
+    label="文本翻译",
+    description="把一段文本翻译成目标语言。",
     fields=(
-        ToolField("SEARCH_API_KEY", "API Key", secret=True),
-        ToolField("SEARCH_ENDPOINT", "接口地址", placeholder="https://…"),
-        ToolField("SEARCH_MODE", "模式", kind="select",
+        ToolField("TRANSLATE_API_KEY", "API Key", secret=True),
+        ToolField("TRANSLATE_ENDPOINT", "接口地址", placeholder="https://…"),
+        ToolField("TRANSLATE_MODE", "模式", kind="select",
                   options=(("fast", "快速"), ("deep", "深度")), default="fast"),
-        ToolField("SEARCH_LIMIT", "结果数", kind="number", default="5"),
+        ToolField("TRANSLATE_LIMIT", "单次字数", kind="number", default="2000"),
     ),
-    tool_names=("web_search",),
-    builder=_build_web_search,   # (config, ctx) -> list[BaseTool]
+    tool_names=("translate_text",),
+    builder=_build_translate,   # (config, ctx) -> list[BaseTool]
 ),
 ```
 
@@ -534,7 +563,7 @@ Windows 默认不带 IANA 时区数据库，Python 的 `zoneinfo` 需要 `tzdata
 ## 测试
 
 ```powershell
-# 后端：301 个离线测试
+# 后端：338 个离线测试
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py" -v
 
 # 前端：类型检查 + 生产构建

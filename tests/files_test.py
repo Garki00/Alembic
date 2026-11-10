@@ -88,6 +88,25 @@ class ReadToolsTest(FilesTestBase):
         text = self.read["search_files"].invoke({"pattern": "([utf"})
         self.assertTrue(text.startswith("Error: [bad_pattern]"), text)
 
+    def test_find_files_by_name_and_glob(self):
+        (self.root / "src" / "deep").mkdir(parents=True)
+        (self.root / "src" / "main.py").write_text("x", encoding="utf-8")
+        (self.root / "src" / "deep" / "agent_test.py").write_text("x", encoding="utf-8")
+        (self.root / "README.md").write_text("# readme", encoding="utf-8")
+
+        by_glob = self.read["find_files"].invoke({"pattern": "**/*.py"})
+        self.assertIn("src/main.py", by_glob)
+        self.assertIn("src/deep/agent_test.py", by_glob)
+        self.assertNotIn("README.md", by_glob)
+
+        by_name = self.read["find_files"].invoke({"pattern": "agent"})
+        self.assertIn("agent_test.py", by_name)
+        self.assertNotIn("main.py", by_name)
+
+    def test_find_files_rejects_escape(self):
+        text = self.read["find_files"].invoke({"pattern": "*.py", "path": ".."})
+        self.assertTrue(text.startswith("Error: [path_escape]"), text)
+
     def test_output_is_truncated(self):
         (self.root / "big.txt").write_text(
             "\n".join("x" * 200 for _ in range(200)), encoding="utf-8"

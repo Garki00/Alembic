@@ -67,6 +67,24 @@ class ProcessToolsTest(unittest.TestCase):
         again = self.tools["stop_process"].invoke({"process_id": process_id})
         self.assertIn("已经退出", again)
 
+    def test_wait_process_for_pattern(self):
+        process_id = self.start_job()
+        text = self.tools["wait_process"].invoke(
+            {"process_id": process_id, "timeout": 10, "pattern": "ready"}
+        )
+        self.assertIn("命中：ready", text)
+        self.tools["stop_process"].invoke({"process_id": process_id})
+
+    def test_wait_process_timeout_reports_running(self):
+        process_id = self.start_job()
+        self.wait_for_ready(process_id)
+        text = self.tools["wait_process"].invoke(
+            {"process_id": process_id, "timeout": 1, "pattern": "never-appears"}
+        )
+        self.assertIn("等待超时", text)
+        self.assertIn("运行中", text)
+        self.tools["stop_process"].invoke({"process_id": process_id})
+
     def test_unknown_process(self):
         logs = self.tools["read_process_logs"].invoke({"process_id": "proc-nope"})
         self.assertTrue(logs.startswith("Error: [unknown_process]"), logs)
