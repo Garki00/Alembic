@@ -9,6 +9,7 @@ import type {
   ProviderInfo,
   ProviderPayload,
   SessionSummary,
+  TerminalInfo,
   ThinkingLevel,
   ToolInfo,
   WorkspaceInfo,
@@ -24,6 +25,8 @@ const DEFAULT_PREFERENCES: Preferences = {
   transcript_view: 'detailed',
   collapse_timing: 'completion',
   permission_mode: 'workspace_write',
+  terminal: 'powershell',
+  link_target: 'sidebar',
   developer_tools: false,
 }
 
@@ -37,6 +40,7 @@ export const useWorkspaceStore = defineStore('workspace', {
     workspaces: [] as WorkspaceInfo[],
     activeWorkspaceId: '',
     sessions: [] as SessionSummary[],
+    terminals: [] as TerminalInfo[],
     preferences: { ...DEFAULT_PREFERENCES } as Preferences,
     needsSetup: false,
     ready: false,
@@ -78,6 +82,7 @@ export const useWorkspaceStore = defineStore('workspace', {
       this.workspaces = data.workspaces || []
       this.activeWorkspaceId = data.active_workspace_id || this.workspaces[0]?.id || ''
       this.sessions = data.sessions || []
+      this.terminals = data.terminals || []
       this.preferences = data.preferences || { ...DEFAULT_PREFERENCES }
       this.needsSetup = Boolean(data.needs_setup)
       this.ready = true

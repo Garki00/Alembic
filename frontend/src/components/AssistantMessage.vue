@@ -44,11 +44,23 @@ function questionResult(question: ChatQuestion): string {
 
 function openFileLink(event: MouseEvent): void {
   const target = event.target as HTMLElement | null
-  const element = target?.closest<HTMLElement>('[data-file]')
-  const path = element?.dataset.file
-  if (!path) return
+  const file = target?.closest<HTMLElement>('[data-file]')
+  const path = file?.dataset.file
+  if (path) {
+    event.preventDefault()
+    inspector.openFile(path)
+    return
+  }
+
+  const anchor = target?.closest<HTMLAnchorElement>('a[href]')
+  const href = anchor?.getAttribute('href') || ''
+  if (!anchor || !/^https?:\/\//i.test(href)) return
   event.preventDefault()
-  inspector.openFile(path)
+  if (workspace.preferences.link_target === 'browser') {
+    window.open(href, '_blank', 'noopener,noreferrer')
+  } else {
+    inspector.openLink(href)
+  }
 }
 </script>
 

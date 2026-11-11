@@ -191,6 +191,40 @@ export const useInspectorStore = defineStore('inspector', {
       )
     },
 
+    /** 从对话里的网页链接打开：复用同 URL 标签页，且不计入用户标签页配额。 */
+    openLink(url = ''): void {
+      const target = normalizeBrowserUrl(url)
+      if (!target) return
+      const existing = this.tabs.find(
+        (tab) => tab.kind === 'browser' && tab.url === target,
+      )
+      if (existing) {
+        this.activeId = existing.id
+        this.open = true
+        return
+      }
+      if (this.tabs.length >= 10) {
+        // 标签页已经很多时不再新增，直接复用当前浏览器标签。
+        const browser = this.tabs.find((tab) => tab.kind === 'browser')
+        if (browser && browser.kind === 'browser') {
+          browser.url = target
+          browser.title = browserTitle(target)
+          this.activeId = browser.id
+          this.open = true
+          return
+        }
+      }
+      this.addTab(
+        {
+          id: tabId('browser'),
+          kind: 'browser',
+          title: browserTitle(target),
+          url: target,
+        },
+        false,
+      )
+    },
+
     updateBrowser(id: string, url: string): void {
       const tab = this.tabs.find((item) => item.id === id && item.kind === 'browser')
       if (!tab || tab.kind !== 'browser') return

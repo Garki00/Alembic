@@ -30,8 +30,10 @@ from uuid import uuid4
 from langchain.tools import tool
 
 from tools.context import ToolContext
+from tools.env import build_child_env
 from tools.errors import tool_error, truncate
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
+from tools.terminals import TERMINAL_CHOICES, build_invocation, terminal_label
 
 _IS_WINDOWS = os.name == "nt"
 _MAX_LOG_BYTES = 1_000_000
@@ -59,6 +61,7 @@ class ProcessRecord:
     cwd: Path
     popen: subprocess.Popen
     log_path: Path
+    terminal: str = "powershell"
     started_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     stopped_at: str = ""
 
@@ -89,10 +92,19 @@ class ProcessManager:
         _MANAGERS.append(self)
 
     # ---- 生命周期 ----
-    def start(self, command: str, cwd: Path, workspace: Path | None) -> ProcessRecord:
+    def start(
+        self,
+        command: str,
+        cwd: Path,
+        workspace: Path | None,
+        terminal: str = "powershell",
+    ) -> ProcessRecord:
         text = (command or "").strip()
         if not text:
             raise ValueError("command 不能为空")
+        chosen = (terminal or "powershell").strip().lower()
+        if chosen not in TERMINAL_CHOICES:
+            raise ValueError(f"不支持的终端：{terminal}")
         with self._lock:
             running = sum(1 for record in self._records.values() if record.running)
         if running >= 10:
@@ -100,12 +112,11 @@ class ProcessManager:
         process_id = f"proc-{uuid4().hex[:8]}"
         log_path = self.log_dir / f"{process_id}.log"
 
-        env = os.environ.copy()
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        env.setdefault("PYTHONUTF8", "1")
+        invocation = build_invocation(chosen, text, cwd)
+        env = build_child_env({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
         kwargs: dict = {
-            "shell": True,
-            "cwd": str(cwd),
+            "cwd": invocation.cwd,
+            "shell": invocation.shell,
             "stdin": subprocess.DEVNULL,
             "stdout": None,
             "stderr": subprocess.STDOUT,
@@ -122,7 +133,7 @@ class ProcessManager:
             raise OSError(f"无法创建日志文件 {log_path}：{exc}") from exc
         try:
             kwargs["stdout"] = handle
-            popen = subprocess.Popen(text, **kwargs)
+            popen = subprocess.Popen(invocation.argv, **kwargs)
         except OSError:
             handle.close()
             raise
@@ -138,6 +149,7 @@ class ProcessManager:
             cwd=cwd,
             popen=popen,
             log_path=log_path,
+            terminal=chosen,
         )
         with self._lock:
             self._records[process_id] = record
@@ -193,6 +205,7 @@ class ProcessManager:
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     capture_output=True,
                     timeout=10,
+                    env=build_child_env(),
                 )
             else:
                 import signal
@@ -263,7 +276,7 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
     manager = ctx.process_manager or get_process_manager(ctx.workspace)
 
     @tool
-    def start_process(command: str, cwd: str = "") -> str:
+    def start_process(command: str, cwd: str = "", terminal: str = "") -> str:
         """在后台启动一条命令，立即返回进程 ID；输出写入日志文件。
 
         适合 dev server、watch 构建、长时间脚本。需要看结果时用
@@ -272,6 +285,8 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
         Args:
             command: 要执行的命令，例如 "npm run dev"。
             cwd: 相对工作区的执行目录，默认工作区根目录。
+            terminal: 临时指定 powershell / cmd / gitbash / wsl；
+                留空时使用「设置 → 通用」里的终端偏好。
 
         Returns:
             进程 ID、PID 与日志位置；启动失败时返回 ``Error:``。
@@ -288,8 +303,15 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
         if not workdir.is_dir():
             return tool_error("not_a_directory", f"执行目录不存在：{cwd}。")
 
+        chosen = (terminal or ctx.terminal or "powershell").strip().lower()
+        if chosen not in TERMINAL_CHOICES:
+            return tool_error(
+                "unknown_terminal",
+                f"不支持的终端：{terminal}。",
+                hint="可选 powershell / cmd / gitbash / wsl。",
+            )
         try:
-            record = manager.start(text, workdir, ctx.workspace)
+            record = manager.start(text, workdir, ctx.workspace, terminal=chosen)
         except (OSError, ValueError) as exc:
             return tool_error("spawn_failed", f"无法启动进程：{exc}。")
 
@@ -297,6 +319,7 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
             f"已启动后台进程：{record.id}\n"
             f"PID：{record.pid}\n"
             f"命令：{record.command}\n"
+            f"终端：{terminal_label(record.terminal)}\n"
             f"目录：{display_path(ctx.workspace, workdir)}\n"
             f"日志：{record.log_path}\n"
             "用 read_process_logs 查看输出，用 stop_process 结束。"

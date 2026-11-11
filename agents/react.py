@@ -39,9 +39,11 @@ from agents.approval import (
     ApprovalRequest,
     denied_tool_message,
     describe_call,
+    policy_blocked_message,
 )
 from agents.context import SUMMARY_PREFIX, message_text
 from prompts.react import REACT_SYSTEM_PROMPT, build_react_prompt
+from tools.command_policy import assess_command
 from tools.errors import tool_error, truncate
 
 logger = logging.getLogger(__name__)
@@ -506,12 +508,23 @@ class ReActAgent:
     # ---- tools ----
     def _gate_tool(self, name: str, args: dict, call_id: str) -> ToolMessage | None:
         gate = self.approval
-        if gate is None or not gate.policy.needs_approval(name):
+        if gate is None:
+            return None
+        call = {"name": name, "args": args, "id": call_id}
+        blocked = gate.policy.precheck(name, args)
+        if blocked is not None:
+            code, message, hint = blocked
+            logger.warning("ReAct blocked tool %s: [%s] %s", name, code, message)
+            return policy_blocked_message(call, code, message, hint)
+
+        if not gate.policy.needs_approval(name):
             return None
         if gate.policy.is_allowed(name, args):
             return None
 
         target, summary, preview = describe_call(name, args)
+        command = args.get("command") if isinstance(args, dict) else None
+        risk = assess_command(str(command)) if command is not None else None
         request = ApprovalRequest(
             id=uuid4().hex[:12],
             tool=name,
@@ -520,8 +533,9 @@ class ReActAgent:
             summary=summary,
             preview=preview,
             args=dict(args),
+            reason=risk.reason if risk and risk.is_elevated else "",
+            rule=risk.rule if risk and risk.is_elevated else "",
         )
-        call = {"name": name, "args": args, "id": call_id}
         try:
             decision = gate.ask(request)
         except Exception:

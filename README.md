@@ -194,10 +194,12 @@ Vite 开发服务器会把 `/api` 代理到 `http://127.0.0.1:8000`；端口不�
   卡片内每行一个文件，行末显示该文件的 +/− 行数。点击文件名在右侧边栏以 Diff View
   打开，悬停文件名会出现 Diff 预览浮层。
 - **设置面板**（唯一入口是左上角齿轮）：
-  - **通用**：权限（只读 / 工作区内修改 / 完全权限；默认工作区内修改，切到完全权限
-    需要二次确认）、工作步骤展示（简洁 / 标准 / 详细 / 完全展开）、工作步骤收起时机
+  - **通用**：权限（只读 / 全部审批 / 工作区内修改 / 完全权限；默认工作区内修改，
+    切到完全权限需要二次确认）、终端偏好（PowerShell / CMD / Git Bash / WSL，默认
+    PowerShell）、网页链接打开方式（应用内侧边栏 / 默认浏览器，默认侧边栏）、
+    工作步骤展示（简洁 / 标准 / 详细 / 完全展开）、工作步骤收起时机
     （回答结束后 / 下次有新消息时）、显示代码工作视图。偏好保存在
-    `<home>/data/preferences.json`。
+    `<home>/data/preferences.json`。旧配置里的「只读」会自动迁移为「全部审批」。
   - **供应商**：以供应商为单位添加 / 编辑 / 删除。一个供应商共用 Base URL 与
     API Key；编辑时维护它自己的**模型列表**（模型 ID、显示名称、可多选的思考等级
     none/low/high/max、温度），「从上游获取」会把 `{base_url}/models` 的模型
@@ -262,6 +264,24 @@ activate / fetch）、`/api/tools`、`/api/preferences`、`/api/workspaces`（CR
 所有文件 / 命令操作都以**当前工作区**为根目录（网页在左侧栏选，命令行默认当前目录，
 可用 `WORKSPACE_DIR` 指定）。`..`、绝对路径与符号链接逃逸都会被拒绝，判断方式是
 先 `resolve()` 再 `Path.relative_to()`，因此 `D:\work` 不会误认 `D:\workspace-evil` 为子目录。
+凭据路径额外受保护：`.ssh` / `.aws` / `.kube` / `.gnupg`、私钥与 `.pem` / `.key`
+不允许读取或写入，`.env` 可以写入但读不回来；子进程只继承白名单环境变量，
+模型密钥不会出现在命令环境里。
+
+### 项目上下文文件
+
+工作区根目录可以放一份项目说明，Agent 会在每轮开始时读取并注入系统提示词：
+
+1. `ALEMBIC.md`（优先）
+2. `AGENTS.md`
+3. `CLAUDE.md`
+4. `.cursorrules`
+
+只取第一个匹配的文件，内容上限 20k 字符（超出保留头尾并标注截断）；包含
+“忽略先前指令”、索要密钥、隐藏 Unicode 等注入特征的文件会被标记为
+`[BLOCKED]` 而不加载。项目说明用于测试命令、目录约定、代码风格等，**不能覆盖
+安全、审批或命令策略**。系统提示词还区分 `web` 与 `cli` 两种回复界面：
+网页版允许 Markdown，命令行版优先纯文本。
 
 | 工具 | 作用 |
 | --- | --- |
@@ -275,8 +295,8 @@ activate / fetch）、`/api/tools`、`/api/preferences`、`/api/workspaces`（CR
 | `move_file(source, destination, overwrite=False)` | 移动 / 重命名；不能把目录移进自己的子目录 |
 | `copy_file(source, destination, overwrite=False)` | 复制文件或目录 |
 | `delete_file(path, recursive=False)` | 删除文件 / 目录；工作区根目录与 `.git` 受保护，非空目录需 `recursive=True` |
-| `run_command(command, cwd="", timeout=0)` | 执行 shell 命令，返回退出码 + stdout / stderr |
-| `start_process(command, cwd="")` | 后台启动长任务（dev server / watch），立即返回进程 ID |
+| `run_command(command, cwd="", timeout=0, terminal="")` | 执行 shell 命令；`terminal` 可临时指定 powershell / cmd / gitbash / wsl |
+| `start_process(command, cwd="", terminal="")` | 后台启动长任务（dev server / watch），立即返回进程 ID |
 | `list_processes()` / `read_process_logs(process_id, tail=200)` | 查看后台进程与日志尾部 |
 | `stop_process(process_id)` | 停止进程及其子进程 |
 
@@ -409,8 +429,13 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 | 拒绝 | 工具不执行，返回 `Error: [approval_denied]`，模型应换方案而不是重试 |
 
 - **网页端**：对话流里出现确认卡片，显示工具名、摘要与内容预览（命令原文、
-  写入内容前 800 字符、`edit_file` 的 `-旧 / +新`），点按钮即回执。
+  写入内容前 800 字符、`edit_file` 的 `-旧 / +新`），危险命令额外显示风险原因，
+  点按钮即回执。
   会话级授权可在「设置 → 工具 → 清除本会话『始终允许』」撤销。
+- **命令策略**：格式化磁盘、删除系统盘根目录、注销 WSL 发行版、破坏引导记录等
+  不可恢复操作会被直接拒绝（`Error: [blocked_by_policy]`），不弹审批也不能用
+  「始终允许」绕过；递归删除、强制推送、结束进程、访问凭据文件等可恢复操作会在
+  审批卡片上说明风险。只读模式则在审批之前直接拒绝写文件与执行命令。
 - **命令行**：终端提示 `[y] 允许本次 / [a] 始终允许 / [n] 拒绝`；
   `/approvals` 查看已记住的授权，`/approvals clear` 清除，切换会话自动作废。
 - **超时与断流**：等待超过 `APPROVAL_TIMEOUT` 秒按拒绝处理；客户端中途断开时，
@@ -564,7 +589,7 @@ Windows 默认不带 IANA 时区数据库，Python 的 `zoneinfo` 需要 `tzdata
 ## 测试
 
 ```powershell
-# 后端：338 个离线测试
+# 后端：412 个离线测试
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py" -v
 
 # 前端：类型检查 + 生产构建

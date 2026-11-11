@@ -27,6 +27,7 @@ from agents.approval import (
     ApprovalGate,
     ApprovalPolicy,
     permission_tools,
+    tool_risks,
 )
 from agents.context import ChatSession, SessionStore, message_text, reasoning_text
 from config.settings import settings
@@ -39,6 +40,8 @@ from config.store import (
     WorkspaceStore,
 )
 from tools.processes import ProcessManager
+from tools.selection import merge_tool_entries, select_tool_entries
+from tools.terminals import available_terminals
 from tools.todo import TodoStore
 from web.approvals import ApprovalBroker, ApprovalRegistry
 from web.auth import install_auth
@@ -123,6 +126,8 @@ class PreferencesPayload(BaseModel):
     transcript_view: str | None = None
     collapse_timing: str | None = None
     permission_mode: str | None = None
+    terminal: str | None = None
+    link_target: str | None = None
     developer_tools: bool | None = None
 
 
@@ -229,6 +234,9 @@ def create_app(
     # 审批：待回执表（跨请求）+ 每个会话已记住的「始终允许」
     app.state.approvals = ApprovalRegistry()
     app.state.approval_memo: dict[str, dict[str, dict]] = {}
+    # 每个会话已出现过的工具条目：只增不减，避免后续轮次把写工具裁掉，
+    # 也让模型看到的 tools[] 在一个会话内保持稳定。
+    app.state.session_tool_entries: dict[str, set[str]] = {}
     # 提问：与审批同构的中继，回答走 POST /api/questions/{id}
     app.state.questions = QuestionRegistry()
     # 任务清单与后台进程都放在应用级，跨轮次共享
@@ -284,6 +292,15 @@ def create_app(
             "active_workspace_id": workspaces.active_id,
             "sessions": [_session_summary(sessions, meta) for meta in sessions.list_sessions()],
             "preferences": preferences.get(),
+            "terminals": [
+                {
+                    "value": item.value,
+                    "label": item.label,
+                    "available": item.available,
+                    "detail": item.detail,
+                }
+                for item in available_terminals()
+            ],
         }
 
     # ---- 供应商与模型 ----
@@ -589,6 +606,7 @@ def create_app(
     def delete_session(session_id: str):
         sessions.delete(session_id)
         app.state.todos.clear(session_id)
+        app.state.session_tool_entries.pop(session_id, None)
         return {"ok": True}
 
     @app.get("/api/sessions/{session_id}/messages")
@@ -639,16 +657,23 @@ def create_app(
             timeout=settings.question_timeout,
         )
         gate: ApprovalGate | None = None
-        permission_mode = str(
-            preferences.get().get("permission_mode") or "workspace_write"
-        )
+        prefs = preferences.get()
+        permission_mode = str(prefs.get("permission_mode") or "workspace_write")
+        terminal = str(prefs.get("terminal") or "powershell")
         gated = permission_tools(tools.enabled_tools(), permission_mode)
-        if settings.approval_enabled and gated:
-            memo = app.state.approval_memo.setdefault(session_id, {})
-            gate = ApprovalGate(
-                policy=ApprovalPolicy(gated, memo),
-                ask=broker.ask,
-            )
+        if not settings.approval_enabled:
+            # 关闭的只是「弹审批」，不是命令策略：高危命令仍然直接拒绝。
+            gated = {}
+        memo = app.state.approval_memo.setdefault(session_id, {})
+        gate = ApprovalGate(
+            policy=ApprovalPolicy(
+                gated,
+                memo,
+                mode=permission_mode,
+                risks=tool_risks(tools.enabled_tools()),
+            ),
+            ask=broker.ask,
+        )
 
         try:
             history, _meta = sessions.load(session_id)
@@ -662,9 +687,14 @@ def create_app(
                 if len(recent_requests) == 2:
                     break
             request_text = "\n".join([*reversed(recent_requests), message])
+            enabled = tools.enabled_tools()
+            picked = select_tool_entries(enabled, request_text)
+            previous = app.state.session_tool_entries.get(session_id, set())
+            selected = merge_tool_entries(previous, picked, enabled)
+            app.state.session_tool_entries[session_id] = selected
             agent, summarizer = app.state.runtime_factory(
                 model_cfg,
-                tools.enabled_tools(),
+                enabled,
                 workspace,
                 tool_configs=tools.configs(),
                 approval=gate,
@@ -674,6 +704,8 @@ def create_app(
                 process_manager=app.state.processes,
                 emit=emit,
                 request_text=request_text,
+                terminal=terminal,
+                tool_entries=selected,
             )
         except Exception as exc:
             raise HTTPException(400, str(exc)) from exc

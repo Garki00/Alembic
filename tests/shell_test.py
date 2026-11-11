@@ -1,14 +1,17 @@
 # tests/shell_test.py
-"""命令执行工具的测试：退出码、cwd 边界、超时与输出截断。"""
+"""命令执行工具的测试：终端、退出码、cwd 边界、超时、环境白名单与截断。"""
 
+import os
 import shutil
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from tools.context import ToolContext
 from tools.shell import build_shell_tools
+from tools.terminals import available_terminals
 
 
 def make_root() -> Path:
@@ -29,6 +32,29 @@ class ShellTest(unittest.TestCase):
                 ToolContext(workspace=self.root, max_output_chars=2000, command_timeout=20)
             )
         }["run_command"]
+        self.available = {item.value: item.available for item in available_terminals()}
+
+        def script(name: str, body: str) -> str:
+            path = self.root / name
+            path.write_text(body, encoding="utf-8")
+            return f'"{sys.executable}" "{path}"'
+
+        self.cwd_command = script(
+            "cwd.py", "import os\nprint(os.getcwd())\n"
+        )
+        self.stderr_command = script(
+            "stderr.py", "import sys\nprint('boom', file=sys.stderr)\nraise SystemExit(2)\n"
+        )
+        self.fail_command = script("fail.py", "raise SystemExit(3)\n")
+        self.sleep_command = script(
+            "sleep.py", "import time\ntime.sleep(10)\n"
+        )
+        self.big_command = script(
+            "big.py", "print('x' * 20000)\n"
+        )
+        self.env_command = script(
+            "env.py", "import os\nprint(os.getenv('DEEPSEEK_API_KEY', '<missing>'))\n"
+        )
 
     # ---- 正常路径 ----
     def test_success_reports_exit_code_and_stdout(self):
@@ -36,22 +62,52 @@ class ShellTest(unittest.TestCase):
         self.assertIn("退出码：0", text)
         self.assertIn("hello", text)
         self.assertIn("--- stdout ---", text)
+        self.assertIn("终端：PowerShell", text)
 
     def test_stderr_is_captured_separately(self):
-        text = self.run_command.invoke({"command": "echo boom 1>&2"})
+        text = self.run_command.invoke({"command": self.stderr_command})
         self.assertIn("--- stderr ---", text)
         self.assertIn("boom", text)
 
     def test_nonzero_exit_is_reported_but_not_as_tool_error(self):
-        text = self.run_command.invoke({"command": "exit 3"})
+        text = self.run_command.invoke({"command": self.fail_command})
         self.assertFalse(text.startswith("Error:"), text)
         self.assertIn("退出码：3", text)
         self.assertIn("失败", text)
 
     def test_default_cwd_is_workspace(self):
-        command = f'"{sys.executable}" -c "import os;print(os.getcwd())"'
-        text = self.run_command.invoke({"command": command})
-        self.assertIn(str(self.root), text.replace("\\\\", "\\"))
+        text = self.run_command.invoke({"command": self.cwd_command})
+        self.assertIn(str(self.root), text)
+
+    # ---- 终端 ----
+    def test_cmd_terminal(self):
+        if not self.available.get("cmd"):
+            self.skipTest("CMD 不可用")
+        text = self.run_command.invoke({"command": "echo hello", "terminal": "cmd"})
+        self.assertIn("终端：CMD", text)
+        self.assertIn("hello", text)
+
+    def test_gitbash_terminal(self):
+        if not self.available.get("gitbash"):
+            self.skipTest("Git Bash 不可用")
+        text = self.run_command.invoke({"command": "echo hello", "terminal": "gitbash"})
+        # 某些受限环境会禁止 Git Bash 创建信号管道（Win32 error 5），
+        # 这是宿主限制而不是终端适配失败。
+        if "signal pipe" in text or "Win32 error 5" in text:
+            self.skipTest("宿主环境禁止 Git Bash 创建信号管道")
+        self.assertIn("终端：Git Bash", text)
+        self.assertIn("hello", text)
+
+    def test_wsl_terminal(self):
+        if not self.available.get("wsl"):
+            self.skipTest("WSL 不可用")
+        text = self.run_command.invoke({"command": "echo hello", "terminal": "wsl"})
+        # 可能已安装 wsl.exe 但没有任何发行版；只要走 WSL 分支并给出明确结果即可。
+        self.assertIn("终端：WSL", text)
+
+    def test_unknown_terminal_rejected(self):
+        text = self.run_command.invoke({"command": "echo x", "terminal": "fish"})
+        self.assertTrue(text.startswith("Error: [unknown_terminal]"), text)
 
     # ---- 边界 ----
     def test_empty_command_rejected(self):
@@ -74,15 +130,20 @@ class ShellTest(unittest.TestCase):
         text = tools["run_command"].invoke({"command": "echo x"})
         self.assertTrue(text.startswith("Error: [no_workspace]"), text)
 
+    # ---- 环境变量 ----
+    def test_secret_environment_is_not_inherited(self):
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-super-secret"}, clear=False):
+            text = self.run_command.invoke({"command": self.env_command})
+        self.assertIn("<missing>", text)
+        self.assertNotIn("sk-super-secret", text)
+
     # ---- 超时与截断 ----
     def test_timeout_kills_command(self):
-        command = f'"{sys.executable}" -c "import time;time.sleep(10)"'
-        text = self.run_command.invoke({"command": command, "timeout": 1})
+        text = self.run_command.invoke({"command": self.sleep_command, "timeout": 1})
         self.assertTrue(text.startswith("Error: [timeout]"), text)
 
     def test_output_is_truncated(self):
-        command = f'"{sys.executable}" -c "print(\'x\' * 20000)"'
-        text = self.run_command.invoke({"command": command})
+        text = self.run_command.invoke({"command": self.big_command})
         self.assertLessEqual(len(text), 2000 + 200)
         self.assertIn("已截断", text)
 

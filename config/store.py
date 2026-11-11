@@ -1008,10 +1008,15 @@ class WorkspaceStore:
 # ---------------------------------------------------------------------------
 TRANSCRIPT_VIEW_MODES = ("compact", "standard", "detailed", "verbose")
 COLLAPSE_TIMINGS = ("completion", "next_input")
-PERMISSION_MODES = ("read_only", "workspace_write", "full_access")
+PERMISSION_MODES = ("read_only", "approval_all", "workspace_write", "full_access")
+TERMINAL_CHOICES = ("powershell", "cmd", "gitbash", "wsl")
+LINK_TARGETS = ("sidebar", "browser")
 DEFAULT_TRANSCRIPT_VIEW = "detailed"
 DEFAULT_COLLAPSE_TIMING = "completion"
 DEFAULT_PERMISSION_MODE = "workspace_write"
+DEFAULT_TERMINAL = "powershell"
+DEFAULT_LINK_TARGET = "sidebar"
+PREFERENCES_VERSION = 2
 
 
 def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -1022,8 +1027,22 @@ def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
     if timing not in COLLAPSE_TIMINGS:
         timing = DEFAULT_COLLAPSE_TIMING
     permission = str(data.get("permission_mode") or DEFAULT_PERMISSION_MODE).strip().lower()
+    # v1 的 read_only 实际语义是「所有工具都要审批」。v2 起该语义改名为
+    # approval_all，read_only 变成真正的只读；旧配置在读取时一次性迁移。
+    try:
+        version = int(data.get("version", 1))
+    except (TypeError, ValueError):
+        version = 1
+    if version < PREFERENCES_VERSION and permission == "read_only":
+        permission = "approval_all"
     if permission not in PERMISSION_MODES:
         permission = DEFAULT_PERMISSION_MODE
+    terminal = str(data.get("terminal") or DEFAULT_TERMINAL).strip().lower()
+    if terminal not in TERMINAL_CHOICES:
+        terminal = DEFAULT_TERMINAL
+    link_target = str(data.get("link_target") or DEFAULT_LINK_TARGET).strip().lower()
+    if link_target not in LINK_TARGETS:
+        link_target = DEFAULT_LINK_TARGET
     developer = data.get("developer_tools", False)
     if isinstance(developer, str):
         developer = developer.strip().lower() in {"1", "true", "on", "yes"}
@@ -1031,14 +1050,16 @@ def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
         "transcript_view": mode,
         "collapse_timing": timing,
         "permission_mode": permission,
+        "terminal": terminal,
+        "link_target": link_target,
         "developer_tools": bool(developer),
     }
 
 
 class PreferencesStore:
-    """通用设置的持久化：工作步骤展示、收起时机、代码工作视图。
+    """通用设置的持久化：工作步骤、权限、终端偏好与链接打开方式。
 
-    这是纯 UI 偏好，不影响模型请求；但放在用户数据目录里，
+    这是纯本机偏好，不影响模型请求；但放在用户数据目录里，
     换浏览器/刷新后仍保持一致。
     """
 
@@ -1049,9 +1070,12 @@ class PreferencesStore:
         return _normalize_preferences(
             self.file.load(
                 {
+                    "version": PREFERENCES_VERSION,
                     "transcript_view": DEFAULT_TRANSCRIPT_VIEW,
                     "collapse_timing": DEFAULT_COLLAPSE_TIMING,
                     "permission_mode": DEFAULT_PERMISSION_MODE,
+                    "terminal": DEFAULT_TERMINAL,
+                    "link_target": DEFAULT_LINK_TARGET,
                     "developer_tools": False,
                 }
             )
@@ -1072,14 +1096,28 @@ class PreferencesStore:
         if "permission_mode" in patch:
             permission = str(patch["permission_mode"]).strip().lower()
             if permission not in PERMISSION_MODES:
-                raise ValueError("permission_mode 只能是 read_only / workspace_write / full_access")
+                raise ValueError(
+                    "permission_mode 只能是 read_only / approval_all / workspace_write / full_access"
+                )
             current["permission_mode"] = permission
+        if "terminal" in patch:
+            terminal = str(patch["terminal"]).strip().lower()
+            if terminal not in TERMINAL_CHOICES:
+                raise ValueError("terminal 只能是 powershell / cmd / gitbash / wsl")
+            current["terminal"] = terminal
+        if "link_target" in patch:
+            target = str(patch["link_target"]).strip().lower()
+            if target not in LINK_TARGETS:
+                raise ValueError("link_target 只能是 sidebar / browser")
+            current["link_target"] = target
         if "developer_tools" in patch:
             value = patch["developer_tools"]
             current["developer_tools"] = value if isinstance(value, bool) else (
                 str(value).strip().lower() in {"1", "true", "on", "yes"}
             )
-        self.file.save(current)
+        payload = dict(current)
+        payload["version"] = PREFERENCES_VERSION
+        self.file.save(payload)
         return current
 
 

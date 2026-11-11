@@ -24,7 +24,12 @@ from langchain.tools import tool
 
 from tools.context import ToolContext
 from tools.errors import tool_error, truncate
-from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
+from tools.paths import (
+    WorkspacePathError,
+    display_path,
+    is_protected_read,
+    resolve_in_workspace,
+)
 
 # ---------------------------------------------------------------- 读后写校验
 # path -> (mtime_ns, 是否完整读过)。进程内共享，允许跨轮次、跨工具使用。
@@ -132,10 +137,10 @@ def _as_error(exc: WorkspacePathError) -> str:
     return tool_error(exc.code, exc.message, hint=exc.hint)
 
 
-def _resolve_or_none(ctx: ToolContext, raw: str) -> Path | str:
+def _resolve_or_none(ctx: ToolContext, raw: str, *, access: str = "read") -> Path | str:
     """解析路径；失败时直接返回错误字符串，省掉每处的 try/except。"""
     try:
-        return resolve_in_workspace(ctx.workspace, raw)
+        return resolve_in_workspace(ctx.workspace, raw, access=access)
     except WorkspacePathError as exc:
         return _as_error(exc)
 
@@ -316,6 +321,8 @@ def build_file_read_tools(ctx: ToolContext) -> list:
         def scan(file_path: Path) -> bool:
             """扫描单个文件；返回 False 表示已经凑够结果。"""
             nonlocal skipped_binary
+            if is_protected_read(file_path, ctx.workspace):
+                return True
             if _looks_binary(file_path):
                 skipped_binary += 1
                 return True
@@ -486,7 +493,7 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         Returns:
             写入结果的路径、行数与字节数。
         """
-        target = _resolve_or_none(ctx, path)
+        target = _resolve_or_none(ctx, path, access="write")
         if isinstance(target, str):
             return target
         if target.is_dir():
@@ -559,7 +566,7 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         Returns:
             替换处数与文件路径。
         """
-        target = _resolve_or_none(ctx, path)
+        target = _resolve_or_none(ctx, path, access="write")
         if isinstance(target, str):
             return target
         if not target.exists():
@@ -628,7 +635,7 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         Returns:
             创建结果；已存在且是目录时返回提示而不是失败。
         """
-        target = _resolve_or_none(ctx, path)
+        target = _resolve_or_none(ctx, path, access="write")
         if isinstance(target, str):
             return target
         reason = _protected_reason(target, ctx.workspace)
@@ -658,7 +665,7 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         Returns:
             删除结果；目标不存在或受保护时返回 ``Error:``。
         """
-        target = _resolve_or_none(ctx, path)
+        target = _resolve_or_none(ctx, path, access="write")
         if isinstance(target, str):
             return target
         if not target.exists():
@@ -698,7 +705,7 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         src = _resolve_or_none(ctx, source)
         if isinstance(src, str):
             return src
-        dst = _resolve_or_none(ctx, destination)
+        dst = _resolve_or_none(ctx, destination, access="write")
         if isinstance(dst, str):
             return dst
         if not src.exists():
@@ -755,7 +762,7 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         src = _resolve_or_none(ctx, source)
         if isinstance(src, str):
             return src
-        dst = _resolve_or_none(ctx, destination)
+        dst = _resolve_or_none(ctx, destination, access="write")
         if isinstance(dst, str):
             return dst
         if not src.exists():

@@ -3,27 +3,35 @@
 
 风险等级最高，因此：
 
-- 在工具注册表里默认**关闭**，必须在设置面板里显式启用；
+- 在工具注册表里默认开启，但执行前必须经过审批；只读模式直接拒绝；
 - 工作目录被限制在工作区内（``cwd`` 同样走越界检查）；
+- 支持 PowerShell / CMD / Git Bash / WSL，默认跟随「设置 → 通用 → 终端偏好」；
+- 子进程只继承白名单环境变量，模型密钥不会被命令读到；
 - 强制超时，避免一条挂起的命令拖死整轮对话；
 - stdout / stderr 分别截断，保留尾部（报错通常在最后）。
 
-注意：这是本机的真实 shell，没有沙箱与审批环节。启用前请确认你接受
-「模型可以在工作区里执行任意命令」这一前提。
+注意：这不是操作系统级沙盒。命令与后端进程属于同一个 OS 用户，真正限制
+它能做什么的是命令策略（高危命令直接拒绝）与用户审批，而不是本模块。
 """
 
 from __future__ import annotations
 
 import locale
-import os
 import subprocess
 import time
 
 from langchain.tools import tool
 
 from tools.context import ToolContext
+from tools.env import build_child_env
 from tools.errors import tool_error, truncate
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
+from tools.terminals import (
+    TERMINAL_CHOICES,
+    TerminalUnavailable,
+    build_invocation,
+    terminal_label,
+)
 
 _MAX_TIMEOUT = 600
 
@@ -31,7 +39,7 @@ _MAX_TIMEOUT = 600
 def _decode(raw: bytes) -> str:
     """按 UTF-8 → 系统编码 → GBK → 替换的顺序解码子进程输出。
 
-    Windows 的 cmd/PowerShell 常按本地代码页（简中为 GBK）输出，
+    Windows 的 PowerShell / cmd 常按本地代码页（简中为 GBK）输出，
     直接当 UTF-8 解码会得到一堆替换字符。
     """
     if not raw:
@@ -56,10 +64,10 @@ def _block(title: str, text: str, max_chars: int) -> list[str]:
 
 
 def build_shell_tools(ctx: ToolContext) -> list:
-    """构造命令执行工具（工作区绑定、强制超时）。"""
+    """构造命令执行工具（终端偏好、环境白名单、强制超时）。"""
 
     @tool
-    def run_command(command: str, cwd: str = "", timeout: int = 0) -> str:
+    def run_command(command: str, cwd: str = "", timeout: int = 0, terminal: str = "") -> str:
         """在工作区内执行一条 shell 命令，返回退出码与输出。
 
         适合跑测试、构建、脚本、查看 git 状态等。命令不会被交互式接管，
@@ -70,6 +78,8 @@ def build_shell_tools(ctx: ToolContext) -> list:
                 "git status --short"、"dir"。
             cwd: 相对工作区的执行目录，默认工作区根目录。
             timeout: 超时秒数（1-600），0 表示使用默认值。
+            terminal: 临时指定终端：powershell / cmd / gitbash / wsl；
+                留空时使用「设置 → 通用」里的终端偏好。
 
         Returns:
             首行是退出码（非零表示命令失败），随后是 stdout 与 stderr 两个区块。
@@ -90,17 +100,30 @@ def build_shell_tools(ctx: ToolContext) -> list:
         limit = int(timeout or 0)
         limit = ctx.command_timeout if limit <= 0 else max(1, min(limit, _MAX_TIMEOUT))
 
-        env = os.environ.copy()
-        # 让 Python 子进程统一用 UTF-8，减少中文输出乱码
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        env.setdefault("PYTHONUTF8", "1")
+        chosen = (terminal or ctx.terminal or "powershell").strip().lower()
+        if chosen not in TERMINAL_CHOICES:
+            return tool_error(
+                "unknown_terminal",
+                f"不支持的终端：{terminal}。",
+                hint="可选 powershell / cmd / gitbash / wsl。",
+            )
+        try:
+            invocation = build_invocation(chosen, text, workdir)
+        except TerminalUnavailable as exc:
+            return tool_error(
+                "terminal_unavailable",
+                str(exc),
+                hint="请在「设置 → 通用 → 终端偏好」里换一个可用终端，或安装对应工具。",
+            )
+
+        env = build_child_env({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
 
         started = time.monotonic()
         try:
             completed = subprocess.run(
-                text,
-                shell=True,
-                cwd=str(workdir),
+                invocation.argv,
+                shell=invocation.shell,
+                cwd=invocation.cwd,
                 capture_output=True,
                 timeout=limit,
                 env=env,
@@ -117,13 +140,18 @@ def build_shell_tools(ctx: ToolContext) -> list:
                 ),
             )
         except OSError as exc:
-            return tool_error("spawn_failed", f"无法启动命令：{exc}。")
+            return tool_error(
+                "spawn_failed",
+                f"无法启动 {terminal_label(chosen)}：{exc}。",
+                hint="请确认该终端可用，或在设置里换一个终端。",
+            )
 
         elapsed = time.monotonic() - started
         code = completed.returncode
         status = "成功" if code == 0 else "失败"
         lines = [
             f"退出码：{code}（{status}）",
+            f"终端：{terminal_label(chosen)}",
             f"工作目录：{display_path(ctx.workspace, workdir)}",
             f"耗时：{elapsed:.1f}s",
         ]

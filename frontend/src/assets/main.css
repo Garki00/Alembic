@@ -430,6 +430,24 @@ html.resizing .inspector-resizer::after {
     padding: 1px 6px;
 }
 .approval-summary { font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
+.approval-reason {
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 7px 9px;
+    border: 1px solid #e3cfa4;
+    border-radius: 4px;
+    background: #fbf5e4;
+    color: #7a5a1f;
+    font-size: 10.5px;
+    line-height: 1.6;
+}
+.approval-reason-label {
+    flex: none;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+}
 .approval-preview {
     margin: 8px 0 0;
     max-height: 170px;
@@ -659,6 +677,16 @@ html.resizing .inspector-resizer::after {
 .code-result.error { border-color: var(--danger-border); background: var(--danger-bg); color: var(--danger); }
 
 /* ---------- 通用设置 ---------- */
+.settings-group + .settings-group { margin-top: 22px; }
+.settings-group-title {
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--soft);
+    padding: 2px 2px 0;
+    margin-bottom: -4px;
+}
 .general-list { display: grid; gap: 0; }
 .general-row {
     display: grid;
@@ -951,6 +979,11 @@ html.resizing .inspector-resizer::after {
     overflow: hidden;
     animation: arrive 220ms ease-out;
 }
+/* 设置窗固定高度：切换标签页或内容多少都不再改变外框尺寸。 */
+.modal-card.settings-card {
+    height: min(760px, 88vh);
+    max-height: 88vh;
+}
 .modal-head {
     display: flex;
     align-items: flex-start;
@@ -960,7 +993,7 @@ html.resizing .inspector-resizer::after {
     border-bottom: 1px solid var(--border);
 }
 .modal-head h2 { font-family: var(--serif); font-weight: 400; font-size: 26px; margin: 2px 0 0; }
-.settings-body { display: grid; grid-template-columns: 148px minmax(0, 1fr); min-height: 0; flex: 1; }
+.settings-body { display: grid; grid-template-columns: 148px minmax(0, 1fr); min-height: 0; flex: 1; overflow: hidden; }
 .tabs {
     display: flex;
     flex-direction: column;
@@ -1351,6 +1384,7 @@ html.resizing .inspector-resizer::after {
 }
 .onboarding-card {
     width: min(820px, 100%);
+    height: min(780px, 92vh);
     max-height: 92vh;
     display: flex;
     flex-direction: column;
@@ -1407,6 +1441,7 @@ html.resizing .inspector-resizer::after {
     padding: 22px 28px;
     overflow-y: auto;
     min-height: 0;
+    flex: 1;
 }
 .onboarding-section-head { margin-bottom: 14px; }
 .onboarding-section-head h3 { margin: 0 0 2px; font-size: 14px; font-weight: 600; }

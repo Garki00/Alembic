@@ -77,9 +77,12 @@ class GatingTest(unittest.TestCase):
     def test_permission_modes(self):
         enabled = {"file_read", "file_write", "run_command"}
         read_only = permission_tools(enabled, "read_only")
-        self.assertIn("read_file", read_only)
-        self.assertIn("write_file", read_only)
-        self.assertIn("run_command", read_only)
+        self.assertEqual(read_only, {})
+
+        approval_all = permission_tools(enabled, "approval_all")
+        self.assertIn("read_file", approval_all)
+        self.assertIn("write_file", approval_all)
+        self.assertIn("run_command", approval_all)
 
         workspace = permission_tools(enabled, "workspace_write")
         self.assertNotIn("write_file", workspace)
@@ -164,12 +167,67 @@ class MiddlewareTest(unittest.TestCase):
         ask = Recorder("deny")
         middleware, handler = self.build(ask)
 
-        result = middleware.wrap_tool_call(make_call("run_command", {"command": "rm -rf /"}), handler)
+        result = middleware.wrap_tool_call(make_call("run_command", {"command": "echo x"}), handler)
         self.assertIsInstance(result, ToolMessage)
         self.assertEqual(result.status, "error")
         self.assertEqual(result.tool_call_id, "call-1")
         self.assertIn("Error: [approval_denied]", result.content)
         self.assertEqual(self.executed, [])
+
+    def test_hardline_command_is_blocked_without_asking(self):
+        ask = Recorder("once")
+        middleware, handler = self.build(ask)
+
+        result = middleware.wrap_tool_call(
+            make_call("run_command", {"command": "format D:"}), handler
+        )
+        self.assertIsInstance(result, ToolMessage)
+        self.assertIn("Error: [blocked_by_policy]", result.content)
+        self.assertEqual(ask.requests, [])
+        self.assertEqual(self.executed, [])
+
+    def test_elevated_command_carries_reason_into_request(self):
+        ask = Recorder("deny")
+        middleware, handler = self.build(ask)
+
+        middleware.wrap_tool_call(
+            make_call("run_command", {"command": "git push --force origin main"}), handler
+        )
+        request = ask.requests[0]
+        self.assertIn("Git", request.reason)
+        self.assertEqual(request.rule, "git_rewrite")
+        self.assertIn("reason", request.as_event())
+
+    def test_read_only_blocks_write_and_exec_before_approval(self):
+        policy = ApprovalPolicy(
+            {},
+            mode="read_only",
+            risks={"read_file": "read", "write_file": "write", "run_command": "exec"},
+        )
+        ask = Recorder("once")
+        executed: list[str] = []
+
+        def handler(request):
+            executed.append(request.tool_call["name"])
+            return "ok"
+
+        middleware = ApprovalMiddleware(ApprovalGate(policy=policy, ask=ask))
+
+        denied = middleware.wrap_tool_call(
+            make_call("write_file", {"path": "a.txt", "content": "x"}), handler
+        )
+        self.assertIsInstance(denied, ToolMessage)
+        self.assertIn("[read_only]", denied.content)
+        denied = middleware.wrap_tool_call(
+            make_call("run_command", {"command": "echo x"}), handler
+        )
+        self.assertIn("[read_only]", denied.content)
+        self.assertEqual(
+            middleware.wrap_tool_call(make_call("read_file", {"path": "a.txt"}), handler),
+            "ok",
+        )
+        self.assertEqual(ask.requests, [])
+        self.assertEqual(executed, ["read_file"])
 
     def test_asker_exception_fails_closed(self):
         def boom(_request):

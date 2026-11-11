@@ -207,6 +207,11 @@ class Settings:
     enable_batch_approval = _env_bool("ENABLE_BATCH_APPROVAL", True)
     trusted_operations = os.getenv("TRUSTED_OPERATIONS", "read_file,list_directory,search_files").split(",")
 
+    # 命令行默认终端；网页端以「设置 → 通用 → 终端偏好」为准。
+    terminal_preference = os.getenv("TERMINAL_PREFERENCE", "powershell").strip().lower()
+    if terminal_preference not in {"powershell", "cmd", "gitbash", "wsl"}:
+        terminal_preference = "powershell"
+
     # ============================================================================
     # 性能监控
     # ============================================================================

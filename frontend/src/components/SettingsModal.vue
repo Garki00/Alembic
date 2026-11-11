@@ -21,7 +21,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
 
 <template>
   <div class="modal" @click.self="close">
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal-card settings-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <header class="modal-head">
         <div>
           <div class="eyebrow">SETTINGS</div>

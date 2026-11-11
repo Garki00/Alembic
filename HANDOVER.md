@@ -1,9 +1,10 @@
 # ALEMBIC 交接文档（HANDOVER）
 
 > 给接手的智能体 / 开发者：先读这一份，再动代码。
-> 最后更新：2026-11-07，默认引擎改回 `tool_calling`（结构化工具调用），原生 ReAct
-> 文本循环保留为可选模式并做了协议硬化（stop 序列 / 严格单步解析 / 纠错重试）；
-> 338 个后端测试全绿。
+> 最后更新：2026-11-11，新增真正只读模式、命令策略与凭据路径保护、四终端执行、
+> 子进程环境白名单；系统提示词改为分层装配并区分 web / cli 界面；AI 网页链接
+> 默认在右侧边栏打开；设置窗固定高度。
+> 412 个后端测试全绿（1 个 Git Bash 用例因宿主限制跳过）。
 
 ## 1. 这是什么
 
@@ -47,7 +48,7 @@ cd frontend; npm run dev                             # http://127.0.0.1:5173
 验证：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 338 个测试
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 412 个测试
 cd frontend
 npm run build                                        # vue-tsc + vite build
 ```
@@ -69,13 +70,17 @@ config/
   settings.py            环境变量 + app_home 解析 + 前端地址 / CORS 来源 + AGENT_ENGINE
   storage.py             ensure_storage：首次运行把仓库 data/ memory/ 迁到 app_home
   store.py               ModelStore / ToolStore / WorkspaceStore / PreferencesStore + 迁移
-prompts/system.py        英文系统提示词（工作区边界、工具原则、失败处理）
+prompts/system.py        分层系统提示词：工具规则 / 执行纪律 / 完成标准 / 运行时 / 界面
+prompts/context.py       ALEMBIC.md / AGENTS.md / CLAUDE.md / .cursorrules 加载、扫描、截断
 prompts/react.py         英文 ReAct 格式与工具目录模板
 tools/
   registry.py            ★ 工具清单唯一事实来源：TOOL_SPECS / ToolField / build_tools
-  context.py             ToolContext（workspace、输出预算、会话引用、提问通道、进程管理器、视觉通道）
+  context.py             ToolContext（workspace、输出预算、会话引用、提问通道、终端偏好、进程管理器、视觉通道）
   errors.py              统一错误契约 tool_error() / truncate()
-  paths.py               工作区路径解析与逃逸防护
+  paths.py               工作区路径解析、逃逸防护、凭据路径保护
+  command_policy.py      命令策略：hardline 直接拒绝 / elevated 风险原因
+  env.py                 子进程环境变量白名单（剥离模型密钥）
+  terminals.py           PowerShell / CMD / Git Bash / WSL 的检测与参数构造
   files.py               list_dir / read_file / search_files / find_files / file_stat
                          write_file / edit_file / make_dir / delete_file / move_file / copy_file
   documents.py           read_document（PDF / DOCX / XLSX / PPTX / 文本，按字符偏移分段）
@@ -88,7 +93,7 @@ tools/
   todo.py                todo_write + TodoStore（会话级任务清单）
   questions.py           ask_user_question / Question / 终端提问通道
   processes.py           start_process / list_processes / read_process_logs / wait_process / stop_process
-  shell.py               run_command（超时、输出截断、退出码）
+  shell.py               run_command（终端适配、环境白名单、超时、输出截断、退出码）
   time.py weather.py mock.py
 web/
   __main__.py            自己 bind socket（支持 port=0）、写端口文件、ensure_storage、跑 uvicorn
@@ -245,8 +250,17 @@ App.vue onMounted
 - 旧的会话没有 `workspace_id` 时，前端按「归到第一个工作区」显示（与后端兼容策略一致）。
 - 通用设置保存在 `data/preferences.json`，后端通过 `GET/PUT /api/preferences` 读写；
   前端 `workspace.preferences` 是唯一数据源，`WorkSteps` / `CodeWorkView` 只读它。
-- `permission_mode` 决定审批范围：`read_only` 全部工具、`workspace_write` 只审批
-  执行命令、`full_access` 不审批；服务端在每轮聊天开始时按它构造 `ApprovalGate`。
+- `permission_mode` 决定审批范围：`read_only` 真正只读（写/执行在审批前拒绝）、
+  `approval_all` 全部工具审批、`workspace_write` 只审批执行命令、`full_access`
+  不审批（不可恢复的高危命令仍由命令策略拒绝）；服务端在每轮聊天开始时按它
+  构造 `ApprovalGate`。旧配置里的 `read_only` 会在读取时迁移为 `approval_all`。
+- 命令策略在 `tools/command_policy.py`：`hardline` 直接拒绝，`elevated` 把风险
+  原因带进审批卡片。文件工具在 `tools/paths.py` 里额外拒绝 `.ssh`、`.aws`、
+  私钥与 `.env` 读取；子进程环境变量由 `tools/env.py` 白名单过滤，密钥不继承。
+- 终端偏好保存在 `preferences.terminal`（powershell / cmd / gitbash / wsl），
+  由 `tools/terminals.py` 适配；`run_command` / `start_process` 都走同一套构造。
+- AI 回复里的网页链接按 `preferences.link_target` 打开：默认在右侧边栏新标签页
+  （`inspector.openLink`），也可以交给系统浏览器。
 - 审批 / 提问卡渲染在 `ChatComposer`，待处理时替换输入栏；助手消息只保留已处理结果。
 - 右侧边栏 `InspectorSidebar` 通过 `/api/workspace/files` 与 `/api/workspace/file`
   浏览工作区；标签页最多 3 个。文件树、预览、浏览器都是独立组件。
@@ -285,6 +299,10 @@ App.vue onMounted
 18. **后台进程只能操作 `ProcessManager` 自己启动的 ID**，不接受任意 PID；停止时按进程树处理。
 19. **提示词统一用英文**：`prompts/system.py`、`prompts/react.py`、`agents/context.py`
     的摘要提示词；但要求模型用用户的语言回复。新增提示词不要写回中文。
+    系统提示词按 `surface`（`web` / `cli`）只改变回复格式提示；工具规则必须根据
+    当前实际可用的工具名生成，不能写死未启用的工具。项目上下文文件按
+    `ALEMBIC.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` 取第一个，
+    经过注入扫描与 20k 截断后再注入，且不能覆盖安全/审批规则。
 20. **默认引擎是 `tool_calling`**：`create_agent` 的结构化工具调用是主路径；
     `AGENT_ENGINE=react` 是可选兼容模式。改 `agents/react.py` 时必须保持
     `invoke` / `stream` 接口与现有 `ChatSession` 兼容，并保留 stop 序列与严格单步解析。
@@ -406,7 +424,7 @@ App.vue onMounted
 
 ## 10. 给接手者的建议顺序
 
-1. 跑一遍后端测试，确认 338 全绿；再 `cd frontend && npm run build`；
+1. 跑一遍后端测试，确认 412 全绿；再 `cd frontend && npm run build`；
 2. 读 `web/runtime.py`（默认 `create_agent`）、`agents/react.py`（可选文本 ReAct）、
    `tools/registry.py`、`web/server.py`、`agents/context.py`，够理解后端 85%；
 3. 读 `frontend/src/stores/chat.ts`、`frontend/src/api/chat.ts`、`frontend/src/App.vue`，

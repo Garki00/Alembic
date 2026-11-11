@@ -15,7 +15,7 @@ from agents.approval import ApprovalGate
 from agents.react import ReActAgent
 from config.settings import settings
 from config.store import ModelConfig
-from prompts.system import build_system_prompt
+from prompts.system import SURFACE_WEB, build_system_prompt
 from tools.context import SessionRef, ToolContext
 from tools.images import vision_from_model
 from tools.model_view import with_compact_descriptions
@@ -76,6 +76,7 @@ def tool_context(
     process_manager=None,
     emit=None,
     vision=None,
+    terminal: str = "powershell",
 ) -> ToolContext:
     """把网页端的工作区字符串变成工具上下文。"""
     text = (workspace or "").strip()
@@ -90,6 +91,7 @@ def tool_context(
         process_manager=process_manager,
         emit=emit,
         vision=vision,
+        terminal=terminal,
     )
 
 
@@ -107,6 +109,8 @@ def build_runtime(
     emit=None,
     engine: str | None = None,
     request_text: str | None = None,
+    terminal: str = "powershell",
+    tool_entries: set[str] | None = None,
 ):
     """返回 ``(agent, summarizer)``，供一轮对话使用。
 
@@ -120,6 +124,9 @@ def build_runtime(
     ``engine`` 默认取 ``settings.agent_engine``：``tool_calling`` 走 LangChain
     ``create_agent`` 的模型原生工具调用（默认），``react`` 走原生 ReAct 文本循环
     （可选兼容模式，解析器严格单步）。
+
+    ``terminal`` 是用户偏好的终端；``tool_entries`` 由调用方按会话传入，
+    用来保持同一会话内的工具集合稳定（只增不减）。
     """
     model = create_chat_model(model_cfg)
     ctx = tool_context(
@@ -130,12 +137,24 @@ def build_runtime(
         process_manager=process_manager,
         emit=emit,
         vision=vision_from_model(model),
+        terminal=terminal,
     )
-    selected_entries = select_tool_entries(set(enabled_tools), request_text)
+    selected_entries = (
+        set(tool_entries)
+        if tool_entries is not None
+        else select_tool_entries(set(enabled_tools), request_text)
+    )
     tools = build_tools(selected_entries, tool_configs or {}, ctx)
-    system_prompt = build_system_prompt(str(ctx.workspace) if ctx.workspace else "")
-
     resolved_engine = (engine or settings.agent_engine).strip().lower()
+    tool_names = {str(getattr(tool, "name", "")) for tool in tools}
+    system_prompt = build_system_prompt(
+        str(ctx.workspace) if ctx.workspace else "",
+        tools=tool_names,
+        terminal=terminal,
+        surface=SURFACE_WEB,
+        engine=resolved_engine,
+    )
+
     if resolved_engine == "react":
         agent = ReActAgent(
             model,

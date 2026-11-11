@@ -402,7 +402,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "run_command": ToolSpec(
         name="run_command",
         label="命令执行",
-        description="在工作区内执行 shell 命令，返回退出码与输出。执行前需要确认。",
+        description="在工作区内执行 shell 命令（PowerShell / CMD / Git Bash / WSL），执行前需要确认。",
         risk=RISK_EXEC,
         default_enabled=True,
         tool_names=("run_command",),

@@ -16,6 +16,7 @@ from typing import Sequence
 from langchain.tools import tool
 
 from tools.context import ToolContext
+from tools.env import build_child_env
 from tools.errors import tool_error, truncate
 from tools.paths import WorkspacePathError, resolve_in_workspace
 
@@ -45,6 +46,10 @@ def _run_git(ctx: ToolContext, args: Sequence[str], *, timeout: int = 30) -> tup
             cwd=str(ctx.workspace),
             capture_output=True,
             timeout=timeout,
+            env=build_child_env({
+                "GIT_TERMINAL_PROMPT": "0",
+                "PYTHONIOENCODING": "utf-8",
+            }),
         )
     except FileNotFoundError as exc:
         raise GitError(

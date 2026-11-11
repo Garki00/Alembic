@@ -20,13 +20,19 @@ from langchain.agents.middleware import (
 from langchain_deepseek import ChatDeepSeek
 
 from config.settings import settings
-from prompts.system import build_system_prompt
+from prompts.system import SURFACE_CLI, build_system_prompt
 from tools.context import SessionRef, ToolContext
 from tools.images import vision_from_model
 from tools.model_view import with_compact_descriptions
 from tools.registry import build_tools, default_enabled_names
 
-from agents.approval import ApprovalGate, gate_from
+from agents.approval import (
+    ApprovalGate,
+    ApprovalPolicy,
+    console_asker,
+    permission_tools,
+    tool_risks,
+)
 from agents.react import ReActAgent
 
 
@@ -48,6 +54,7 @@ def cli_tool_context(
         workspace=workspace,
         max_output_chars=settings.max_tool_output_chars,
         command_timeout=float(settings.command_timeout),
+        terminal=settings.terminal_preference,
         session=session_ref or SessionRef(settings.session_id),
         asker=asker,
         todo_store=todo_store,
@@ -66,10 +73,21 @@ def build_default_tools(ctx: ToolContext | None = None) -> list:
 
 
 def build_cli_approval() -> ApprovalGate | None:
-    """命令行的审批开关：终端提问，默认开启。"""
-    if not settings.approval_enabled:
-        return None
-    return gate_from(cli_enabled_tools())
+    """命令行的审批开关：终端提问，默认开启。
+
+    ``APPROVAL_ENABLED=false`` 只关闭弹审批；不可恢复的高危命令仍由
+    命令策略拒绝。
+    """
+    enabled = cli_enabled_tools()
+    gated = permission_tools(enabled, "workspace_write") if settings.approval_enabled else {}
+    return ApprovalGate(
+        policy=ApprovalPolicy(
+            gated,
+            mode="workspace_write",
+            risks=tool_risks(enabled),
+        ),
+        ask=console_asker,
+    )
 
 
 def build_model() -> ChatDeepSeek:
@@ -134,7 +152,15 @@ def build_agent(
         tool_ctx = replace(tool_ctx, vision=vision_from_model(chat_model))
     if tools is None:
         tools = build_default_tools(tool_ctx)
-    system_prompt = build_system_prompt(str(tool_ctx.workspace) if tool_ctx.workspace else "")
+    tool_names = {str(getattr(tool, "name", "")) for tool in tools}
+    effective_engine = "tool_calling" if middleware is not None else resolved_engine
+    system_prompt = build_system_prompt(
+        str(tool_ctx.workspace) if tool_ctx.workspace else "",
+        tools=tool_names,
+        terminal=tool_ctx.terminal,
+        surface=SURFACE_CLI,
+        engine=effective_engine,
+    )
 
     if resolved_engine == "react" and middleware is None:
         return ReActAgent(

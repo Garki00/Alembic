@@ -146,16 +146,28 @@ export interface BootstrapData {
   active_workspace_id: string
   sessions: SessionSummary[]
   preferences: Preferences
+  terminals: TerminalInfo[]
 }
 
 export type TranscriptViewMode = 'compact' | 'standard' | 'detailed' | 'verbose'
 export type CollapseTiming = 'completion' | 'next_input'
-export type PermissionMode = 'read_only' | 'workspace_write' | 'full_access'
+export type PermissionMode = 'read_only' | 'approval_all' | 'workspace_write' | 'full_access'
+export type TerminalKind = 'powershell' | 'cmd' | 'gitbash' | 'wsl'
+export type LinkTarget = 'sidebar' | 'browser'
+
+export interface TerminalInfo {
+  value: TerminalKind
+  label: string
+  available: boolean
+  detail: string
+}
 
 export interface Preferences {
   transcript_view: TranscriptViewMode
   collapse_timing: CollapseTiming
   permission_mode: PermissionMode
+  terminal: TerminalKind
+  link_target: LinkTarget
   developer_tools: boolean
 }
 
@@ -195,6 +207,8 @@ export interface ApprovalRequest {
   target: string
   summary: string
   preview: string
+  reason?: string
+  rule?: string
 }
 
 export interface QuestionRequest {

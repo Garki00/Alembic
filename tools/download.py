@@ -147,7 +147,7 @@ def build_download_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
 
         relative = (path or "").strip() or _filename_from_url(text)
         try:
-            target = resolve_in_workspace(ctx.workspace, relative)
+            target = resolve_in_workspace(ctx.workspace, relative, access="write")
         except WorkspacePathError as exc:
             return tool_error(exc.code, exc.message, hint=exc.hint)
         if target.exists() and target.is_dir():

@@ -34,9 +34,35 @@ class PreferencesStoreTest(unittest.TestCase):
                 "transcript_view": "detailed",
                 "collapse_timing": "completion",
                 "permission_mode": "workspace_write",
+                "terminal": "powershell",
+                "link_target": "sidebar",
                 "developer_tools": False,
             },
         )
+
+    def test_legacy_read_only_migrates_to_approval_all(self):
+        (self.tmp / "preferences.json").write_text(
+            json.dumps({"permission_mode": "read_only"}), encoding="utf-8"
+        )
+        self.assertEqual(self.store.get()["permission_mode"], "approval_all")
+
+    def test_new_read_only_is_kept(self):
+        self.store.update({"permission_mode": "read_only"})
+        self.assertEqual(self.store.get()["permission_mode"], "read_only")
+
+    def test_terminal_and_link_target(self):
+        updated = self.store.update({"terminal": "gitbash", "link_target": "browser"})
+        self.assertEqual(updated["terminal"], "gitbash")
+        self.assertEqual(updated["link_target"], "browser")
+        reopened = PreferencesStore(self.tmp / "preferences.json")
+        self.assertEqual(reopened.get()["terminal"], "gitbash")
+        self.assertEqual(reopened.get()["link_target"], "browser")
+
+    def test_invalid_terminal_and_link_target_rejected(self):
+        with self.assertRaises(ValueError):
+            self.store.update({"terminal": "fish"})
+        with self.assertRaises(ValueError):
+            self.store.update({"link_target": "iframe"})
 
     def test_update_and_persist(self):
         updated = self.store.update(

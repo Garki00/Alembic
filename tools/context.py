@@ -48,11 +48,13 @@ class ToolContext:
         process_manager: 后台进程管理器；``None`` 时按工作区创建默认实例。
         emit: 工具事件出口，网页端用它推送 ``todo`` 等 SSE 事件。
         vision: 视觉通道，``read_image`` 用它把图片交给当前模型理解。
+        terminal: 命令工具优先使用的终端：powershell / cmd / gitbash / wsl。
     """
 
     workspace: Path | None = None
     max_output_chars: int = 20000
     command_timeout: float = 60.0
+    terminal: str = "powershell"
     session: SessionRef = field(default_factory=SessionRef)
     asker: Asker | None = None
     todo_store: TodoStore | None = None

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { CollapseTiming, ProviderPayload, TranscriptViewMode } from '../api/types'
+import type { CollapseTiming, ProviderPayload, TerminalKind, TranscriptViewMode } from '../api/types'
 import { errorMessage } from '../api/client'
-import { COLLAPSE_TIMINGS, TRANSCRIPT_MODES } from '../lib/preferences'
+import { COLLAPSE_TIMINGS, TERMINALS, TRANSCRIPT_MODES } from '../lib/preferences'
 import { useUiStore } from '../stores/ui'
 import { useWorkspaceStore } from '../stores/workspace'
 import ProviderEditor from './ProviderEditor.vue'
@@ -17,9 +17,18 @@ const editor = ref<{ validate: () => boolean; payload: () => ProviderPayload | n
 
 const transcriptView = ref<TranscriptViewMode>(store.preferences.transcript_view)
 const collapseTiming = ref<CollapseTiming>(store.preferences.collapse_timing)
+const terminal = ref<TerminalKind>(store.preferences.terminal)
+
+const terminalOptions = computed(() => {
+  const available = new Map(store.terminals.map((item) => [item.value, item.available]))
+  return TERMINALS.map((item) => ({
+    ...item,
+    available: available.get(item.value) ?? true,
+  }))
+})
 
 const stepTitle = computed(() => (
-  step.value === 1 ? '供应商与模型' : '设置工作步骤展示'
+  step.value === 1 ? '供应商与模型' : '设置工作步骤与终端'
 ))
 
 function next(): void {
@@ -53,6 +62,7 @@ async function finish(): Promise<void> {
       await store.savePreferences({
         transcript_view: transcriptView.value,
         collapse_timing: collapseTiming.value,
+        terminal: terminal.value,
       })
     } catch (err) {
       ui.showToast(`供应商已保存，但工作步骤偏好保存失败：${errorMessage(err)}`, true)
@@ -79,7 +89,7 @@ async function finish(): Promise<void> {
         <div class="onboarding-steps" aria-hidden="true">
           <span :class="{ active: step === 1, done: step > 1 }">1 供应商</span>
           <i></i>
-          <span :class="{ active: step === 2 }">2 工作步骤</span>
+          <span :class="{ active: step === 2 }">2 偏好</span>
         </div>
       </header>
 
@@ -98,7 +108,7 @@ async function finish(): Promise<void> {
         <section v-show="step === 2" class="onboarding-section">
           <div class="onboarding-section-head">
             <h3>{{ stepTitle }}</h3>
-            <p class="muted">这两项之后也可以在「设置 → 通用」里随时修改。</p>
+            <p class="muted">这些设置之后也可以在「设置 → 通用」里随时修改。</p>
           </div>
 
           <div class="onboarding-prefs">
@@ -140,6 +150,26 @@ async function finish(): Promise<void> {
               {{ transcriptView === 'verbose'
                 ? '完全展开模式下不会自动收起'
                 : '手动展开的轮次不会被强制收起' }}
+            </p>
+
+            <div class="onboarding-pref-row">
+              <div>
+                <div class="general-title">终端偏好</div>
+                <div class="general-desc">命令工具优先使用的终端，之后可在设置里修改。</div>
+              </div>
+              <select v-model="terminal" class="general-select">
+                <option
+                  v-for="item in terminalOptions"
+                  :key="item.value"
+                  :value="item.value"
+                  :disabled="!item.available"
+                >
+                  {{ item.label }}{{ item.available ? '' : '（未检测到）' }}
+                </option>
+              </select>
+            </div>
+            <p class="onboarding-note">
+              {{ terminalOptions.find((item) => item.value === terminal)?.hint }}
             </p>
           </div>
         </section>

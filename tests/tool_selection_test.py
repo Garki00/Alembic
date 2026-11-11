@@ -10,7 +10,7 @@ from prompts.tool_descriptions import TOOL_MODEL_DESCRIPTIONS
 from tools.context import ToolContext
 from tools.model_view import with_compact_descriptions
 from tools.registry import TOOL_SPECS, build_tools
-from tools.selection import CORE_ENTRIES, select_tool_entries
+from tools.selection import CORE_ENTRIES, merge_tool_entries, select_tool_entries
 
 
 ALL_ENABLED = set(TOOL_SPECS)
@@ -62,6 +62,32 @@ class ToolSelectionTest(unittest.TestCase):
         enabled = {"file_read", "run_command"}
         selected = select_tool_entries(enabled, "Fix the code and fetch a URL")
         self.assertEqual(selected, enabled)
+
+
+class SessionToolSetTest(unittest.TestCase):
+    def test_previously_selected_tools_are_kept(self):
+        enabled = {"file_read", "run_command", "file_write", "apply_patch"}
+        first = merge_tool_entries(set(), {"file_read", "file_write"}, enabled)
+        second = merge_tool_entries(first, {"file_read"}, enabled)
+        self.assertIn("file_write", second)
+        self.assertIn("file_read", second)
+        self.assertEqual(second, {"file_read", "file_write"})
+
+    def test_new_tools_are_added_and_disabled_tools_removed(self):
+        enabled = {"file_read", "file_write", "web_search"}
+        merged = merge_tool_entries(
+            {"file_read", "file_write"},
+            {"file_read", "web_search"},
+            enabled,
+        )
+        self.assertEqual(merged, {"file_read", "file_write", "web_search"})
+
+        merged = merge_tool_entries(
+            {"file_read", "file_write"},
+            {"file_read", "web_search"},
+            {"file_read", "web_search"},
+        )
+        self.assertEqual(merged, {"file_read", "web_search"})
 
 
 class CompactToolViewTest(unittest.TestCase):

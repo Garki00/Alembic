@@ -48,6 +48,10 @@ function decide(decision: ApprovalDecision): void {
       <code>{{ approval.tool }}</code>
     </div>
     <div class="approval-summary">{{ approval.summary }}</div>
+    <div v-if="approval.reason" class="approval-reason">
+      <span class="approval-reason-label">风险提示</span>
+      <span>{{ approval.reason }}</span>
+    </div>
     <pre v-if="approval.preview" class="approval-preview">{{ approval.preview }}</pre>
     <div v-if="!resolved" class="approval-actions">
       <button

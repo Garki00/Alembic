@@ -83,6 +83,21 @@ def _dynamic_enabled() -> bool:
     }
 
 
+def merge_tool_entries(
+    previous: set[str] | None,
+    picked: set[str],
+    enabled: set[str],
+) -> set[str]:
+    """Keep a session's tool set stable while respecting current settings.
+
+    Tools already seen in this session stay available (so a follow-up such as
+    "continue" cannot silently drop the write tools), newly selected packs are
+    added, and tools disabled in settings are removed.
+    """
+    current = set(enabled)
+    return (set(previous or ()) & current) | (set(picked) & current)
+
+
 def select_tool_entries(
     enabled: set[str],
     request_text: str | None = None,
