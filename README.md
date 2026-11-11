@@ -270,9 +270,7 @@ activate / fetch）、`/api/tools`、`/api/preferences`、`/api/workspaces`（CR
 
 ### 项目上下文文件
 
-工作区根目录可以放一份项目说明，Agent 会在每轮开始时读取并注入系统提示词：
-
-1. `ALEMBIC.md`（优先）
+工作区根目录可以放一份项目说明，Agent 会在每轮开始时读取并注入系统提示词：1. `ALEMBIC.md`（优先）
 2. `AGENTS.md`
 3. `CLAUDE.md`
 4. `.cursorrules`
@@ -299,6 +297,12 @@ activate / fetch）、`/api/tools`、`/api/preferences`、`/api/workspaces`（CR
 | `start_process(command, cwd="", terminal="")` | 后台启动长任务（dev server / watch），立即返回进程 ID |
 | `list_processes()` / `read_process_logs(process_id, tail=200)` | 查看后台进程与日志尾部 |
 | `stop_process(process_id)` | 停止进程及其子进程 |
+| `tools_search(query, limit=0)` | 按能力搜索并加载扩展工具；加载后同轮可用，默认加载 3 个、最多 10 个 |
+
+基础工具常驻；`read_document`、`read_image`、`download_file`、后台进程、Git、
+时区、天气与模拟数据属于扩展工具，需要通过 `tools_search` 按需加载。用户在
+「设置 → 工具」里禁用的扩展工具不会被搜索到，也不会进入模型 schema。每次
+搜索默认加载 3 个、最多 10 个，可在「设置 → 工具 → 扩展工具搜索」里调整。
 
 两条硬约束：
 
@@ -428,9 +432,12 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 | 始终允许 | 本会话内记住「工具 + 对象」（命令原文 / 文件路径），之后同类调用自动放行 |
 | 拒绝 | 工具不执行，返回 `Error: [approval_denied]`，模型应换方案而不是重试 |
 
-- **网页端**：对话流里出现确认卡片，显示工具名、摘要与内容预览（命令原文、
-  写入内容前 800 字符、`edit_file` 的 `-旧 / +新`），危险命令额外显示风险原因，
-  点按钮即回执。
+- **网页端**：对话流里出现确认卡片。卡片先给一句人话说明（这条请求要做什么），
+  命令类请求再把命令拆成分步说明；原始命令、写入内容前 800 字符、`edit_file` 的
+  `-旧 / +新` 都放在「查看原始命令 / 查看改动内容」里，默认展开、可折叠，
+  命令原文不再截断到 800 字符。危险命令额外显示风险原因，点按钮即回执。
+  `run_command` / `start_process` 的说明优先取模型自填的 `description`；模型没填时
+  由 `tools/command_brief.py` 离线翻译命令（例如列出 `.html`、搜索 `href`、检查路径）。
   会话级授权可在「设置 → 工具 → 清除本会话『始终允许』」撤销。
 - **命令策略**：格式化磁盘、删除系统盘根目录、注销 WSL 发行版、破坏引导记录等
   不可恢复操作会被直接拒绝（`Error: [blocked_by_policy]`），不弹审批也不能用
@@ -589,7 +596,7 @@ Windows 默认不带 IANA 时区数据库，Python 的 `zoneinfo` 需要 `tzdata
 ## 测试
 
 ```powershell
-# 后端：412 个离线测试
+# 后端：437 个离线测试
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py" -v
 
 # 前端：类型检查 + 生产构建

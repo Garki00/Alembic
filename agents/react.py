@@ -39,6 +39,7 @@ from agents.approval import (
     ApprovalRequest,
     denied_tool_message,
     describe_call,
+    describe_steps,
     policy_blocked_message,
 )
 from agents.context import SUMMARY_PREFIX, message_text
@@ -231,6 +232,10 @@ class ReActAgent:
         system_prompt: str = "",
         *,
         approval: ApprovalGate | None = None,
+        activation=None,
+        basic_names: Sequence[str] = (),
+        extended_names: Sequence[str] = (),
+        meta_names: Sequence[str] = (),
         max_model_calls: int = 8,
         max_tool_calls: int = 15,
         model_max_retries: int = 2,
@@ -249,6 +254,16 @@ class ReActAgent:
             else REACT_SYSTEM_PROMPT
         )
         self.approval = approval
+        self.activation = activation
+        self.basic_names = frozenset(basic_names)
+        self.extended_names = frozenset(extended_names)
+        self.meta_names = frozenset(meta_names)
+        # Only catalog-managed agents hide tools; custom tool lists in tests or
+        # embedding code remain fully visible.
+        self._catalog_managed = bool(
+            activation is not None
+            and (self.basic_names or self.extended_names or self.meta_names)
+        )
         self.max_model_calls = max(1, int(max_model_calls))
         self.max_tool_calls = max(1, int(max_tool_calls))
         self.model_max_retries = max(0, int(model_max_retries))
@@ -270,6 +285,19 @@ class ReActAgent:
     def stream(self, payload: Mapping[str, Any], stream_mode=None) -> Iterator[tuple[str, Any]]:
         messages = list(payload.get("messages") or [])
         yield from self._run(messages, emit=True)
+
+    def _visible_names(self) -> set[str]:
+        if not self._catalog_managed:
+            return set(self.tools_by_name)
+        active = self.activation.snapshot() if self.activation is not None else frozenset()
+        return set(self.basic_names | self.meta_names | (self.extended_names & active))
+
+    def _visible_tools(self) -> list[Any]:
+        names = self._visible_names()
+        return [tool for tool in self.tools if getattr(tool, "name", "") in names]
+
+    def _is_visible(self, name: str) -> bool:
+        return not self._catalog_managed or name in self._visible_names()
 
     # ---- loop ----
     def _run(
@@ -298,7 +326,7 @@ class ReActAgent:
 
         for _step in range(self.max_model_calls):
             prompt = build_react_prompt(
-                tools=self.tools,
+                tools=self._visible_tools(),
                 history=history,
                 question=question,
                 scratchpad=scratchpad,
@@ -385,8 +413,14 @@ class ReActAgent:
                 yield ("thought", thought)
 
             tool = self.tools_by_name.get(name) or self.tools_by_name.get(name.lower())
+            if tool is not None and not self._is_visible(tool.name):
+                scratchpad += (
+                    f"Thought: {thought}\nAction: {name}\nAction Input: {raw_input}\n"
+                    f"Observation: {tool_error('tool_not_activated', f'Tool {name} is not loaded.', hint='Call tools_search first; loaded tools are available immediately.')}\n"
+                )
+                continue
             if tool is None:
-                available = ", ".join(sorted(self.tools_by_name)) or "(none)"
+                available = ", ".join(sorted(self._visible_names())) or "(none)"
                 scratchpad += (
                     f"Thought: {thought}\nAction: {name}\nAction Input: {raw_input}\n"
                     f"Observation: {tool_error('unknown_tool', f'Unknown tool: {name}.', hint=f'Choose one of: {available}')}\n"
@@ -535,6 +569,7 @@ class ReActAgent:
             args=dict(args),
             reason=risk.reason if risk and risk.is_elevated else "",
             rule=risk.rule if risk and risk.is_elevated else "",
+            steps=describe_steps(name, args),
         )
         try:
             decision = gate.ask(request)

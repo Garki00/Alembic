@@ -64,13 +64,21 @@ class ToolRulesTest(unittest.TestCase):
             tools={"read_file", "write_file", "run_command", "todo_write", "git_status"},
         )
         self.assertIn("Read before overwriting", prompt)
-        self.assertIn("Use run_command for tests", prompt)
+        self.assertIn("Prefer file tools for reading and editing files", prompt)
+        self.assertIn("as a fallback", prompt)
+        self.assertIn("tests, builds, Git, and scripts", prompt)
         self.assertIn("todo_write", prompt)
         self.assertIn("Inspect Git state", prompt)
 
     def test_no_tools_states_the_limit(self):
         prompt = build_system_prompt(now=NOW, tools=set())
         self.assertIn("No tools are available", prompt)
+
+    def test_tools_search_guidance(self):
+        prompt = build_system_prompt(now=NOW, tools={"read_file", "tools_search"})
+        self.assertIn("Extended tools are hidden", prompt)
+        self.assertIn("tools_search", prompt)
+        self.assertIn("same turn", prompt)
 
     def test_missing_tool_list_omits_the_section(self):
         prompt = build_system_prompt(now=NOW, tools=None)

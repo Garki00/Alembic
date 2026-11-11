@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Mapping, Sequence
 
 from tools.context import ToolContext
+from tools.catalog import build_tools_search
 from tools.documents import build_document_tools
 from tools.download import build_download_tools
 from tools.fetch import build_fetch_tools
@@ -399,10 +400,30 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         tool_names=("ask_user_question",),
         builder=_build_questions,
     ),
+    "tools_search": ToolSpec(
+        name="tools_search",
+        label="扩展工具搜索",
+        description="按能力搜索并加载扩展工具（文档 / 图片 / 下载 / 后台进程 / Git / 时区 / 天气）。",
+        fields=(
+            ToolField(
+                "TOOLS_SEARCH_LIMIT",
+                "每次最多加载",
+                kind=FIELD_NUMBER,
+                default="3",
+                placeholder="1-10，默认 3",
+            ),
+        ),
+        risk=RISK_READ,
+        default_enabled=True,
+        tool_names=("tools_search",),
+        builder=build_tools_search,
+    ),
     "run_command": ToolSpec(
         name="run_command",
         label="命令执行",
-        description="在工作区内执行 shell 命令（PowerShell / CMD / Git Bash / WSL），执行前需要确认。",
+        description="在工作区内执行 shell 命令（PowerShell / CMD / Git Bash / WSL），"
+                    "用于测试、构建、脚本和 Git；读写文件优先用文件工具，命令行只作兜底。"
+                    "执行前需要确认。",
         risk=RISK_EXEC,
         default_enabled=True,
         tool_names=("run_command",),

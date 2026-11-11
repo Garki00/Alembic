@@ -19,8 +19,15 @@ from prompts.system import SURFACE_WEB, build_system_prompt
 from tools.context import SessionRef, ToolContext
 from tools.images import vision_from_model
 from tools.model_view import with_compact_descriptions
+from tools.catalog import (
+    BASIC_TOOLS,
+    EXTENDED_TOOLS,
+    META_TOOLS,
+    ToolActivation,
+    enabled_tool_names,
+    visible_tool_names,
+)
 from tools.registry import build_tools
-from tools.selection import select_tool_entries
 
 
 #: 各供应商的默认 Base URL。所有供应商都走 OpenAI 兼容的 /chat/completions；
@@ -77,6 +84,8 @@ def tool_context(
     emit=None,
     vision=None,
     terminal: str = "powershell",
+    activation: ToolActivation | None = None,
+    enabled_names: frozenset[str] = frozenset(),
 ) -> ToolContext:
     """把网页端的工作区字符串变成工具上下文。"""
     text = (workspace or "").strip()
@@ -92,6 +101,8 @@ def tool_context(
         emit=emit,
         vision=vision,
         terminal=terminal,
+        activation=activation,
+        enabled_tool_names=enabled_names,
     )
 
 
@@ -110,7 +121,7 @@ def build_runtime(
     engine: str | None = None,
     request_text: str | None = None,
     terminal: str = "powershell",
-    tool_entries: set[str] | None = None,
+    activation: ToolActivation | None = None,
 ):
     """返回 ``(agent, summarizer)``，供一轮对话使用。
 
@@ -125,10 +136,13 @@ def build_runtime(
     ``create_agent`` 的模型原生工具调用（默认），``react`` 走原生 ReAct 文本循环
     （可选兼容模式，解析器严格单步）。
 
-    ``terminal`` 是用户偏好的终端；``tool_entries`` 由调用方按会话传入，
-    用来保持同一会话内的工具集合稳定（只增不减）。
+    ``activation`` 是调用方按会话持有的扩展工具激活状态。Agent 会一次性装配
+    所有已启用工具，再由 ``ToolVisibilityMiddleware`` 按激活状态过滤模型 schema。
     """
     model = create_chat_model(model_cfg)
+    enabled_entries = set(enabled_tools)
+    enabled_names = enabled_tool_names(enabled_entries)
+    active = activation or ToolActivation()
     ctx = tool_context(
         workspace,
         session_id=session_id,
@@ -138,18 +152,15 @@ def build_runtime(
         emit=emit,
         vision=vision_from_model(model),
         terminal=terminal,
+        activation=active,
+        enabled_names=enabled_names,
     )
-    selected_entries = (
-        set(tool_entries)
-        if tool_entries is not None
-        else select_tool_entries(set(enabled_tools), request_text)
-    )
-    tools = build_tools(selected_entries, tool_configs or {}, ctx)
+    tools = build_tools(enabled_entries, tool_configs or {}, ctx)
     resolved_engine = (engine or settings.agent_engine).strip().lower()
-    tool_names = {str(getattr(tool, "name", "")) for tool in tools}
+    visible = visible_tool_names(enabled_names, active)
     system_prompt = build_system_prompt(
         str(ctx.workspace) if ctx.workspace else "",
-        tools=tool_names,
+        tools=visible,
         terminal=terminal,
         surface=SURFACE_WEB,
         engine=resolved_engine,
@@ -161,18 +172,30 @@ def build_runtime(
             tools,
             system_prompt,
             approval=approval,
+            activation=active,
+            basic_names=BASIC_TOOLS,
+            extended_names=EXTENDED_TOOLS,
+            meta_names=META_TOOLS,
             max_model_calls=settings.max_model_calls,
             max_tool_calls=settings.max_tool_calls,
             model_max_retries=settings.model_max_retries,
             max_output_chars=settings.max_tool_output_chars,
         )
     else:
+        from agents.tool_visibility import ToolVisibilityMiddleware
+
+        visibility = ToolVisibilityMiddleware(
+            activation=active,
+            basic_names=set(BASIC_TOOLS) & enabled_names,
+            extended_names=set(EXTENDED_TOOLS) & enabled_names,
+            meta_names=set(META_TOOLS) & enabled_names,
+        )
         model_tools = with_compact_descriptions(tools)
         agent = create_agent(
             model,
             tools=model_tools,
             system_prompt=system_prompt,
-            middleware=build_middleware(approval),
+            middleware=build_middleware(approval, visibility=visibility),
         )
     # 同一个模型实例也用于生成上下文摘要
     return agent, model

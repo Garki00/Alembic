@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:  # 仅用于类型标注，避免运行时循环导入
+    from tools.catalog import ToolActivation
     from tools.questions import Asker
     from tools.processes import ProcessManager
     from tools.todo import TodoStore
@@ -49,12 +50,16 @@ class ToolContext:
         emit: 工具事件出口，网页端用它推送 ``todo`` 等 SSE 事件。
         vision: 视觉通道，``read_image`` 用它把图片交给当前模型理解。
         terminal: 命令工具优先使用的终端：powershell / cmd / gitbash / wsl。
+        activation: 当前会话的扩展工具激活状态；``None`` 时扩展工具不可加载。
+        enabled_tool_names: 用户设置里实际启用的具体工具名，供 tools_search 过滤。
     """
 
     workspace: Path | None = None
     max_output_chars: int = 20000
     command_timeout: float = 60.0
     terminal: str = "powershell"
+    activation: "ToolActivation | None" = None
+    enabled_tool_names: frozenset[str] = frozenset()
     session: SessionRef = field(default_factory=SessionRef)
     asker: Asker | None = None
     todo_store: TodoStore | None = None

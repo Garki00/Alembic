@@ -49,6 +49,16 @@ function findOpenToolEvent(
   return undefined
 }
 
+function addThought(assistant: AssistantTurn, text: string): void {
+  const clean = text.trim()
+  if (!clean) return
+  const duplicate = assistant.workEvents.some(
+    (event) => event.kind === 'thought' && event.text.trim() === clean,
+  )
+  if (duplicate) return
+  assistant.workEvents.push({ kind: 'thought', id: newId('thought'), text: clean })
+}
+
 function mapHistory(items: HistoryMessage[]): ChatTurn[] {
   const turns: ChatTurn[] = []
   let assistant: AssistantTurn | null = null
@@ -65,19 +75,11 @@ function mapHistory(items: HistoryMessage[]): ChatTurn[] {
         turns.push(assistant)
       }
       if (message.reasoning?.trim()) {
-        assistant.workEvents.push({
-          kind: 'thought',
-          id: newId('thought'),
-          text: message.reasoning.trim(),
-        })
+        addThought(assistant, message.reasoning)
       }
       if (message.content) {
         if (message.tool_calls?.length) {
-          assistant.workEvents.push({
-            kind: 'thought',
-            id: newId('thought'),
-            text: message.content,
-          })
+          addThought(assistant, message.content)
         } else {
           assistant.content = message.content
         }
@@ -319,10 +321,18 @@ export const useChatStore = defineStore('chat', {
                   : undefined
                 if (existing?.kind === 'thought') {
                   existing.text += text
-                } else if (text.trim()) {
+                } else if (data.append) {
                   assistant.workEvents.push({ kind: 'thought', id, text })
                 } else {
-                  break
+                  // 完整 thought 事件可能晚于流式增量到达；同文只保留一条。
+                  const clean = text.trim()
+                  if (!clean) break
+                  const duplicate = assistant.workEvents.some(
+                    (event) => event.kind === 'thought' && event.text.trim() === clean,
+                  )
+                  if (!duplicate) {
+                    assistant.workEvents.push({ kind: 'thought', id, text: clean })
+                  }
                 }
                 this.bump()
                 break

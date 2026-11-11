@@ -14,6 +14,7 @@ from agents.approval import (
     ApprovalRequest,
     console_asker,
     describe_call,
+    describe_steps,
     gated_tools,
     permission_tools,
 )
@@ -36,11 +37,50 @@ class Recorder:
 
 
 class DescribeCallTest(unittest.TestCase):
-    def test_command(self):
+    def test_command_is_described_in_plain_language(self):
         target, summary, preview = describe_call("run_command", {"command": "pytest -q"})
         self.assertEqual(target, "pytest -q")
-        self.assertIn("pytest -q", summary)
+        self.assertEqual(summary, "运行测试")
         self.assertEqual(preview, "pytest -q")
+
+    def test_command_uses_model_description_when_present(self):
+        _, summary, _ = describe_call(
+            "run_command",
+            {
+                "command": "Get-ChildItem *.html | Select-Object Name,Length",
+                "description": "扫描当前目录的 HTML 文件，列出名称和大小",
+            },
+        )
+        self.assertEqual(summary, "扫描当前目录的 HTML 文件，列出名称和大小")
+
+    def test_command_description_equal_to_command_is_ignored(self):
+        _, summary, _ = describe_call(
+            "run_command", {"command": "git status", "description": "git status"}
+        )
+        self.assertEqual(summary, "查看 Git 状态")
+
+    def test_long_pipeline_is_split_into_steps(self):
+        command = (
+            'Get-ChildItem *.html | Select-Object Name,Length; '
+            'Select-String -Path *.html -Pattern \'href="([^"]+)"\' | '
+            'Format-Table -AutoSize'
+        )
+        _, summary, _ = describe_call("run_command", {"command": command})
+        self.assertIn("*.html", summary)
+        steps = describe_steps("run_command", {"command": command})
+        self.assertEqual(len(steps), 2)
+        self.assertIn("href", steps[1])
+        self.assertEqual(describe_steps("write_file", {"path": "a.txt"}), ())
+
+    def test_long_command_preview_is_complete(self):
+        command = "\n".join(f"Get-ChildItem *.html | Select-Object Name,Length | Format-Table" for _ in range(40))
+        _, _, preview = describe_call("run_command", {"command": command})
+        self.assertEqual(preview, command)
+        self.assertGreater(len(preview), 800)
+
+    def test_empty_command_gets_generic_summary(self):
+        _, summary, _ = describe_call("run_command", {"command": ""})
+        self.assertEqual(summary, "执行一条 shell 命令，原文见下方")
 
     def test_write_file(self):
         target, summary, preview = describe_call("write_file", {"path": "a.txt", "content": "hi"})
@@ -248,8 +288,19 @@ class MiddlewareTest(unittest.TestCase):
         event = request.as_event()
         self.assertEqual(event["tool"], "run_command")
         self.assertEqual(event["risk"], "exec")
-        self.assertEqual(event["summary"], "执行命令：git status")
+        self.assertEqual(event["summary"], "查看 Git 状态")
+        self.assertNotIn("steps", event)  # 只有一步时用说明就够了
         self.assertNotIn("args", event)  # 参数可能很大，不往事件里塞
+
+    def test_event_carries_steps_for_multi_step_command(self):
+        ask = Recorder("deny")
+        middleware, handler = self.build(ask)
+        middleware.wrap_tool_call(
+            make_call("run_command", {"command": "Get-ChildItem *.html; git status"}),
+            handler,
+        )
+        event = ask.requests[0].as_event()
+        self.assertEqual(event["steps"], ["查找并列出 *.html 文件", "查看 Git 状态"])
 
 
 class ConsoleAskerTest(unittest.TestCase):

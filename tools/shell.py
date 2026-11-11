@@ -67,7 +67,13 @@ def build_shell_tools(ctx: ToolContext) -> list:
     """构造命令执行工具（终端偏好、环境白名单、强制超时）。"""
 
     @tool
-    def run_command(command: str, cwd: str = "", timeout: int = 0, terminal: str = "") -> str:
+    def run_command(
+        command: str,
+        cwd: str = "",
+        timeout: int = 0,
+        terminal: str = "",
+        description: str = "",
+    ) -> str:
         """在工作区内执行一条 shell 命令，返回退出码与输出。
 
         适合跑测试、构建、脚本、查看 git 状态等。命令不会被交互式接管，
@@ -80,6 +86,9 @@ def build_shell_tools(ctx: ToolContext) -> list:
             timeout: 超时秒数（1-600），0 表示使用默认值。
             terminal: 临时指定终端：powershell / cmd / gitbash / wsl；
                 留空时使用「设置 → 通用」里的终端偏好。
+            description: 用一句白话说明这条命令要做什么、会改动什么
+                （例如「扫描当前目录的 .html 文件并检查页面里的本地链接」）。
+                审批卡片用它作为主标题，请勿重复命令原文或罗列参数。
 
         Returns:
             首行是退出码（非零表示命令失败），随后是 stdout 与 stderr 两个区块。

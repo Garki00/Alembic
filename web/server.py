@@ -39,8 +39,8 @@ from config.store import (
     ToolStore,
     WorkspaceStore,
 )
+from tools.catalog import ToolActivation
 from tools.processes import ProcessManager
-from tools.selection import merge_tool_entries, select_tool_entries
 from tools.terminals import available_terminals
 from tools.todo import TodoStore
 from web.approvals import ApprovalBroker, ApprovalRegistry
@@ -234,9 +234,8 @@ def create_app(
     # 审批：待回执表（跨请求）+ 每个会话已记住的「始终允许」
     app.state.approvals = ApprovalRegistry()
     app.state.approval_memo: dict[str, dict[str, dict]] = {}
-    # 每个会话已出现过的工具条目：只增不减，避免后续轮次把写工具裁掉，
-    # 也让模型看到的 tools[] 在一个会话内保持稳定。
-    app.state.session_tool_entries: dict[str, set[str]] = {}
+    # 每个会话的扩展工具激活状态；基础工具常驻，扩展工具由 tools_search 加载。
+    app.state.session_activations: dict[str, ToolActivation] = {}
     # 提问：与审批同构的中继，回答走 POST /api/questions/{id}
     app.state.questions = QuestionRegistry()
     # 任务清单与后台进程都放在应用级，跨轮次共享
@@ -606,7 +605,7 @@ def create_app(
     def delete_session(session_id: str):
         sessions.delete(session_id)
         app.state.todos.clear(session_id)
-        app.state.session_tool_entries.pop(session_id, None)
+        app.state.session_activations.pop(session_id, None)
         return {"ok": True}
 
     @app.get("/api/sessions/{session_id}/messages")
@@ -687,14 +686,12 @@ def create_app(
                 if len(recent_requests) == 2:
                     break
             request_text = "\n".join([*reversed(recent_requests), message])
-            enabled = tools.enabled_tools()
-            picked = select_tool_entries(enabled, request_text)
-            previous = app.state.session_tool_entries.get(session_id, set())
-            selected = merge_tool_entries(previous, picked, enabled)
-            app.state.session_tool_entries[session_id] = selected
+            activation = app.state.session_activations.setdefault(
+                session_id, ToolActivation()
+            )
             agent, summarizer = app.state.runtime_factory(
                 model_cfg,
-                enabled,
+                tools.enabled_tools(),
                 workspace,
                 tool_configs=tools.configs(),
                 approval=gate,
@@ -705,7 +702,7 @@ def create_app(
                 emit=emit,
                 request_text=request_text,
                 terminal=terminal,
-                tool_entries=selected,
+                activation=activation,
             )
         except Exception as exc:
             raise HTTPException(400, str(exc)) from exc

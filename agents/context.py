@@ -528,8 +528,11 @@ class ChatSession:
         emitted_tools: set[str] = set()
         emitted_results: set[str] = set()
         emitted_thoughts: set[str] = set()
-        streamed_reasonings: set[str] = set()
-        reasoning_buffers: dict[str, str] = {}
+        # Reasoning chunks are accumulated in one string. Providers do not
+        # always give streamed chunks a stable id, so a per-id buffer cannot
+        # tell which AI message a value belongs to; the turn-level suffix check
+        # below does.
+        streamed_reasoning = ""
         fallback_reasoning_id = ""
         # ReAct emits its own ``thought`` events. Native tool-calling agents do
         # not, so derive them from AI messages that carry tool calls: that text
@@ -561,10 +564,7 @@ class ChatSession:
                                     or f"reasoning-{uuid4().hex[:12]}"
                                 )
                                 fallback_reasoning_id = reasoning_id
-                                reasoning_buffers[reasoning_id] = (
-                                    reasoning_buffers.get(reasoning_id, "")
-                                    + native_reasoning_delta
-                                )
+                                streamed_reasoning += native_reasoning_delta
                                 yield (
                                     "thought",
                                     {
@@ -604,18 +604,17 @@ class ChatSession:
                         calls = list(message.tool_calls or [])
                         native_reasoning = reasoning_text(message).strip()
                         if native_reasoning:
-                            streamed_reasonings.update(
-                                buffer.strip()
-                                for buffer in reasoning_buffers.values()
-                                if buffer.strip()
-                            )
-                        if (
-                            native_reasoning
-                            and native_reasoning not in streamed_reasonings
-                            and native_reasoning not in emitted_thoughts
-                        ):
-                            emitted_thoughts.add(native_reasoning)
-                            yield ("thought", native_reasoning)
+                            # The same reasoning often arrives twice: once as
+                            # streamed chunks and once on the final AIMessage.
+                            # If the accumulated stream ends with this text, the
+                            # UI already has it; just remember it so a content
+                            # thought with identical text is not emitted either.
+                            already_streamed = streamed_reasoning.strip().endswith(native_reasoning)
+                            if already_streamed:
+                                emitted_thoughts.add(native_reasoning)
+                            elif native_reasoning not in emitted_thoughts:
+                                emitted_thoughts.add(native_reasoning)
+                                yield ("thought", native_reasoning)
                         if derive_step_thoughts and calls:
                             thought_text = message_text(message).strip()
                             if thought_text and thought_text not in emitted_thoughts:

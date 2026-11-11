@@ -4,7 +4,7 @@
 > 最后更新：2026-11-11，新增真正只读模式、命令策略与凭据路径保护、四终端执行、
 > 子进程环境白名单；系统提示词改为分层装配并区分 web / cli 界面；AI 网页链接
 > 默认在右侧边栏打开；设置窗固定高度。
-> 412 个后端测试全绿（1 个 Git Bash 用例因宿主限制跳过）。
+> 437 个后端测试全绿（1 个 Git Bash 用例因宿主限制跳过）。
 
 ## 1. 这是什么
 
@@ -48,7 +48,7 @@ cd frontend; npm run dev                             # http://127.0.0.1:5173
 验证：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 412 个测试
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 437 个测试
 cd frontend
 npm run build                                        # vue-tsc + vite build
 ```
@@ -63,6 +63,7 @@ main.py                  CLI 入口（argparse + ChatCLI，含 /approvals 等命
 run_backend.py           PyInstaller 入口，等价于 python -m web
 agents/
   agent.py               CLI 侧装配：model / tools / engine 选择（react 或 tool_calling）
+  tool_visibility.py     扩展工具可见性中间件：按会话激活状态过滤模型 schema
   react.py               可选文本 ReAct 循环：stop 序列、严格单步解析、审批、限流、流式事件
   context.py             ChatSession、SessionStore、上下文压缩、SessionMeta
   approval.py            审批策略、中间件、终端提问器
@@ -75,10 +76,12 @@ prompts/context.py       ALEMBIC.md / AGENTS.md / CLAUDE.md / .cursorrules 加�
 prompts/react.py         英文 ReAct 格式与工具目录模板
 tools/
   registry.py            ★ 工具清单唯一事实来源：TOOL_SPECS / ToolField / build_tools
-  context.py             ToolContext（workspace、输出预算、会话引用、提问通道、终端偏好、进程管理器、视觉通道）
+  catalog.py             ★ 基础/扩展工具目录、ToolActivation、tools_search 搜索与激活
+  context.py             ToolContext（workspace、输出预算、终端偏好、扩展工具激活状态）
   errors.py              统一错误契约 tool_error() / truncate()
   paths.py               工作区路径解析、逃逸防护、凭据路径保护
   command_policy.py      命令策略：hardline 直接拒绝 / elevated 风险原因
+  command_brief.py       命令 → 人话说明（离线拆语句/管道，供审批卡片使用）
   env.py                 子进程环境变量白名单（剥离模型密钥）
   terminals.py           PowerShell / CMD / Git Bash / WSL 的检测与参数构造
   files.py               list_dir / read_file / search_files / find_files / file_stat
@@ -212,6 +215,22 @@ ReActAgent._gate_tool（tool_calling 模式则是 ApprovalMiddleware.wrap_tool_c
 - 「始终允许」的键：`file:<路径>`（写文件两种工具共用）或 `run_command:<命令原文>`。
 - 失败关闭：提问通道异常、超时、断流、EOF 一律按拒绝。
 - 前端审批按钮在等待回执时禁用；回执成功后卡片不再显示按钮。
+
+**审批卡片先讲人话，再给原文**：
+
+- `summary` 是「这条请求要做什么」，不是命令原文：
+  - `run_command` / `start_process` 优先用模型自填的 `description` 参数
+    （系统提示词要求每次必填，例如「扫描当前目录的 .html 文件并检查本地链接」）；
+  - 模型没填时由 `tools/command_brief.py` 离线翻译命令结构（`Get-ChildItem`、
+    `Select-String`、`git`、`npm` 等）；`--- xxx ---` 分段标题会变成小标题，
+    `foreach` 循环与正则计数也会被翻成中文；
+  - 规则完全看不懂时退化为「执行一条 <程序> 命令，原文见下方」，绝不把整段命令
+    塞进说明行。
+- `steps` 是命令拆出的分步说明（仅命令类工具、且多于一步时随 SSE 下发），
+  卡片用有序列表展示；`preview` 仍是命令/文件原文，默认展开、可折叠，命令原文
+  不再按 800 字符截断（上限 8000，卡片内滚动）。
+- 前端 `ApprovalCard.vue`：`run_command` / `start_process` / `write_file` /
+  `edit_file` / `apply_patch` 的原文默认展开，其余工具的详细内容默认收起。
 
 ### 4.5 前端状态
 
@@ -421,10 +440,15 @@ App.vue onMounted
 18. **审批/提问移到输入栏；右侧边栏支持工作区文件树、文件预览、内置浏览器与
     最多 3 个标签页；对话内文件可点击预览；轮次结束显示修改文件与 +/- 行数；
     通用设置加入只读 / 工作区内修改 / 完全权限三档；测试 338。**
+19. **审批卡片改为「先讲人话、同时保留原文」：`run_command` / `start_process` 新增
+    `description` 参数（系统提示词要求必填）作为主说明，模型没填时用
+    `tools/command_brief.py` 离线翻译命令（含 `--- 标题 ---`、`foreach`、正则计数）；
+    命令拆出分步说明（`steps`），原文默认展开且不再截断到 800 字符；终端提问
+    同步显示分步说明；新增 `tests/command_brief_test.py`。**
 
 ## 10. 给接手者的建议顺序
 
-1. 跑一遍后端测试，确认 412 全绿；再 `cd frontend && npm run build`；
+1. 跑一遍后端测试，确认 437 全绿；再 `cd frontend && npm run build`；
 2. 读 `web/runtime.py`（默认 `create_agent`）、`agents/react.py`（可选文本 ReAct）、
    `tools/registry.py`、`web/server.py`、`agents/context.py`，够理解后端 85%；
 3. 读 `frontend/src/stores/chat.ts`、`frontend/src/api/chat.ts`、`frontend/src/App.vue`，

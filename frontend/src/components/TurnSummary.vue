@@ -26,6 +26,7 @@ interface HoverState {
   rows: DiffRow[]
   left: number
   top: number
+  above: boolean
 }
 
 function lineCount(text: unknown): number {
@@ -129,15 +130,18 @@ function showHover(change: FileChange, event: Event): void {
   const rect = element.getBoundingClientRect()
   const width = 420
   const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 16))
-  const estimated = 260
-  const top = rect.bottom + estimated + 16 > window.innerHeight
-    ? Math.max(8, rect.top - estimated - 6)
-    : rect.bottom + 4
+  const rows = previewRows(change)
+  // 估算只是为了决定上下方向；实际定位用 CSS translate 把预览底边贴到行上方，
+  // 因此预览很短时也不会离鼠标很远。
+  const estimated = 30 + Math.min(rows.length * 17, 232)
+  const roomBelow = rect.bottom + 6 + estimated <= window.innerHeight - 8
+  const above = !roomBelow && rect.top > estimated + 8
   hover.value = {
     path: change.path,
-    rows: previewRows(change),
+    rows,
     left,
-    top,
+    top: above ? rect.top - 6 : rect.bottom + 6,
+    above,
   }
 }
 
@@ -193,6 +197,7 @@ onBeforeUnmount(cancelHide)
     <div
       v-if="hover"
       class="diff-hover"
+      :class="{ above: hover.above }"
       :style="{ left: `${hover.left}px`, top: `${hover.top}px`, width: '420px' }"
       role="tooltip"
       @mouseenter="cancelHide"

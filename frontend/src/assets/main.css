@@ -429,7 +429,54 @@ html.resizing .inspector-resizer::after {
     border-radius: 3px;
     padding: 1px 6px;
 }
-.approval-summary { font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
+.approval-summary {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+}
+/* 命令被拆成的若干步：先讲清楚要做什么，再让人决定 */
+.approval-steps {
+    margin: 8px 0 0;
+    padding-left: 20px;
+    display: grid;
+    gap: 2px;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+}
+.approval-steps li::marker { color: var(--soft); font-family: var(--mono); font-size: 10px; }
+.approval-detail {
+    margin-top: 8px;
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    background: rgba(255, 253, 248, 0.6);
+    overflow: hidden;
+}
+.approval-detail-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 9px;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--emerald-deep);
+}
+.approval-detail-toggle:hover { background: var(--paper-deep); }
+.approval-detail-chevron { margin-left: auto; font-size: 11px; color: var(--soft); }
+.approval-detail .approval-preview {
+    margin: 0;
+    border: 0;
+    border-top: 1px solid var(--border-soft);
+    border-radius: 0;
+}
 .approval-reason {
     margin-top: 8px;
     display: flex;
@@ -2020,6 +2067,9 @@ html.resizing .inspector-resizer::after {
     overflow: hidden;
     pointer-events: auto;
 }
+/* 行下方空间不足时向上展开：top 对齐行的上沿，再用 translateY(-100%)
+   把整个预览贴到行上方。这样预览高度变化不会改变它与鼠标的距离。 */
+.diff-hover.above { transform: translateY(-100%); }
 .diff-hover-head {
     display: flex;
     align-items: center;

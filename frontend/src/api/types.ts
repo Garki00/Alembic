@@ -205,8 +205,12 @@ export interface ApprovalRequest {
   tool: string
   risk: 'write' | 'exec' | string
   target: string
+  /** 人话说明：这条请求准备做什么。 */
   summary: string
+  /** 原始命令 / 文件内容，按需展开。 */
   preview: string
+  /** 命令拆出的分步说明（仅命令类工具有值）。 */
+  steps?: string[]
   reason?: string
   rule?: string
 }

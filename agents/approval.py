@@ -35,6 +35,7 @@ from typing import Callable, Literal, Mapping
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
+from tools.command_brief import command_steps, describe_command
 from tools.command_policy import assess_command
 from tools.errors import tool_error
 from tools.registry import RISK_EXEC, RISK_READ, RISK_WRITE, TOOL_SPECS
@@ -45,6 +46,8 @@ Decision = Literal["once", "always", "deny"]
 VALID_DECISIONS = ("once", "always", "deny")
 
 PREVIEW_LIMIT = 800
+#: 命令原文要尽量完整地给用户看（审批卡片的原文区可滚动），只防极端长度。
+COMMAND_PREVIEW_LIMIT = 8000
 # 「始终允许」的记忆前缀：读写同一文件共用 file:，删除/移动各自独立，
 # 避免「允许修改 a.py」被误当成「允许删除 a.py」。
 _KEY_PREFIX = {
@@ -67,7 +70,12 @@ _FILE_VERBS = {
 
 @dataclass(frozen=True)
 class ApprovalRequest:
-    """一次待确认的工具调用，直接对应前端审批卡片要显示的内容。"""
+    """一次待确认的工具调用，直接对应前端审批卡片要显示的内容。
+
+    ``summary`` 是给人看的一句话说明（能看懂「要做什么」），``preview`` 才是
+    原始命令 / 内容，二者分开：卡片先讲意图，原文按需展开。``steps`` 是命令
+    被拆成的若干步说明，逐步确认时更容易判断。
+    """
 
     id: str
     tool: str
@@ -78,6 +86,7 @@ class ApprovalRequest:
     args: dict
     reason: str = ""
     rule: str = ""
+    steps: tuple[str, ...] = ()
 
     def as_event(self) -> dict:
         event = {
@@ -88,6 +97,8 @@ class ApprovalRequest:
             "summary": self.summary,
             "preview": self.preview,
         }
+        if len(self.steps) > 1:
+            event["steps"] = list(self.steps)
         if self.reason:
             event["reason"] = self.reason
         if self.rule:
@@ -100,14 +111,38 @@ def _clip(text: str, limit: int = PREVIEW_LIMIT) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+def _readable_hint(args: Mapping) -> str:
+    """模型自带的「一句话说明」；没有或不合理时返回空串。
+
+    让模型在调用 ``run_command`` 时填 ``description``，审批卡片就能显示
+    「扫描当前目录所有 .html 文件并检查链接是否存在」这种目标级说明，
+    而不是让用户去读原始命令。
+    """
+    command = " ".join(str(args.get("command") or "").split()).lower()
+    for key in ("description", "purpose", "intent"):
+        value = args.get(key)
+        if not isinstance(value, str):
+            continue
+        text = " ".join(value.split())
+        if not text or text.lower() == command:
+            continue
+        return text if len(text) <= 240 else text[:240] + "…"
+    return ""
+
+
 def describe_call(tool: str, args: Mapping) -> tuple[str, str, str]:
-    """把工具调用翻译成 (记忆用的 target, 一句话摘要, 内容预览)。"""
+    """把工具调用翻译成 (记忆用的 target, 一句话说明, 内容预览)。"""
     args = dict(args or {})
 
     command = args.get("command")
     if command is not None:
         text = str(command).strip()
-        return text, f"执行命令：{text}", _clip(text)
+        # 优先用模型自写的意图说明；没有就按命令结构翻译成中文。
+        summary = _readable_hint(args) or describe_command(text)
+        if not summary:
+            program = text.split(None, 1)[0] if text else "shell"
+            summary = f"执行一条 {_clip(program, 32)} 命令，原文见下方"
+        return text, summary, _clip(text, COMMAND_PREVIEW_LIMIT)
 
     source = args.get("source")
     destination = args.get("destination")
@@ -159,6 +194,17 @@ def describe_call(tool: str, args: Mapping) -> tuple[str, str, str]:
 
     dumped = json.dumps(args, ensure_ascii=False, sort_keys=True)
     return dumped, f"调用 {tool}", _clip(dumped)
+
+
+def describe_steps(tool: str, args: Mapping) -> tuple[str, ...]:
+    """命令类工具的逐步说明；非命令工具返回空元组。
+
+    只做展示用途：即使规则没识别出来，审批仍然照常进行，不会因此放行或拒绝。
+    """
+    command = (args or {}).get("command")
+    if command is None:
+        return ()
+    return tuple(command_steps(str(command)))
 
 
 def gated_tools(enabled: set[str] | None = None) -> dict[str, str]:
@@ -363,6 +409,7 @@ class ApprovalMiddleware(AgentMiddleware):
             args=dict(args),
             reason=risk.reason if risk and risk.is_elevated else "",
             rule=risk.rule if risk and risk.is_elevated else "",
+            steps=describe_steps(name, args),
         )
         if request.reason:
             logger.info("elevated tool call %s [%s]: %s", name, request.rule, request.reason)
@@ -396,8 +443,7 @@ class ApprovalMiddleware(AgentMiddleware):
 # ---------------------------------------------------------------------------
 _PROMPT = """\
 需要确认：{summary}
-{preview}
-  [y] 允许本次    [a] 始终允许（本会话）    [n] 拒绝
+{details}  [y] 允许本次    [a] 始终允许（本会话）    [n] 拒绝
 选择 [y/a/n]: """
 
 _CHOICES = {
@@ -406,6 +452,19 @@ _CHOICES = {
     "n": "deny", "no": "deny", "3": "deny", "": "deny",
 }
 
+_COMMAND_TOOLS = {"run_command", "start_process"}
+
+
+def _console_details(request: ApprovalRequest) -> str:
+    """终端里补充「逐步说明」与原始内容；网页端由卡片自己排版。"""
+    lines: list[str] = []
+    if len(request.steps) > 1:
+        lines.extend(f"  · {step}" for step in request.steps)
+    if request.preview:
+        label = "原始命令" if request.tool in _COMMAND_TOOLS else "详细内容"
+        lines.append(f"  {label}：{request.preview}")
+    return "\n".join(lines) + "\n" if lines else ""
+
 
 def console_asker(request: ApprovalRequest) -> Decision:
     """终端里提问。
@@ -413,9 +472,10 @@ def console_asker(request: ApprovalRequest) -> Decision:
     非交互场景（stdin 被管道接管 / Ctrl-C）一律按拒绝处理，
     避免脚本里悄悄放行危险操作。
     """
-    preview = f"{request.preview}\n" if request.preview else ""
     try:
-        answer = input(_PROMPT.format(summary=request.summary, preview=preview)).strip().lower()
+        answer = input(
+            _PROMPT.format(summary=request.summary, details=_console_details(request))
+        ).strip().lower()
     except (EOFError, KeyboardInterrupt):
         print("\n[已拒绝]")
         return "deny"

@@ -21,6 +21,15 @@ from langchain_deepseek import ChatDeepSeek
 
 from config.settings import settings
 from prompts.system import SURFACE_CLI, build_system_prompt
+from tools.catalog import (
+    BASIC_TOOLS,
+    EXTENDED_TOOLS,
+    META_TOOLS,
+    ToolActivation,
+    enabled_tool_names,
+    entry_names_for_tools,
+    visible_tool_names,
+)
 from tools.context import SessionRef, ToolContext
 from tools.images import vision_from_model
 from tools.model_view import with_compact_descriptions
@@ -103,13 +112,18 @@ def build_model() -> ChatDeepSeek:
     )
 
 
-def build_middleware(approval: "ApprovalGate | None" = None) -> list[AgentMiddleware]:
+def build_middleware(
+    approval: "ApprovalGate | None" = None,
+    *,
+    visibility=None,
+) -> list[AgentMiddleware]:
     """必要的运行保护：
 
     - 模型调用失败自动重试（网络抖动、限流）；
     - 单轮模型调用数上限，避免 Agent 陷入死循环；
     - 单轮工具调用数上限，超出的工具调用会被拦截而不是继续堆积上下文；
-    - 审批（放在最内层，先让调用上限拦截，再问人）。
+    - 扩展工具可见性过滤（基础 + 已激活扩展）；
+    - 审批（放在最内层，先让调用上限与可见性拦截，再问人）。
     """
 
     middleware: list[AgentMiddleware] = [
@@ -123,6 +137,8 @@ def build_middleware(approval: "ApprovalGate | None" = None) -> list[AgentMiddle
             exit_behavior="continue",
         ),
     ]
+    if visibility is not None:
+        middleware.append(visibility)
     if approval is not None:
         from agents.approval import ApprovalMiddleware
 
@@ -150,9 +166,26 @@ def build_agent(
     tool_ctx = ctx or cli_tool_context()
     if tool_ctx.vision is None:
         tool_ctx = replace(tool_ctx, vision=vision_from_model(chat_model))
-    if tools is None:
+    managed = tools is None
+    enabled_entries = cli_enabled_tools() if managed else entry_names_for_tools(
+        {str(getattr(tool, "name", "")) for tool in tools}
+    )
+    enabled_names = enabled_tool_names(enabled_entries)
+    activation = tool_ctx.activation or ToolActivation()
+    updates: dict = {}
+    if tool_ctx.activation is None:
+        updates["activation"] = activation
+    if not tool_ctx.enabled_tool_names:
+        updates["enabled_tool_names"] = enabled_names
+    if updates:
+        tool_ctx = replace(tool_ctx, **updates)
+    if managed:
         tools = build_default_tools(tool_ctx)
-    tool_names = {str(getattr(tool, "name", "")) for tool in tools}
+    tool_names = (
+        visible_tool_names(enabled_names, activation)
+        if managed
+        else {str(getattr(tool, "name", "")) for tool in tools}
+    )
     effective_engine = "tool_calling" if middleware is not None else resolved_engine
     system_prompt = build_system_prompt(
         str(tool_ctx.workspace) if tool_ctx.workspace else "",
@@ -168,14 +201,28 @@ def build_agent(
             tools,
             system_prompt,
             approval=approval,
+            activation=activation if managed else None,
+            basic_names=BASIC_TOOLS if managed else (),
+            extended_names=EXTENDED_TOOLS if managed else (),
+            meta_names=META_TOOLS if managed else (),
             max_model_calls=settings.max_model_calls,
             max_tool_calls=settings.max_tool_calls,
             model_max_retries=settings.model_max_retries,
             max_output_chars=settings.max_tool_output_chars,
         )
 
+    visibility = None
+    if managed:
+        from agents.tool_visibility import ToolVisibilityMiddleware
+
+        visibility = ToolVisibilityMiddleware(
+            activation=activation,
+            basic_names=set(BASIC_TOOLS) & enabled_names,
+            extended_names=set(EXTENDED_TOOLS) & enabled_names,
+            meta_names=set(META_TOOLS) & enabled_names,
+        )
     if middleware is None:
-        middleware = build_middleware(approval)
+        middleware = build_middleware(approval, visibility=visibility)
     model_tools = with_compact_descriptions(tools)
     return create_agent(
         chat_model,

@@ -601,6 +601,68 @@ class StepThoughtTest(unittest.TestCase):
             "Let us inspect the dependency first.",
         )
 
+    def test_reasoning_stream_is_not_emitted_twice_across_steps(self):
+        """Two tool steps without chunk ids must not re-send the second full reasoning."""
+
+        class MultiStepReasoningAgent:
+            emits_thought_events = False
+
+            def stream(self, payload, stream_mode=None):
+                history = list(payload["messages"])
+                first = "check the config"
+                for part in ("check ", "the config"):
+                    yield (
+                        "messages",
+                        (
+                            AIMessageChunk(
+                                content="",
+                                additional_kwargs={"reasoning_content": part},
+                            ),
+                            None,
+                        ),
+                    )
+                ai1 = AIMessage(
+                    content="",
+                    tool_calls=[{"name": "read_file", "args": {"path": "a"}, "id": "call-1"}],
+                    additional_kwargs={"reasoning_content": f"  {first}\n"},
+                )
+                yield ("values", {"messages": [*history, ai1]})
+                tool = ToolMessage(content="内容", tool_call_id="call-1", name="read_file")
+                second = "now summarize"
+                for part in ("now ", "summarize"):
+                    yield (
+                        "messages",
+                        (
+                            AIMessageChunk(
+                                content="",
+                                additional_kwargs={"reasoning_content": part},
+                            ),
+                            None,
+                        ),
+                    )
+                ai2 = AIMessage(
+                    content="完成",
+                    additional_kwargs={"reasoning_content": f"  {second}\n"},
+                )
+                yield ("values", {"messages": [*history, ai1, tool, ai2]})
+
+        with workspace_tempdir() as tmp:
+            session = ChatSession(
+                MultiStepReasoningAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                hydrate=False,
+            )
+            events = list(session.ask_stream("分析一下"))
+
+        thoughts = [payload for kind, payload in events if kind == "thought"]
+        self.assertTrue(thoughts)
+        self.assertTrue(all(isinstance(item, dict) and item.get("append") for item in thoughts))
+        self.assertEqual(
+            "".join(item["text"] for item in thoughts),
+            "check the confignow summarize",
+        )
+
     def test_reasoning_text_supports_content_blocks(self):
         message = AIMessage(content=[{
             "type": "reasoning",

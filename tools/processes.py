@@ -276,7 +276,12 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
     manager = ctx.process_manager or get_process_manager(ctx.workspace)
 
     @tool
-    def start_process(command: str, cwd: str = "", terminal: str = "") -> str:
+    def start_process(
+        command: str,
+        cwd: str = "",
+        terminal: str = "",
+        description: str = "",
+    ) -> str:
         """在后台启动一条命令，立即返回进程 ID；输出写入日志文件。
 
         适合 dev server、watch 构建、长时间脚本。需要看结果时用
@@ -287,6 +292,9 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
             cwd: 相对工作区的执行目录，默认工作区根目录。
             terminal: 临时指定 powershell / cmd / gitbash / wsl；
                 留空时使用「设置 → 通用」里的终端偏好。
+            description: 用一句白话说明这个后台进程要做什么
+                （例如「启动前端开发服务器，监听 5173 端口」）。
+                审批卡片用它作为主标题，请勿重复命令原文或罗列参数。
 
         Returns:
             进程 ID、PID 与日志位置；启动失败时返回 ``Error:``。
