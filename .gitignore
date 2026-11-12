@@ -22,6 +22,7 @@ htmlcov/
 memory/
 data/
 .tmp/
+.alembic/
 
 # ---------- 打包产物 ----------
 build/

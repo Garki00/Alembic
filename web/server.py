@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import threading
 from collections import defaultdict
 from datetime import datetime
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -29,7 +30,7 @@ from agents.approval import (
     permission_tools,
     tool_risks,
 )
-from agents.context import ChatSession, SessionStore, message_text, reasoning_text
+from agents.context import ChatSession, SessionStore, context_tokens, message_text, reasoning_text
 from config.settings import settings
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
 from config.store import (
@@ -45,8 +46,9 @@ from tools.terminals import available_terminals
 from tools.todo import TodoStore
 from web.approvals import ApprovalBroker, ApprovalRegistry
 from web.auth import install_auth
+from web.process_events import ProcessEventHub
 from web.questions import QuestionBroker, QuestionRegistry
-from web.runtime import build_runtime
+from web.runtime import build_runtime, create_chat_model
 
 # 前后端分离后，后端只提供 /api；页面由 frontend/ 的 Vite 应用提供。
 
@@ -98,6 +100,9 @@ class ChatPayload(BaseModel):
     message: str
     workspace_id: str | None = None
     workspace: str | None = None  # 旧字段，仅用于兼容
+    attachments: list[str] = []
+    internal: bool = False
+    process_id: str = ""
 
 
 class AddWorkspacePayload(BaseModel):
@@ -166,6 +171,8 @@ def _serialize_messages(messages: Iterable[Any]) -> list[dict[str, Any]]:
     for message in messages:
         role = role_map.get(getattr(message, "type", ""), getattr(message, "type", "unknown"))
         item: dict[str, Any] = {"role": role, "content": message_text(message)}
+        if getattr(message, "additional_kwargs", {}).get("alembic_internal"):
+            item["internal"] = True
         reasoning = reasoning_text(message)
         if reasoning:
             item["reasoning"] = reasoning
@@ -184,6 +191,34 @@ def _serialize_messages(messages: Iterable[Any]) -> list[dict[str, Any]]:
 
 def _new_session_id() -> str:
     return f"chat-{datetime.now():%Y%m%d-%H%M%S}"
+
+
+def _context_limit() -> int:
+    """当前全局配置下的上下文压缩阈值。"""
+    if settings.max_context_tokens:
+        return int(settings.max_context_tokens)
+    return max(
+        1,
+        int(settings.model_context_window * settings.compact_trigger_ratio)
+        - settings.compact_reserve_tokens,
+    )
+
+
+def _safe_attachment_name(raw: str) -> str:
+    """只保留文件名，去掉路径和控制字符。"""
+    name = Path(str(raw or "")).name
+    name = re.sub(r"[\x00-\x1f\x7f]+", "", name).strip(" .")
+    name = name.replace("\\", "_").replace("/", "_")
+    return name[:160] or "attachment"
+
+
+def _attachment_kind(name: str) -> str:
+    suffix = Path(name).suffix.lower()
+    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}:
+        return "image"
+    if suffix in {".pdf", ".docx", ".xlsx", ".pptx"}:
+        return "document"
+    return "file"
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +266,10 @@ def create_app(
     app.state.sessions = sessions
     app.state.runtime_factory = runtime_factory
     app.state.locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
+    # 每个会话当前一轮的取消信号；停止生成时同时中断前台命令。
+    app.state.cancels: dict[str, threading.Event] = {}
+    # 后台任务完成事件：进程视图和自动续跑都订阅这一份。
+    app.state.process_events = ProcessEventHub()
     # 审批：待回执表（跨请求）+ 每个会话已记住的「始终允许」
     app.state.approvals = ApprovalRegistry()
     app.state.approval_memo: dict[str, dict[str, dict]] = {}
@@ -240,7 +279,13 @@ def create_app(
     app.state.questions = QuestionRegistry()
     # 任务清单与后台进程都放在应用级，跨轮次共享
     app.state.todos = TodoStore(sessions.directory / "todos")
-    app.state.processes = ProcessManager(sessions.directory.parent / "logs" / "processes")
+    app.state.processes = ProcessManager(
+        sessions.directory.parent / "logs" / "processes",
+        on_event=app.state.process_events.publish,
+    )
+    # 同一个后台任务只允许由一个标签页触发自动续跑。
+    app.state.continued_processes: set[str] = set()
+    app.state.continued_lock = threading.Lock()
 
     def resolve_workspace(workspace_id: str | None, legacy_path: str | None) -> tuple[str, str]:
         """把请求里的工作区解析成 ``(id, 绝对路径)``。"""
@@ -271,6 +316,59 @@ def create_app(
     @app.get("/api/health")
     def health():
         return {"ok": True, "model": models.active_model_id, "time": datetime.now().isoformat(timespec="seconds")}
+
+    # ---- 后台任务视图 ----
+    @app.get("/api/processes/events")
+    def process_events():
+        """后台任务状态事件流；进程视图和自动续跑共用。"""
+
+        def event_stream():
+            try:
+                yield ": connected\n\n"
+                for item in app.state.process_events.listen():
+                    if item is None:
+                        yield ": ping\n\n"
+                        continue
+                    kind, data = item
+                    yield _sse(kind, data)
+            finally:
+                pass
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/processes")
+    def list_processes():
+        records = sorted(
+            app.state.processes.list(),
+            key=lambda record: record.started_monotonic,
+            reverse=True,
+        )
+        items = [record.public() for record in records]
+        return {
+            "processes": items,
+            "running": sum(1 for item in items if item["running"]),
+            "finished": sum(1 for item in items if not item["running"]),
+        }
+
+    @app.get("/api/processes/{process_id}")
+    def process_detail(process_id: str, tail: int = 400):
+        record = app.state.processes.get(process_id)
+        if record is None:
+            raise HTTPException(404, "后台任务不存在")
+        _, text = app.state.processes.read_log(record.id, tail)
+        return {"process": record.public(), "log": text}
+
+    @app.post("/api/processes/{process_id}/stop")
+    def stop_process(process_id: str):
+        record = app.state.processes.get(process_id)
+        if record is None:
+            raise HTTPException(404, "后台任务不存在")
+        stopped = app.state.processes.stop(record.id)
+        return {"ok": True, "process": stopped.public() if stopped else None}
 
     # ---- 初始化数据 ----
     @app.get("/api/bootstrap")
@@ -478,7 +576,7 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
 
     # ---- 工作区文件浏览（右侧边栏） ----
-    _SKIP_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".tmp", ".idea"}
+    _SKIP_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".tmp", ".idea", ".alembic"}
     _UNSUPPORTED_SUFFIXES = {
         ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg",
         ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
@@ -611,11 +709,94 @@ def create_app(
     @app.get("/api/sessions/{session_id}/messages")
     def session_messages(session_id: str):
         messages, meta = sessions.load(session_id)
+        tokens, token_source = context_tokens(messages)
         return {
             "session_id": session_id,
             "messages": _serialize_messages(messages),
             "turns": meta.turns,
             "compactions": meta.compactions,
+            "tokens": tokens,
+            "token_source": token_source,
+            "max_tokens": _context_limit(),
+        }
+
+    @app.post("/api/sessions/{session_id}/compact")
+    def compact_session(session_id: str):
+        """立即压缩指定会话；不占用正在对话的会话锁。"""
+        model_cfg = models.active()
+        if model_cfg is None:
+            raise HTTPException(400, "还没有可用的模型，请先在设置里添加")
+        lock = app.state.locks[session_id]
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, "当前会话正在生成，请先停止或等待本轮结束")
+        try:
+            messages, meta = sessions.load(session_id)
+            if not messages:
+                raise HTTPException(400, "当前会话还没有可压缩的历史")
+            try:
+                model = create_chat_model(model_cfg)
+            except Exception as exc:
+                raise HTTPException(400, str(exc)) from exc
+            session = ChatSession(
+                None,
+                session_id,
+                store=sessions,
+                summarizer=model,
+                workspace_id=meta.workspace_id,
+                hydrate=True,
+            )
+            changed = session.compact()
+            stats = session.stats()
+            return {
+                "compacted": changed,
+                "tokens": stats["tokens"],
+                "token_source": stats["token_source"],
+                "max_tokens": stats["max_tokens"],
+                "messages": len(session.messages),
+                "turns": stats["turns"],
+            }
+        finally:
+            lock.release()
+
+    # ---- 附件 ----
+    _MAX_ATTACHMENT_BYTES = 20_000_000
+
+    @app.post("/api/sessions/{session_id}/attachments")
+    async def upload_attachment(
+        session_id: str,
+        request: Request,
+        filename: str = "attachment",
+        workspace_id: str | None = None,
+    ):
+        """把浏览器文件写入工作区内的隐藏附件目录，返回模型可读的相对路径。"""
+        _, root_text = resolve_workspace(workspace_id, None)
+        root = Path(root_text)
+        body = await request.body()
+        if not body:
+            raise HTTPException(400, "文件为空")
+        if len(body) > _MAX_ATTACHMENT_BYTES:
+            raise HTTPException(413, "附件不能超过 20 MB")
+        name = _safe_attachment_name(filename)
+        safe_session = re.sub(r"[^0-9A-Za-z_.-]+", "_", session_id or "default")[:64] or "default"
+        folder = root / ".alembic" / "attachments" / safe_session
+        try:
+            folder.resolve().relative_to(root.resolve())
+        except (OSError, ValueError) as exc:
+            raise HTTPException(400, "附件目录越界") from exc
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(400, f"无法创建附件目录：{exc}") from exc
+        target = folder / f"{datetime.now():%Y%m%d-%H%M%S-%f}-{name}"
+        try:
+            target.write_bytes(body)
+        except OSError as exc:
+            raise HTTPException(400, f"保存附件失败：{exc}") from exc
+        return {
+            "name": name,
+            "path": display_path(root, target),
+            "size": len(body),
+            "kind": _attachment_kind(name),
         }
 
     @app.get("/api/sessions/{session_id}/todos")
@@ -627,7 +808,7 @@ def create_app(
     @app.post("/api/chat")
     def chat(payload: ChatPayload):
         message = (payload.message or "").strip()
-        if not message:
+        if not message and not payload.attachments:
             raise HTTPException(400, "消息不能为空")
 
         model_cfg = models.active()
@@ -637,6 +818,31 @@ def create_app(
         # 没有 session_id 时直接创建新会话：在工作区里直接输入发送即可开始对话。
         session_id = (payload.session_id or "").strip() or _new_session_id()
         workspace_id, workspace = resolve_workspace(payload.workspace_id, payload.workspace)
+
+        if payload.attachments:
+            if len(payload.attachments) > 10:
+                raise HTTPException(400, "一次最多附加 10 个文件")
+            lines = ["[Attached files]"]
+            for raw in payload.attachments:
+                try:
+                    target = resolve_in_workspace(Path(workspace), raw)
+                except WorkspacePathError as exc:
+                    raise HTTPException(400, exc.message) from exc
+                if not target.is_file():
+                    raise HTTPException(400, f"附件不存在：{raw}")
+                size = target.stat().st_size
+                lines.append(
+                    f"- {display_path(Path(workspace), target)} "
+                    f"({_attachment_kind(target.name)}, {size} bytes)"
+                )
+            lines.append("[/Attached files]")
+            message = "\n".join([*lines, "", message or "请查看这些附件。"])
+
+        if payload.process_id:
+            with app.state.continued_lock:
+                if payload.process_id in app.state.continued_processes:
+                    raise HTTPException(409, "这个后台任务已经触发过续跑")
+                app.state.continued_processes.add(payload.process_id)
 
         # 审批要在「流还在 yield」的时候等浏览器回执，所以把对话放进工作线程，
         # 主线程只负责从队列里取事件往外发；否则工具线程一阻塞，事件就发不出去。
@@ -689,6 +895,8 @@ def create_app(
             activation = app.state.session_activations.setdefault(
                 session_id, ToolActivation()
             )
+            cancel_event = threading.Event()
+            app.state.cancels[session_id] = cancel_event
             agent, summarizer = app.state.runtime_factory(
                 model_cfg,
                 tools.enabled_tools(),
@@ -703,8 +911,11 @@ def create_app(
                 request_text=request_text,
                 terminal=terminal,
                 activation=activation,
+                cancel_event=cancel_event,
             )
         except Exception as exc:
+            if "cancel_event" in locals():
+                app.state.cancels.pop(session_id, None)
             raise HTTPException(400, str(exc)) from exc
 
         session = ChatSession(
@@ -719,7 +930,7 @@ def create_app(
             lock = app.state.locks[session_id]
             try:
                 with lock:
-                    for kind, data in session.ask_stream(message):
+                    for kind, data in session.ask_stream(message, internal=payload.internal):
                         if kind == "delta":
                             events.put(("delta", {"text": data}))
                         elif kind == "thought":
@@ -734,6 +945,7 @@ def create_app(
                         elif kind == "compacted":
                             events.put(("compacted", {}))
                         elif kind == "done":
+                            stats = session.stats()
                             events.put(
                                 (
                                     "done",
@@ -742,6 +954,7 @@ def create_app(
                                         "text": data.text,
                                         "tokens": data.context_tokens,
                                         "token_source": data.token_source,
+                                        "max_tokens": stats["max_tokens"],
                                         "messages": len(session.messages),
                                         "turns": session.meta.turns,
                                     },
@@ -750,6 +963,8 @@ def create_app(
             except Exception as exc:
                 events.put(("error", {"message": str(exc)}))
             finally:
+                if app.state.cancels.get(session_id) is cancel_event:
+                    app.state.cancels.pop(session_id, None)
                 question_broker.close()
                 broker.close()
                 events.put(None)  # 结束哨兵
@@ -775,6 +990,7 @@ def create_app(
                     yield _sse(kind, data)
             finally:
                 # 客户端中途断开时，别让工具线程还挂在审批/提问上等 5 分钟
+                cancel_event.set()
                 question_broker.close()
                 broker.close()
 
@@ -783,6 +999,20 @@ def create_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    # ---- 停止当前轮 ----
+    @app.post("/api/sessions/{session_id}/cancel")
+    def cancel_session(session_id: str, background: bool = True):
+        """停止生成：中断当前轮的前台命令；默认同时停止本会话的后台任务。"""
+        event = app.state.cancels.get(session_id)
+        if event is not None:
+            event.set()
+        stopped = app.state.processes.stop_session(session_id) if background else 0
+        return {
+            "ok": True,
+            "cancelled": event is not None,
+            "stopped_processes": stopped,
+        }
 
     # ---- 审批 ----
     @app.post("/api/approvals/{request_id}")

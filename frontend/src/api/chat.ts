@@ -4,6 +4,9 @@ export interface ChatPayload {
   session_id?: string | null
   message: string
   workspace_id?: string
+  attachments?: string[]
+  internal?: boolean
+  process_id?: string
 }
 
 export type ChatEventHandler = (event: string, data: Record<string, unknown>) => void
@@ -26,6 +29,9 @@ export async function streamChat(
       session_id: payload.session_id || undefined,
       message: payload.message,
       workspace_id: payload.workspace_id || undefined,
+      attachments: payload.attachments || [],
+      internal: Boolean(payload.internal),
+      process_id: payload.process_id || '',
     }),
     signal,
   })
@@ -40,6 +46,27 @@ export async function streamChat(
   }
   if (!response.body) throw new Error('当前浏览器不支持流式响应')
 
+  await readSSE(response.body.getReader(), onEvent)
+}
+
+/** 订阅后台任务状态事件。 */
+export async function streamProcessEvents(
+  onEvent: ChatEventHandler,
+  signal: AbortSignal,
+): Promise<void> {
+  const response = await fetch(apiUrl('/api/processes/events'), {
+    method: 'GET',
+    headers: {
+      Accept: 'text/event-stream',
+      ...authHeaders(),
+    },
+    credentials: 'include',
+    signal,
+  })
+  if (!response.ok) {
+    throw new ApiError(response.statusText || `HTTP ${response.status}`, response.status)
+  }
+  if (!response.body) throw new Error('当前浏览器不支持流式响应')
   await readSSE(response.body.getReader(), onEvent)
 }
 

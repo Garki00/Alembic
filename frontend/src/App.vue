@@ -6,12 +6,14 @@ import ChatTopbar from './components/ChatTopbar.vue'
 import ChatTranscript from './components/ChatTranscript.vue'
 import InspectorSidebar from './components/InspectorSidebar.vue'
 import OnboardingModal from './components/OnboardingModal.vue'
+import ProcessPanel from './components/ProcessPanel.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ToastHost from './components/ToastHost.vue'
 import WorkspaceModal from './components/WorkspaceModal.vue'
 import { errorMessage } from './api/client'
 import { useChatStore } from './stores/chat'
 import { useInspectorStore } from './stores/inspector'
+import { useProcessStore } from './stores/processes'
 import { useUiStore } from './stores/ui'
 import { useWorkspaceStore } from './stores/workspace'
 
@@ -19,6 +21,7 @@ const workspace = useWorkspaceStore()
 const chat = useChatStore()
 const ui = useUiStore()
 const inspector = useInspectorStore()
+const processes = useProcessStore()
 
 const bootError = ref('')
 
@@ -70,6 +73,10 @@ async function initialize(): Promise<void> {
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key !== 'Escape') return
+  if (processes.panelOpen) {
+    processes.closePanel()
+    return
+  }
   if (ui.settingsOpen || ui.workspaceModalOpen || ui.sidebarOpen) {
     ui.closeOverlays()
   }
@@ -77,11 +84,13 @@ function onKeydown(event: KeyboardEvent): void {
 
 onMounted(() => {
   document.addEventListener('keydown', onKeydown)
+  processes.init()
   void initialize()
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown)
+  processes.disconnectEvents()
 })
 </script>
 
@@ -97,6 +106,7 @@ onBeforeUnmount(() => {
     <AppSidebar />
     <main class="main">
       <ChatTopbar />
+      <ProcessPanel v-if="processes.panelOpen" />
       <ChatTranscript />
       <ChatComposer />
     </main>

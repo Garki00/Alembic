@@ -86,6 +86,7 @@ def tool_context(
     terminal: str = "powershell",
     activation: ToolActivation | None = None,
     enabled_names: frozenset[str] = frozenset(),
+    cancel_event=None,
 ) -> ToolContext:
     """把网页端的工作区字符串变成工具上下文。"""
     text = (workspace or "").strip()
@@ -103,6 +104,7 @@ def tool_context(
         terminal=terminal,
         activation=activation,
         enabled_tool_names=enabled_names,
+        cancel_event=cancel_event,
     )
 
 
@@ -122,6 +124,7 @@ def build_runtime(
     request_text: str | None = None,
     terminal: str = "powershell",
     activation: ToolActivation | None = None,
+    cancel_event=None,
 ):
     """返回 ``(agent, summarizer)``，供一轮对话使用。
 
@@ -154,6 +157,7 @@ def build_runtime(
         terminal=terminal,
         activation=active,
         enabled_names=enabled_names,
+        cancel_event=cancel_event,
     )
     tools = build_tools(enabled_entries, tool_configs or {}, ctx)
     resolved_engine = (engine or settings.agent_engine).strip().lower()

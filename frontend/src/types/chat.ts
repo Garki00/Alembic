@@ -36,12 +36,21 @@ export type WorkEvent =
       args: Record<string, unknown>
       result: string
       error: boolean
+      liveOutput?: string
     }
+
+export interface UserAttachment {
+  name: string
+  path: string
+  size: number
+  kind: string
+}
 
 export interface UserTurn {
   kind: 'user'
   id: string
   content: string
+  attachments?: UserAttachment[]
 }
 
 export interface AssistantTurn {

@@ -2,11 +2,12 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type {
   ApprovalDecision,
+  AttachmentInfo,
   ProviderInfo,
   ProviderModelInfo,
   ThinkingLevel,
 } from '../api/types'
-import { errorMessage } from '../api/client'
+import { apiUrl, authHeaders, errorMessage } from '../api/client'
 import { providerName } from '../lib/providers'
 import {
   normalizeThinkingLevels,
@@ -31,6 +32,12 @@ const menuOpen = ref(false)
 const menuProviderId = ref('')
 const thinkingSwitcher = ref<HTMLElement | null>(null)
 const thinkingOpen = ref(false)
+const toolsOpen = ref(false)
+const toolsMenu = ref<HTMLElement | null>(null)
+const fileInput = ref<HTMLInputElement | null>(null)
+const attachments = ref<AttachmentInfo[]>([])
+const uploading = ref(false)
+const compacting = ref(false)
 
 const activeProvider = computed(() => workspace.activeProvider)
 const activeModelName = computed(
@@ -41,6 +48,14 @@ const menuProvider = computed(
     ?? workspace.activeProvider,
 )
 const menuModels = computed(() => menuProvider.value?.models ?? [])
+const canSend = computed(
+  () => !chat.streaming && Boolean(draft.value.trim() || attachments.value.length),
+)
+const contextTitle = computed(
+  () => chat.contextMax
+    ? `上下文约 ${chat.contextTokens} / ${chat.contextMax} tokens`
+    : '上下文用量',
+)
 
 const thinkingState = computed(() => normalizeThinkingLevels(
   workspace.activeModel?.thinking_levels,
@@ -74,17 +89,108 @@ function resize(): void {
 
 function send(): void {
   if (chat.streaming || !workspace.activeWorkspace) return
-  const text = draft.value
-  if (!text.trim()) return
+  const text = draft.value.trim() || (attachments.value.length ? '请查看这些附件。' : '')
+  if (!text) return
+  const files = [...attachments.value]
   draft.value = ''
+  attachments.value = []
+  toolsOpen.value = false
   void nextTick(() => resize())
-  void chat.send(text, workspace.activeWorkspaceId || undefined)
+  void chat.send(text, workspace.activeWorkspaceId || undefined, { attachments: files })
 }
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
     send()
+  }
+}
+
+function toggleTools(): void {
+  toolsOpen.value = !toolsOpen.value
+  menuOpen.value = false
+  thinkingOpen.value = false
+}
+
+function chooseFile(): void {
+  toolsOpen.value = false
+  fileInput.value?.click()
+}
+
+function removeAttachment(index: number): void {
+  attachments.value.splice(index, 1)
+}
+
+async function ensureSession(): Promise<string | null> {
+  if (chat.sessionId) return chat.sessionId
+  const workspaceId = workspace.activeWorkspaceId
+  if (!workspaceId) return null
+  const session = await workspace.createSession(workspaceId)
+  chat.sessionId = session.id
+  return session.id
+}
+
+async function uploadFile(file: File): Promise<void> {
+  if (attachments.value.length >= 10) {
+    ui.showToast('一次最多附加 10 个文件', true)
+    return
+  }
+  if (file.size > 20_000_000) {
+    ui.showToast(`${file.name} 超过 20 MB`, true)
+    return
+  }
+  uploading.value = true
+  try {
+    const sessionId = await ensureSession()
+    if (!sessionId) return
+    const query = new URLSearchParams({
+      filename: file.name,
+      workspace_id: workspace.activeWorkspaceId || '',
+    })
+    const response = await fetch(
+      apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/attachments?${query}`),
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          ...authHeaders(),
+        },
+        credentials: 'include',
+        body: file,
+      },
+    )
+    if (!response.ok) {
+      let message = response.statusText || `HTTP ${response.status}`
+      try {
+        const data = await response.json()
+        message = String(data.detail || message)
+      } catch (_) { /* 非 JSON 错误体 */ }
+      throw new Error(message)
+    }
+    const data = await response.json() as AttachmentInfo
+    attachments.value.push(data)
+  } catch (error) {
+    ui.showToast(errorMessage(error), true)
+  } finally {
+    uploading.value = false
+  }
+}
+
+async function onFiles(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  input.value = ''
+  for (const file of files) await uploadFile(file)
+}
+
+async function runCompact(): Promise<void> {
+  if (compacting.value || chat.streaming) return
+  toolsOpen.value = false
+  compacting.value = true
+  try {
+    await chat.compactContext()
+  } finally {
+    compacting.value = false
   }
 }
 
@@ -161,12 +267,18 @@ function onDocumentClick(event: MouseEvent): void {
       thinkingOpen.value = false
     }
   }
+  if (toolsOpen.value) {
+    if (!(toolsMenu.value && target && toolsMenu.value.contains(target))) {
+      toolsOpen.value = false
+    }
+  }
 }
 
 function onDocumentKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     menuOpen.value = false
     thinkingOpen.value = false
+    toolsOpen.value = false
   }
 }
 
@@ -185,6 +297,14 @@ watch(
   () => chat.streaming,
   (busy) => {
     if (!busy) void nextTick(() => textarea.value?.focus())
+  },
+)
+
+watch(
+  () => chat.sessionId,
+  () => {
+    attachments.value = []
+    toolsOpen.value = false
   },
 )
 
@@ -217,6 +337,47 @@ onBeforeUnmount(() => {
     />
   </div>
   <form v-else-if="workspace.activeWorkspace" class="composer" @submit.prevent="send">
+    <input
+      ref="fileInput"
+      type="file"
+      class="composer-file-input"
+      multiple
+      @change="onFiles"
+    />
+    <div v-if="toolsOpen" ref="toolsMenu" class="composer-tools-menu">
+      <div class="composer-tool-section">
+        <div class="composer-tool-title">添加</div>
+        <button type="button" class="composer-tool-row" @click="chooseFile">
+          <span class="composer-tool-name">文件</span>
+          <span class="composer-tool-desc">导入文件</span>
+        </button>
+      </div>
+      <div class="composer-tool-section">
+        <div class="composer-tool-title">命令</div>
+        <button
+          type="button"
+          class="composer-tool-row"
+          :disabled="compacting || chat.streaming || !chat.sessionId"
+          @click="runCompact"
+        >
+          <span class="composer-tool-name">压缩 <code>compact</code></span>
+          <span class="composer-tool-desc">{{ compacting ? '正在压缩…' : '压缩以上对话内容' }}</span>
+        </button>
+      </div>
+    </div>
+    <div v-if="attachments.length" class="composer-attachments">
+      <span v-for="(file, index) in attachments" :key="file.path" class="composer-attachment">
+        <span class="composer-attachment-name">{{ file.name }}</span>
+        <button
+          type="button"
+          class="composer-attachment-remove"
+          :aria-label="`移除 ${file.name}`"
+          @click="removeAttachment(index)"
+        >
+          ×
+        </button>
+      </span>
+    </div>
     <textarea
       id="input"
       ref="textarea"
@@ -229,9 +390,39 @@ onBeforeUnmount(() => {
       @keydown="onKeydown"
     ></textarea>
     <div class="composer-row">
-      <div class="hint">Shift + Enter 换行</div>
+      <div class="composer-tools">
+        <button
+          type="button"
+          class="composer-plus"
+          :class="{ active: toolsOpen }"
+          aria-label="添加文件或执行命令"
+          :aria-expanded="toolsOpen"
+          :disabled="uploading"
+          @click.stop="toggleTools"
+        >
+          <svg v-if="!uploading" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+            <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          </svg>
+          <span v-else aria-hidden="true">…</span>
+        </button>
+        <div class="hint">Shift + Enter 换行</div>
+      </div>
       <div class="composer-actions">
         <span class="context-meter">{{ chat.contextMeter }}</span>
+        <div class="context-ring" :title="contextTitle">
+          <svg viewBox="0 0 36 36" aria-hidden="true">
+            <circle class="context-ring-track" cx="18" cy="18" r="15" pathLength="100" />
+            <circle
+              class="context-ring-value"
+              cx="18"
+              cy="18"
+              r="15"
+              pathLength="100"
+              :stroke-dasharray="`${chat.contextPercent} 100`"
+            />
+          </svg>
+          <span class="context-ring-label">{{ chat.contextPercent }}%</span>
+        </div>
         <div ref="switcher" class="model-switcher">
           <button
             id="model-switch"
@@ -339,7 +530,7 @@ onBeforeUnmount(() => {
         <button
           type="submit"
           class="btn-send"
-          :disabled="chat.streaming || !draft.trim() || !workspace.activeWorkspace"
+          :disabled="!canSend || !workspace.activeWorkspace"
         >
           发送 <span aria-hidden="true">↑</span>
         </button>

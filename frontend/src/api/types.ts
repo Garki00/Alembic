@@ -178,6 +178,7 @@ export interface HistoryMessage {
   tool_calls?: Array<{ id?: string; name: string; args: Record<string, unknown> }>
   tool_name?: string
   tool_call_id?: string
+  internal?: boolean
 }
 
 export interface HistoryData {
@@ -185,6 +186,58 @@ export interface HistoryData {
   messages: HistoryMessage[]
   turns: number
   compactions: number
+  tokens?: number
+  token_source?: 'provider' | 'local' | string
+  max_tokens?: number
+}
+
+export interface ProcessInfo {
+  id: string
+  command: string
+  cwd: string
+  workspace: string
+  session_id: string
+  description: string
+  terminal: string
+  terminal_label: string
+  status: 'running' | 'completed' | 'failed' | 'stopped' | string
+  running: boolean
+  exit_code: number | null
+  started_at: string
+  ended_at: string
+  duration_seconds: number
+  notify: boolean
+  log_path: string
+  pid: number
+  /** 仅 process_completed 事件携带，用于内部续跑提示。 */
+  log_tail?: string
+}
+
+export interface ProcessListData {
+  processes: ProcessInfo[]
+  running: number
+  finished: number
+}
+
+export interface ProcessDetailData {
+  process: ProcessInfo
+  log: string
+}
+
+export interface AttachmentInfo {
+  name: string
+  path: string
+  size: number
+  kind: 'file' | 'image' | 'document' | string
+}
+
+export interface CompactData {
+  compacted: boolean
+  tokens: number
+  token_source: 'provider' | 'local' | string
+  max_tokens: number
+  messages: number
+  turns: number
 }
 
 export interface BrowseResult {
@@ -239,6 +292,7 @@ export interface ChatDoneEvent {
   text: string
   tokens?: number
   token_source?: 'provider' | 'local' | string
+  max_tokens?: number
   messages?: number
   turns?: number
 }

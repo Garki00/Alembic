@@ -1,12 +1,14 @@
 import { defineStore } from 'pinia'
-import { api, errorMessage } from '../api/client'
+import { api, apiUrl, authHeaders, errorMessage } from '../api/client'
 import { streamChat } from '../api/chat'
 import type {
   ApprovalDecision,
   ApprovalRequest,
   ChatDoneEvent,
+  CompactData,
   HistoryData,
   HistoryMessage,
+  ProcessInfo,
   QuestionRequest,
   TodoItem,
   TodosData,
@@ -18,10 +20,17 @@ import {
   type ChatApproval,
   type ChatQuestion,
   type ChatTurn,
+  type UserAttachment,
   type WorkEvent,
 } from '../types/chat'
 import { useUiStore } from './ui'
 import { useWorkspaceStore } from './workspace'
+
+interface SendOptions {
+  attachments?: UserAttachment[]
+  internal?: boolean
+  processId?: string
+}
 
 // 当前正在写入的消息上下文。用户切换会话时递增，旧流的事件就不会污染新会话。
 let activeStream = 0
@@ -63,10 +72,38 @@ function mapHistory(items: HistoryMessage[]): ChatTurn[] {
   const turns: ChatTurn[] = []
   let assistant: AssistantTurn | null = null
 
+  const splitAttachmentBlock = (content: string): {
+    text: string
+    attachments: UserAttachment[]
+  } => {
+    const match = /^\[Attached files\]\n([\s\S]*?)\n\[\/Attached files\]\n\n/.exec(content)
+    if (!match) return { text: content, attachments: [] }
+    const attachments: UserAttachment[] = []
+    for (const line of match[1].split('\n')) {
+      const item = /^- (.+?) \(([^,]+), (\d+) bytes\)$/.exec(line.trim())
+      if (!item) continue
+      const path = item[1]
+      attachments.push({
+        name: path.split('/').pop() || path,
+        path,
+        size: Number(item[3]),
+        kind: item[2],
+      })
+    }
+    return { text: content.slice(match[0].length), attachments }
+  }
+
   for (const message of items) {
     if (message.role === 'user') {
+      if (message.internal) continue
       assistant = null
-      turns.push({ kind: 'user', id: newId('user'), content: message.content })
+      const parsed = splitAttachmentBlock(message.content)
+      turns.push({
+        kind: 'user',
+        id: newId('user'),
+        content: parsed.text,
+        attachments: parsed.attachments,
+      })
       continue
     }
     if (message.role === 'assistant') {
@@ -145,11 +182,18 @@ export const useChatStore = defineStore('chat', {
     messages: [] as ChatTurn[],
     streaming: false,
     contextMeter: '',
+    contextTokens: 0,
+    contextMax: 0,
     streamTick: 0,
     todos: [] as TodoItem[],
+    pendingContinuations: [] as ProcessInfo[],
   }),
 
   getters: {
+    contextPercent(state): number {
+      if (!state.contextMax || state.contextMax <= 0) return 0
+      return Math.max(0, Math.min(100, Math.round((state.contextTokens / state.contextMax) * 100)))
+    },
     pendingApproval(state): ChatApproval | null {
       for (let index = state.messages.length - 1; index >= 0; index -= 1) {
         const turn = state.messages[index]
@@ -179,16 +223,48 @@ export const useChatStore = defineStore('chat', {
     resetConversation(): void {
       this.messages = []
       this.contextMeter = ''
+      this.contextTokens = 0
+      this.contextMax = 0
       this.todos = []
+      this.pendingContinuations = []
       this.bump()
     },
 
+    setContext(tokens?: number, maxTokens?: number): void {
+      if (typeof tokens === 'number' && Number.isFinite(tokens)) this.contextTokens = tokens
+      if (typeof maxTokens === 'number' && Number.isFinite(maxTokens)) this.contextMax = maxTokens
+    },
+
     stop(): void {
+      const sessionId = this.sessionId
+      if (sessionId) {
+        void fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/cancel?background=1`), {
+          method: 'POST',
+          headers: authHeaders(),
+          credentials: 'include',
+          keepalive: true,
+        }).catch(() => { /* 断流时的兜底，服务端也会在 finally 里取消 */ })
+      }
+      this.pendingContinuations = []
+      abortController?.abort()
+    },
+
+    stopStreamOnly(): void {
+      const sessionId = this.sessionId
+      if (this.streaming && sessionId) {
+        void fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/cancel?background=0`), {
+          method: 'POST',
+          headers: authHeaders(),
+          credentials: 'include',
+          keepalive: true,
+        }).catch(() => { /* 切换会话失败时仍只断开本地流 */ })
+      }
+      this.pendingContinuations = []
       abortController?.abort()
     },
 
     async openSession(sessionId: string): Promise<void> {
-      this.stop()
+      this.stopStreamOnly()
       activeStream += 1
       this.streaming = false
       this.sessionId = sessionId
@@ -200,6 +276,8 @@ export const useChatStore = defineStore('chat', {
         this.contextMeter = data.turns
           ? `${data.turns} 轮 · ${(data.messages || []).length} 条消息`
           : ''
+        this.setContext(data.tokens, data.max_tokens)
+        this.pendingContinuations = []
         try {
           const todos = await api<TodosData>(
             `/api/sessions/${encodeURIComponent(sessionId)}/todos`,
@@ -211,6 +289,8 @@ export const useChatStore = defineStore('chat', {
       } catch (error) {
         this.messages = []
         this.contextMeter = ''
+        this.contextTokens = 0
+        this.contextMax = 0
         this.todos = []
         this.bump()
         throw error
@@ -219,7 +299,7 @@ export const useChatStore = defineStore('chat', {
     },
 
     async newSession(workspaceId: string): Promise<void> {
-      this.stop()
+      this.stopStreamOnly()
       activeStream += 1
       this.streaming = false
       const workspace = useWorkspaceStore()
@@ -227,11 +307,14 @@ export const useChatStore = defineStore('chat', {
       this.sessionId = session.id
       this.messages = []
       this.contextMeter = ''
+      this.contextTokens = 0
+      this.contextMax = 0
       this.todos = []
+      this.pendingContinuations = []
       this.bump()
     },
 
-    async send(message: string, workspaceId?: string): Promise<void> {
+    async send(message: string, workspaceId?: string, options: SendOptions = {}): Promise<void> {
       const text = message.trim()
       if (!text || this.streaming) return
 
@@ -257,10 +340,22 @@ export const useChatStore = defineStore('chat', {
 
       // 先把消息推进响应式数组，再从数组里取回代理对象；
       // 直接改 createAssistantTurn() 返回的原始对象不会触发 Vue 更新。
-      this.messages.push(
-        { kind: 'user', id: newId('user'), content: text },
-        createAssistantTurn(),
-      )
+      if (options.internal) {
+        if (!this.sessionId) return
+        this.messages.push({
+          kind: 'note',
+          id: newId('note'),
+          text: '后台任务已完成，继续处理…',
+        })
+      } else {
+        this.messages.push({
+          kind: 'user',
+          id: newId('user'),
+          content: text,
+          attachments: options.attachments || [],
+        })
+      }
+      this.messages.push(createAssistantTurn())
       const assistant = this.messages[this.messages.length - 1] as AssistantTurn
       assistant.streaming = true
       this.streaming = true
@@ -296,6 +391,9 @@ export const useChatStore = defineStore('chat', {
             session_id: this.sessionId || undefined,
             message: text,
             workspace_id: workspaceId,
+            attachments: options.attachments?.map((item) => item.path) || [],
+            internal: Boolean(options.internal),
+            process_id: options.processId || '',
           },
           (event, data) => {
             if (!isCurrent()) return
@@ -355,6 +453,17 @@ export const useChatStore = defineStore('chat', {
                 this.bump()
                 break
               }
+              case 'tool_output': {
+                const name = String(data.name || 'run_command')
+                const id = data.id ? String(data.id) : undefined
+                const target = findOpenToolEvent(assistant.workEvents, id, name)
+                if (target) {
+                  const chunk = String(data.text || '')
+                  target.liveOutput = `${target.liveOutput || ''}${chunk}`.slice(-120_000)
+                  this.bump()
+                }
+                break
+              }
               case 'tool_result': {
                 const id = data.id ? String(data.id) : undefined
                 const name = String(data.name || '工具')
@@ -364,6 +473,7 @@ export const useChatStore = defineStore('chat', {
                 if (event) {
                   event.result = content
                   event.error = content.startsWith('Error:')
+                  event.liveOutput = ''
                 } else {
                   assistant.workEvents.push({
                     kind: 'tool',
@@ -438,6 +548,7 @@ export const useChatStore = defineStore('chat', {
                 const tokens = done.tokens ?? '?'
                 const source = done.token_source === 'provider' ? 'API 用量' : '本地估算'
                 this.contextMeter = `约 ${tokens} tokens · ${source} · ${done.turns ?? 0} 轮`
+                this.setContext(done.tokens, done.max_tokens)
                 const livePrefs = workspace.preferences
                 if (
                   livePrefs.transcript_view !== 'verbose'
@@ -484,7 +595,67 @@ export const useChatStore = defineStore('chat', {
           this.streaming = false
           abortController = null
           this.bump()
+          window.setTimeout(() => { void this.drainContinuations() }, 0)
         }
+      }
+    },
+
+    queueProcessContinuation(record: ProcessInfo): void {
+      if (!record.notify || !record.session_id || record.session_id !== this.sessionId) return
+      if (this.pendingContinuations.some((item) => item.id === record.id)) return
+      this.pendingContinuations.push(record)
+      if (!this.streaming) void this.drainContinuations()
+    },
+
+    async drainContinuations(): Promise<void> {
+      if (this.streaming) return
+      const record = this.pendingContinuations.shift()
+      if (!record) return
+      const workspace = useWorkspaceStore()
+      const workspaceId = workspace.activeWorkspaceId || undefined
+      const exit = record.exit_code === null || record.exit_code === undefined
+        ? 'unknown'
+        : String(record.exit_code)
+      const prompt = [
+        '[Background process update]',
+        `Process: ${record.id}`,
+        `Command: ${record.command}`,
+        `Terminal: ${record.terminal_label}`,
+        `Exit code: ${exit}`,
+        `Duration: ${record.duration_seconds.toFixed(1)}s`,
+        '',
+        record.log_tail ? `Last output:\n${record.log_tail}` : 'No output was captured.',
+        '',
+        'Continue the task using this result. If the process failed, inspect the output and fix the cause.',
+        'If it succeeded, verify the result and report completion. Do not repeat work that already succeeded.',
+      ].join('\n')
+      await this.send(prompt, workspaceId, {
+        internal: true,
+        processId: record.id,
+      })
+    },
+
+    async compactContext(): Promise<void> {
+      if (this.streaming || !this.sessionId) return
+      const ui = useUiStore()
+      try {
+        const data = await api<CompactData>(
+          `/api/sessions/${encodeURIComponent(this.sessionId)}/compact`,
+          { method: 'POST' },
+        )
+        this.setContext(data.tokens, data.max_tokens)
+        const source = data.token_source === 'provider' ? 'API 用量' : '本地估算'
+        this.contextMeter = `约 ${data.tokens} tokens · ${source} · ${data.turns ?? 0} 轮`
+        this.messages.push({
+          kind: 'note',
+          id: newId('note'),
+          text: data.compacted
+            ? '上下文已压缩，较早的对话折叠为摘要'
+            : '当前没有可压缩的历史',
+        })
+        this.bump()
+      } catch (error) {
+        ui.showToast(errorMessage(error), true)
       }
     },
 

@@ -39,7 +39,11 @@ onMounted(() => { void nextTick(() => scrollToBottom(true)) })
     <TodoPanel v-if="chat.todos.length" :items="chat.todos" />
     <WelcomePanel v-if="!chat.messages.length" />
     <template v-for="turn in chat.messages" :key="turn.id">
-      <UserMessage v-if="turn.kind === 'user'" :content="turn.content" />
+      <UserMessage
+        v-if="turn.kind === 'user'"
+        :content="turn.content"
+        :attachments="turn.attachments"
+      />
       <AssistantMessage v-else-if="turn.kind === 'assistant'" :turn="turn" />
       <div v-else class="system-note">{{ turn.text }}</div>
     </template>

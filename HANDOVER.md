@@ -1,10 +1,9 @@
 # ALEMBIC 交接文档（HANDOVER）
 
 > 给接手的智能体 / 开发者：先读这一份，再动代码。
-> 最后更新：2026-11-11，新增真正只读模式、命令策略与凭据路径保护、四终端执行、
-> 子进程环境白名单；系统提示词改为分层装配并区分 web / cli 界面；AI 网页链接
-> 默认在右侧边栏打开；设置窗固定高度。
-> 437 个后端测试全绿（1 个 Git Bash 用例因宿主限制跳过）。
+> 最后更新：2026-11-12，新增后台任务面板、前后台命令取消与 Job Object 进程树停止、
+> 实时命令输出、后台任务完成 SSE 与自动续跑、附件导入、手动压缩和上下文占用圆环；
+> 447 个后端测试全绿（1 个 Git Bash 用例因宿主限制跳过）。
 
 ## 1. 这是什么
 
@@ -16,6 +15,13 @@
   模型供应商支持深度求索 / OpenAI / Claude / 千问 / 硅基流动 / 自定义，统一走
   OpenAI 兼容接口（Claude 走 Anthropic 兼容端点）；一个供应商下可挂多个模型，
   每个模型有独立的可选推理等级集合（none/low/high/max）、当前等级与温度；
+- 命令执行实时推送 stdout/stderr；停止生成会通过 `cancel_event` 结束前台命令，
+  并停止当前会话仍在运行的后台任务；Windows 用 Job Object（`tools/winjob.py`）按进程树停止，POSIX 用进程组；
+- 后台任务有独立进程视图：`GET /api/processes` 提供运行中与已完成列表，
+  `/api/processes/events` 推送完成事件；`start_process(notify=True)` 的任务退出后
+  自动触发一次内部续跑，长期服务可设 `notify=False`；
+- 输入区支持附件上传（写入工作区 `.alembic/attachments/`）、手动压缩上下文，
+  并用圆环显示上下文占用百分比；
 - 首次启动且没有可用供应商时，前端显示**初始化向导**：选择带图标的供应商模板、
   维护模型列表、填写 Base URL / API Key，再设置工作步骤展示与收起时机；
 - 前端：Vue 3.5 + Vite 7 + TypeScript + Pinia（`frontend/`）；
@@ -48,7 +54,7 @@ cd frontend; npm run dev                             # http://127.0.0.1:5173
 验证：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 437 个测试
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 447 个测试
 cd frontend
 npm run build                                        # vue-tsc + vite build
 ```
@@ -83,7 +89,8 @@ tools/
   command_policy.py      命令策略：hardline 直接拒绝 / elevated 风险原因
   command_brief.py       命令 → 人话说明（离线拆语句/管道，供审批卡片使用）
   env.py                 子进程环境变量白名单（剥离模型密钥）
-  terminals.py           PowerShell / CMD / Git Bash / WSL 的检测与参数构造
+  terminals.py          终端偏好与 PowerShell / CMD / Git Bash / WSL 构造
+  winjob.py              Windows Job Object：按进程树停止命令与后台任务
   files.py               list_dir / read_file / search_files / find_files / file_stat
                          write_file / edit_file / make_dir / delete_file / move_file / copy_file
   documents.py           read_document（PDF / DOCX / XLSX / PPTX / 文本，按字符偏移分段）
@@ -96,15 +103,17 @@ tools/
   todo.py                todo_write + TodoStore（会话级任务清单）
   questions.py           ask_user_question / Question / 终端提问通道
   processes.py           start_process / list_processes / read_process_logs / wait_process / stop_process
-  shell.py               run_command（终端适配、环境白名单、超时、输出截断、退出码）
+                         状态、时长、完成回调与 Job Object
+  shell.py               run_command（实时输出、取消、进程树、超时、环境白名单）
   time.py weather.py mock.py
 web/
   __main__.py            自己 bind socket（支持 port=0）、写端口文件、ensure_storage、跑 uvicorn
-  server.py              只提供 /api：路由、SSE 对话、审批、工作区、供应商、CORS
+  server.py              只提供 /api：路由、SSE 对话、审批、工作区、供应商、进程视图
+  runtime.py             build_runtime：按当前设置装配 agent
+  process_events.py      后台任务事件 hub：启动 / 完成事件分发给 SSE 客户端
   auth.py                可选 token 中间件（Bearer / Cookie；放行 OPTIONS 与 /api/health）
   approvals.py           ApprovalRegistry / ApprovalBroker（SSE ↔ HTTP 回执）
   questions.py           QuestionRegistry / QuestionBroker（ask_user_question 的 SSE ↔ HTTP 回执）
-  runtime.py             build_runtime：按当前设置装配 agent
 frontend/
   package.json           Vue / Vite / Pinia / TypeScript
   vite.config.ts         /api 代理、5173 / 4173 端口
@@ -116,14 +125,15 @@ frontend/
       client.ts          fetch 封装、鉴权头、错误信息
       chat.ts            POST /api/chat 的 SSE 解析
       types.ts           后端 snake_case 数据结构类型
-    components/          侧边栏、对话流、审批卡、问答卡、任务清单、工作步骤、代码工作视图、通用设置、输入区、设置、初始化向导、供应商编辑器/图标/选择器、Toast
+    components/          侧边栏、对话流、审批卡、问答卡、任务清单、工作步骤、代码工作视图、后台任务面板、通用设置、输入区、设置、初始化向导、供应商编辑器/图标/选择器、Toast
     lib/
       markdown.ts        轻量 Markdown 渲染（从旧 app.js 迁移，无第三方依赖）
       providers.ts       ★ 供应商模板唯一事实来源：名称 / Base URL / 图标
       preferences.ts     工作步骤展示与收起时机的选项（通用设置 + 初始化向导共用）
     stores/
       workspace.ts       Pinia：模型 / 工具 / 工作区 / 会话列表 / 通用设置与 CRUD
-      chat.ts            当前会话、流式消息、审批/提问回执、任务清单、停止生成
+      chat.ts            当前会话、流式消息、审批/提问回执、任务清单、附件、压缩、续跑
+      processes.ts       后台任务列表、详情轮询与完成事件
       ui.ts              弹窗、搜索、折叠状态、Toast、推荐问题草稿
     assets/main.css      设计系统（纸白 + 薄荷绿）
 scripts/
@@ -143,7 +153,7 @@ data/tools.json → ToolStore.configs() → build_runtime(..., tool_configs=)
 → build_tools(enabled, configs, ctx) → spec.builder(config, ctx) → LangChain tools
 ```
 
-- 条目的启用状态与参数都在 `data/tools.json`，结构版本写在 `version` 字段（当前 2）。
+- 条目的启用状态与参数都在 `data/tools.json`，结构版本写在 `version` 字段（当前 3）。
 - `ToolStore.public()` 把 `ToolField` 序列化给前端：`kind/options/required/secret/multiline`…
 - 密钥字段**永远不回显**：`value=""` + `value_set` + `hint`（`••••1234` / `12 字符`）。
 - 保存时空字符串表示「保持原值」；要清空必须走 `PUT /api/tools/{name}` 的 `clear: [key]`。
@@ -191,8 +201,25 @@ Vue fetch POST /api/chat
   → frontend/src/api/chat.ts 按 "\n\n" 切帧 → chat store 更新当前 assistant turn
 ```
 
-事件：`meta` / `delta` / `thought` / `tool` / `tool_result` / `approval` /
+事件：`meta` / `delta` / `thought` / `tool` / `tool_output` / `tool_result` / `approval` /
 `approval_expired` / `question` / `question_expired` / `todo` / `compacted` / `done` / `error`。
+
+`tool_output` 由 `tools/shell.py` 的读取线程通过 `ctx.emit_event` 发出，前端把它追加到当前
+运行中的工具事件；最终 `tool_result` 到达后清空实时输出，避免重复。后台任务使用独立的
+`GET /api/processes/events` SSE：`process_started` / `process_completed` 由
+`web/process_events.py` 分发，进程视图和自动续跑共用这条流。
+
+停止生成时前端先 `POST /api/sessions/{id}/cancel`，再断开 `/api/chat` 的 SSE；
+服务端把该会话的 `threading.Event` 置位，`run_command` 轮询后结束进程树；同一个
+接口默认还会调用 `ProcessManager.stop_session(session_id)`，停止当前会话所有运行中的
+后台任务。切换会话只断开旧流时使用 `?background=0`，不误杀旧会话的后台任务。
+即使取消请求失败，`event_stream` 的 `finally` 也会置位，保证前台命令不会继续跑。
+
+> 后台任务完成后的续跑由前端发起：`processes.ts` 收到 `process_completed` 且
+> `notify=true` 时调用 `chat.queueProcessContinuation`，等当前轮结束后再以
+> `internal=true` 调 `/api/chat`；服务端用 `process_id` 去重，内部消息在历史里标记
+> `internal`，前端重新加载时不会把它渲染成用户输入。
+
 
 > **不要改回「生成器里直接跑 agent」**。审批需要工具线程阻塞等待浏览器回执，
 > 生成器一旦阻塞就发不出 `approval` 事件。
@@ -286,6 +313,14 @@ App.vue onMounted
 - 文件工具的返回值带 `变更：+N -M`，`TurnSummary` 据此在完成轮次后汇总修改文件。
 - `AssistantTurn.workEvents` 按发生顺序保存 `thought` 与 `tool` 事件；
   `tool_result` 按 `tool_call_id` 回填到对应工具事件，而不是单独堆在末尾。
+- 工具执行期间 `tool_output` 追加到 `WorkEvent.liveOutput`，`WorkSteps` 在工具行展开时
+  实时显示；最终 `tool_result` 到达后清空 live 输出。
+- 输入区附件先上传到 `<workspace>/.alembic/attachments/<会话ID>/`，再以路径列表随
+  `POST /api/chat` 发送；服务端构造 `[Attached files]` 块，前端历史映射时再拆回附件 chip。
+- `contextTokens/contextMax` 由会话历史和 `done` 事件的 `max_tokens` 更新；
+  `ChatComposer` 的圆环只读 `contextPercent`，手动压缩接口返回新值。
+- 后台任务面板 `ProcessPanel` 通过 `stores/processes.ts` 轮询列表和详情；
+  `App.vue` 启动时建立 `/api/processes/events` 长连接，完成事件用于计数和自动续跑。
 - `tool_result` 事件让工作步骤在流式期间就能显示结果；历史会话通过
   `ToolMessage.tool_call_id` 与 `AIMessage.tool_calls[].id` 配对。
 
@@ -357,6 +392,19 @@ App.vue onMounted
 33. **推理等级是可选集合 + 当前值**：`thinking_levels` 定义滑块吸附点，`thinking`
     是当前档位；默认集合为 low/high/max（不含 none），当前值默认 high。设置里
     多选集合，composer 的滑条只改当前值，二者都走供应商 API。
+34. **停止生成必须取消进程**：前端 `POST /api/sessions/{id}/cancel`，服务端把
+    `threading.Event` 传给 `ToolContext.cancel_event`；`run_command` 轮询它并结束
+    进程树，同时默认调用 `ProcessManager.stop_session(session_id)` 停止当前会话的
+    后台任务。切换会话只断开旧流时用 `?background=0`，不要误杀旧会话任务。
+35. **后台任务完成事件只发一次**：`ProcessManager` 的 watcher 负责设置结束时间、
+    关闭 Job Object、发 `process_completed`；用户主动停止时先把 `notify_on_exit`
+    设为 false。前端只对 `notify=true` 且属于当前会话的任务触发内部续跑。
+36. **内部续跑消息不能显示成用户输入**：`ChatSession.ask_stream(internal=True)`
+    会写 `additional_kwargs["alembic_internal"]=True`，`_serialize_messages` 输出
+    `internal: true`；前端 `mapHistory` 必须跳过它，否则刷新后会出现假用户消息。
+37. **附件只写工作区**：`POST /api/sessions/{id}/attachments` 把原始字节写入
+    `<workspace>/.alembic/attachments/<会话ID>/`；聊天时服务端校验路径并构造
+    `[Attached files]` 块。不要把附件写到工作区外，否则文件工具无法读取。
 
 ## 6. 环境坑（这台机器上真实踩过的）
 
@@ -382,19 +430,20 @@ App.vue onMounted
 3. 开发模式可让 Electron 指向 `http://127.0.0.1:5173`，生产模式指向打包后的静态目录；
 4. 后端继续只跑 `/api`，保留 token / 随机端口 / sidecar 逻辑。
 
-另：`run_command` 是一次性抓完整输出，不是流式 PTY；后台长任务请用
-`start_process`。停止生成只断开前端 SSE，后端仍会跑到当前模型调用边界。
+另：`run_command` 现在是流式执行（POSIX PTY / Windows 管道）；停止生成会结束当前
+前台命令的进程树，并停止当前会话由 `ProcessManager` 管理的后台任务（Job Object /
+`taskkill`）。`wait_process` 仍存在，但常规后台任务应依赖完成事件和内部续跑，不要用它挂住整轮。
 
 ## 8. 还没做的
 
 - 前端组件/单元测试（当前只做 `vue-tsc` + 构建 + 手动验证）；
 - Electron 适配、安装包、代码签名、应用图标；
 - 生产部署的静态资源服务（Nginx / Caddy / 一个独立静态服务器）；
-- 流式 PTY 终端、审批卡片 diff 视图、任务真取消；
+- Windows 原生 ConPTY（当前 Windows 用流式管道，POSIX 用 PTY）、审批卡片 diff 视图、
+  多文件补丁事务回滚；
 - 文本 ReAct 是单步串行（每轮一个工具），提示词每步重发历史；默认的
   `tool_calling` 可并行返回多个工具调用，延迟更低；
-- `web_search`（当前只有 `fetch_url`；搜索需要接第三方检索源）；
-- 文档图片 OCR / 视觉模型、附件上传与 @文件引用；
+- 文档图片 OCR / 视觉模型、@文件引用与粘贴截图；
 - MCP 客户端、skills / 自定义命令；
 - 多窗口 / 托盘 / 系统通知。
 
@@ -445,10 +494,15 @@ App.vue onMounted
     `tools/command_brief.py` 离线翻译命令（含 `--- 标题 ---`、`foreach`、正则计数）；
     命令拆出分步说明（`steps`），原文默认展开且不再截断到 800 字符；终端提问
     同步显示分步说明；新增 `tests/command_brief_test.py`。**
+20. **后台任务面板 + 实时命令：`ProcessManager` 增加状态/时长/完成回调与 Job Object
+    停止；`run_command` 改为流式输出，停止生成会结束前台进程树并停止当前会话后台
+    任务；新增 `/api/processes` 与 `/api/processes/events`；`start_process(notify=True)`
+    完成时通过 SSE 触发内部续跑。输入区新增附件导入、手动压缩与上下文占用圆环；
+    `tests/process_view_test.py` 覆盖进程事件、取消、附件与压缩；测试 447。**
 
 ## 10. 给接手者的建议顺序
 
-1. 跑一遍后端测试，确认 437 全绿；再 `cd frontend && npm run build`；
+1. 跑一遍后端测试，确认 447 全绿；再 `cd frontend && npm run build`；
 2. 读 `web/runtime.py`（默认 `create_agent`）、`agents/react.py`（可选文本 ReAct）、
    `tools/registry.py`、`web/server.py`、`agents/context.py`，够理解后端 85%；
 3. 读 `frontend/src/stores/chat.ts`、`frontend/src/api/chat.ts`、`frontend/src/App.vue`，

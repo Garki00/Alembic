@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:  # 仅用于类型标注，避免运行时循环导入
+    from threading import Event
+
     from tools.catalog import ToolActivation
     from tools.questions import Asker
     from tools.processes import ProcessManager
@@ -52,6 +54,7 @@ class ToolContext:
         terminal: 命令工具优先使用的终端：powershell / cmd / gitbash / wsl。
         activation: 当前会话的扩展工具激活状态；``None`` 时扩展工具不可加载。
         enabled_tool_names: 用户设置里实际启用的具体工具名，供 tools_search 过滤。
+        cancel_event: 停止生成时置位的取消信号，前台命令会轮询它并结束进程树。
     """
 
     workspace: Path | None = None
@@ -65,6 +68,7 @@ class ToolContext:
     todo_store: TodoStore | None = None
     process_manager: ProcessManager | None = None
     emit: Callable[[str, dict[str, Any]], None] | None = None
+    cancel_event: "Event | None" = None
     #: 视觉通道：``(data_url, prompt) -> 文字描述``。由运行时用当前模型注入；
     #: ``None`` 时 ``read_image`` 返回 ``vision_unavailable``。
     vision: Callable[[str, str], str] | None = None

@@ -39,6 +39,7 @@ _READ_LOCK = threading.Lock()
 _SKIP_DIRS = {
     ".git", ".venv", "venv", "node_modules", "__pycache__",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build", ".tmp",
+    ".alembic",
 }
 
 _MAX_READ_LIMIT = 2000

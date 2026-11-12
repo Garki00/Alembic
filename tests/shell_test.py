@@ -4,6 +4,8 @@
 import os
 import shutil
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -146,6 +148,50 @@ class ShellTest(unittest.TestCase):
         text = self.run_command.invoke({"command": self.big_command})
         self.assertLessEqual(len(text), 2000 + 200)
         self.assertIn("已截断", text)
+
+    # ---- 实时输出与取消 ----
+    def test_output_events_are_emitted_while_running(self):
+        events = []
+        tool = {
+            item.name: item
+            for item in build_shell_tools(
+                ToolContext(
+                    workspace=self.root,
+                    max_output_chars=2000,
+                    command_timeout=20,
+                    emit=lambda kind, data: events.append((kind, data)),
+                )
+            )
+        }["run_command"]
+        text = tool.invoke({"command": self.cwd_command})
+        self.assertIn("退出码：0", text)
+        self.assertTrue(
+            any(kind == "tool_output" and data.get("text") for kind, data in events),
+            events,
+        )
+
+    def test_cancel_event_terminates_running_command(self):
+        cancel = threading.Event()
+        tool = {
+            item.name: item
+            for item in build_shell_tools(
+                ToolContext(
+                    workspace=self.root,
+                    max_output_chars=2000,
+                    command_timeout=20,
+                    cancel_event=cancel,
+                )
+            )
+        }["run_command"]
+        timer = threading.Timer(0.4, cancel.set)
+        timer.start()
+        started = time.monotonic()
+        try:
+            text = tool.invoke({"command": self.sleep_command})
+        finally:
+            timer.cancel()
+        self.assertTrue(text.startswith("Error: [cancelled]"), text)
+        self.assertLess(time.monotonic() - started, 8)
 
 
 if __name__ == "__main__":

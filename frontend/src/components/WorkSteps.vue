@@ -202,6 +202,9 @@ function toggle(): void {
           <span class="work-step-label">{{ labelOf(event) }}</span>
           <span class="work-step-detail">{{ detailOf(event) }}</span>
           <span v-if="event.kind === 'tool' && event.error" class="work-step-error">失败</span>
+          <span v-else-if="event.kind === 'tool' && event.liveOutput && !event.result" class="work-step-live">
+            输出中
+          </span>
           <span v-if="!isVerbose" class="work-step-chevron" aria-hidden="true">
             {{ rowOpen(event) ? '⌃' : '⌄' }}
           </span>
@@ -214,6 +217,7 @@ function toggle(): void {
           <template v-else>
             <pre v-if="Object.keys(event.args).length" class="work-step-code">{{ prettyArgs(event.args) }}</pre>
             <pre v-if="event.result" class="work-step-result code" :class="{ error: event.error }">{{ resultText(event) }}</pre>
+            <pre v-else-if="event.liveOutput" class="work-step-result code live">{{ event.liveOutput }}</pre>
           </template>
         </div>
       </div>

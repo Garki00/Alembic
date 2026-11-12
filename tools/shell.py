@@ -8,7 +8,8 @@
 - 支持 PowerShell / CMD / Git Bash / WSL，默认跟随「设置 → 通用 → 终端偏好」；
 - 子进程只继承白名单环境变量，模型密钥不会被命令读到；
 - 强制超时，避免一条挂起的命令拖死整轮对话；
-- stdout / stderr 分别截断，保留尾部（报错通常在最后）。
+- stdout / stderr 实时读取并推送 ``tool_output`` 事件，前端可以边跑边看；
+- 停止生成时通过 ``cancel_event`` 结束整个进程树。
 
 注意：这不是操作系统级沙盒。命令与后端进程属于同一个 OS 用户，真正限制
 它能做什么的是命令策略（高危命令直接拒绝）与用户审批，而不是本模块。
@@ -17,7 +18,9 @@
 from __future__ import annotations
 
 import locale
+import os
 import subprocess
+import threading
 import time
 
 from langchain.tools import tool
@@ -32,8 +35,11 @@ from tools.terminals import (
     build_invocation,
     terminal_label,
 )
+from tools.winjob import WindowsJob
 
 _MAX_TIMEOUT = 600
+_MAX_CAPTURE_BYTES = 2_000_000
+_EMIT_INTERVAL = 0.08
 
 
 def _decode(raw: bytes) -> str:
@@ -63,8 +69,211 @@ def _block(title: str, text: str, max_chars: int) -> list[str]:
     return [f"--- {title} ---", body]
 
 
+def _terminate_tree(popen: subprocess.Popen, job: WindowsJob | None = None) -> None:
+    """结束命令及其子进程，避免只杀 shell 留下孤儿。"""
+    if popen.poll() is not None:
+        if job is not None:
+            job.close()
+        return
+    if job is not None:
+        job.terminate()
+    elif os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(popen.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=2,
+                env=build_child_env(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    else:
+        import signal
+
+        try:
+            os.killpg(os.getpgid(popen.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        popen.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        try:
+            popen.kill()
+            popen.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if job is not None:
+        job.close()
+
+
+class _OutputPump:
+    """读取一路管道，累积输出并按节流推送实时事件。"""
+
+    def __init__(self, stream, name: str, ctx: ToolContext) -> None:
+        self.stream = stream
+        self.name = name
+        self.ctx = ctx
+        self.raw = bytearray()
+        self._pending: list[str] = []
+        self._lock = threading.Lock()
+        self._last_emit = 0.0
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def join(self, timeout: float = 2.0) -> None:
+        self._thread.join(timeout)
+        self._flush()
+
+    def _run(self) -> None:
+        while True:
+            try:
+                chunk = self.stream.read(4096)
+            except (OSError, ValueError):
+                break
+            if not chunk:
+                break
+            if len(self.raw) < _MAX_CAPTURE_BYTES:
+                room = _MAX_CAPTURE_BYTES - len(self.raw)
+                self.raw.extend(chunk[:room])
+            text = _decode(chunk)
+            if text:
+                with self._lock:
+                    self._pending.append(text)
+                self._maybe_flush()
+        self._flush()
+
+    def _maybe_flush(self) -> None:
+        now = time.monotonic()
+        if now - self._last_emit < _EMIT_INTERVAL:
+            return
+        self._flush()
+
+    def _flush(self) -> None:
+        with self._lock:
+            if not self._pending:
+                return
+            text = "".join(self._pending)
+            self._pending.clear()
+            self._last_emit = time.monotonic()
+        self.ctx.emit_event(
+            "tool_output",
+            {"name": "run_command", "stream": self.name, "text": text},
+        )
+
+    @property
+    def text(self) -> str:
+        return _decode(bytes(self.raw))
+
+
+def _run_process(
+    invocation,
+    env: dict[str, str],
+    limit: float,
+    ctx: ToolContext,
+) -> tuple[int | None, str, str, bool, bool, float]:
+    """启动命令并实时读取输出。
+
+    Returns:
+        ``(returncode, stdout, stderr, cancelled, timed_out, elapsed)``
+    """
+    kwargs: dict = {
+        "cwd": invocation.cwd,
+        "shell": invocation.shell,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "env": env,
+        "bufsize": 0,
+    }
+    pty_master = None
+    if os.name == "nt":
+        kwargs["stdin"] = subprocess.PIPE
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        # POSIX: give stdout/stdin a real PTY so progress bars and TTY-aware
+        # tools behave like a normal terminal. stderr stays a pipe so the final
+        # result can still separate stdout and stderr.
+        import pty
+
+        pty_master, slave = pty.openpty()
+        kwargs["stdin"] = slave
+        kwargs["stdout"] = slave
+        kwargs["start_new_session"] = True
+
+    started = time.monotonic()
+    job = WindowsJob.create()
+    try:
+        popen = subprocess.Popen(invocation.argv, **kwargs)
+    except Exception:
+        if job is not None:
+            job.close()
+        raise
+    if job is not None:
+        if not job.assign(popen):
+            job.close()
+            job = None
+    try:
+        if pty_master is not None:
+            try:
+                os.close(slave)
+            except OSError:
+                pass
+            stdout_stream = os.fdopen(pty_master, "rb", buffering=0)
+            try:
+                # Non-interactive calls should not wait forever for stdin.
+                os.write(pty_master, b"\x04")
+            except OSError:
+                pass
+        else:
+            stdout_stream = popen.stdout
+        if popen.stdin is not None:
+            # 没有交互输入通道时立即发 EOF，避免命令一直等 stdin。
+            try:
+                popen.stdin.close()
+            except (OSError, ValueError):
+                pass
+        stdout = _OutputPump(stdout_stream, "stdout", ctx)
+        stderr = _OutputPump(popen.stderr, "stderr", ctx)
+        stdout.start()
+        stderr.start()
+
+        cancelled = False
+        timed_out = False
+        while popen.poll() is None:
+            if ctx.cancel_event is not None and ctx.cancel_event.is_set():
+                cancelled = True
+                _terminate_tree(popen, job)
+                break
+            if time.monotonic() - started > limit:
+                timed_out = True
+                _terminate_tree(popen, job)
+                break
+            time.sleep(0.05)
+        code = popen.poll()
+        stdout.join()
+        stderr.join()
+        return code, stdout.text, stderr.text, cancelled, timed_out, time.monotonic() - started
+    finally:
+        if popen.poll() is None:
+            _terminate_tree(popen, job)
+        elif job is not None:
+            job.close()
+        for stream in (popen.stdout, popen.stderr, popen.stdin):
+            try:
+                if stream is not None:
+                    stream.close()
+            except (OSError, ValueError):
+                pass
+        if pty_master is not None:
+            try:
+                os.close(pty_master)
+            except OSError:
+                pass
+
+
 def build_shell_tools(ctx: ToolContext) -> list:
-    """构造命令执行工具（终端偏好、环境白名单、强制超时）。"""
+    """构造命令执行工具（终端偏好、环境白名单、实时输出、取消与超时）。"""
 
     @tool
     def run_command(
@@ -74,28 +283,30 @@ def build_shell_tools(ctx: ToolContext) -> list:
         terminal: str = "",
         description: str = "",
     ) -> str:
-        """在工作区内执行一条 shell 命令，返回退出码与输出。
+        """Run a shell command inside the workspace and stream its output.
 
-        适合跑测试、构建、脚本、查看 git 状态等。命令不会被交互式接管，
-        需要确认的操作请改用非交互参数（如 -y）。
+        Use it for tests, builds, scripts, and Git. Output is streamed to the
+        UI while the command runs; the final result still contains the exit
+        code and the complete stdout/stderr sections. The process tree is
+        terminated when generation is stopped.
 
         Args:
-            command: 要执行的命令，例如 "python -m unittest discover -s tests"、
-                "git status --short"、"dir"。
-            cwd: 相对工作区的执行目录，默认工作区根目录。
-            timeout: 超时秒数（1-600），0 表示使用默认值。
-            terminal: 临时指定终端：powershell / cmd / gitbash / wsl；
-                留空时使用「设置 → 通用」里的终端偏好。
-            description: 用一句白话说明这条命令要做什么、会改动什么
-                （例如「扫描当前目录的 .html 文件并检查页面里的本地链接」）。
-                审批卡片用它作为主标题，请勿重复命令原文或罗列参数。
+            command: Command to run, for example "python -m unittest discover -s tests".
+            cwd: Working directory relative to the workspace; defaults to the workspace root.
+            timeout: Timeout in seconds (1-600); 0 uses the configured default.
+            terminal: Optional terminal override: powershell / cmd / gitbash / wsl.
+            description: One plain sentence describing what the command does. It is shown
+                as the approval card title.
 
         Returns:
-            首行是退出码（非零表示命令失败），随后是 stdout 与 stderr 两个区块。
+            The exit code first, then stdout and stderr sections; returns an
+            ``Error:`` string on timeout or cancellation.
         """
         text = (command or "").strip()
         if not text:
             return tool_error("empty_command", "command 不能为空。")
+        if ctx.cancel_event is not None and ctx.cancel_event.is_set():
+            return tool_error("cancelled", "本轮已停止，命令没有执行。")
 
         try:
             workdir = resolve_in_workspace(ctx.workspace, cwd) if cwd.strip() else ctx.workspace
@@ -126,27 +337,9 @@ def build_shell_tools(ctx: ToolContext) -> list:
             )
 
         env = build_child_env({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
-
-        started = time.monotonic()
         try:
-            completed = subprocess.run(
-                invocation.argv,
-                shell=invocation.shell,
-                cwd=invocation.cwd,
-                capture_output=True,
-                timeout=limit,
-                env=env,
-            )
-        except subprocess.TimeoutExpired as exc:
-            elapsed = time.monotonic() - started
-            partial = _decode(exc.stdout or b"") + _decode(exc.stderr or b"")
-            return tool_error(
-                "timeout",
-                f"命令在 {limit:g}s 内没有结束，已终止（耗时 {elapsed:.1f}s）。",
-                hint=(
-                    "可以换更快的命令、加超时参数，或先确认命令是否需要交互式输入。"
-                    + (f"\n已产生的输出：\n{truncate(partial, ctx.max_output_chars // 2, keep_tail=True)}" if partial else "")
-                ),
+            code, stdout_text, stderr_text, cancelled, timed_out, elapsed = _run_process(
+                invocation, env, float(limit), ctx
             )
         except OSError as exc:
             return tool_error(
@@ -155,8 +348,28 @@ def build_shell_tools(ctx: ToolContext) -> list:
                 hint="请确认该终端可用，或在设置里换一个终端。",
             )
 
-        elapsed = time.monotonic() - started
-        code = completed.returncode
+        if cancelled:
+            partial = (stdout_text + stderr_text).strip()
+            return tool_error(
+                "cancelled",
+                f"命令已随本轮停止而取消（终止进程树，耗时 {elapsed:.1f}s）。",
+                hint=(
+                    "重新执行前先确认目标是否仍然需要。"
+                    + (f"\n已产生的输出：\n{truncate(partial, ctx.max_output_chars // 2, keep_tail=True)}" if partial else "")
+                ),
+            )
+        if timed_out:
+            partial = (stdout_text + stderr_text).strip()
+            return tool_error(
+                "timeout",
+                f"命令在 {limit:g}s 内没有结束，已终止（耗时 {elapsed:.1f}s）。",
+                hint=(
+                    "可以换更快的命令、加超时参数，或先确认命令是否需要交互式输入。"
+                    + (f"\n已产生的输出：\n{truncate(partial, ctx.max_output_chars // 2, keep_tail=True)}" if partial else "")
+                ),
+            )
+
+        code = int(code or 0)
         status = "成功" if code == 0 else "失败"
         lines = [
             f"退出码：{code}（{status}）",
@@ -165,11 +378,10 @@ def build_shell_tools(ctx: ToolContext) -> list:
             f"耗时：{elapsed:.1f}s",
         ]
         budget = max(200, (ctx.max_output_chars - 200) // 2)
-        lines += _block("stdout", _decode(completed.stdout), budget)
-        lines += _block("stderr", _decode(completed.stderr), budget)
+        lines += _block("stdout", stdout_text, budget)
+        lines += _block("stderr", stderr_text, budget)
         if code != 0:
             lines.append("提示：命令以非零状态退出，请检查 stderr 或调整命令后重试。")
-        # 兜底再截一次：保留尾部，避免 stderr（报错）被整体切掉
         return truncate("\n".join(lines), ctx.max_output_chars, keep_tail=True)
 
     return [run_command]

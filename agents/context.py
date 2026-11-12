@@ -510,7 +510,7 @@ class ChatSession:
             raise
         return self._finish_turn(history, messages, compacted)
 
-    def ask_stream(self, question: str):
+    def ask_stream(self, question: str, *, internal: bool = False):
         """流式提问，依次产出事件：
 
         - ``("compacted", None)``：本轮开始前压缩了上下文；
@@ -519,8 +519,11 @@ class ChatSession:
         - ``("tool", {"id", "name", "args"})``：模型发起了一次工具调用；
         - ``("tool_result", {"id", "name", "content"})``：工具返回的结果；
         - ``("done", TurnResult)``：本轮结束（已写入历史与磁盘）。
+
+        ``internal`` 用于后台任务完成等系统触发的续跑：消息仍进入模型上下文，
+        但前端可以在历史里隐藏它，不把它当成用户输入。
         """
-        compacted = self._begin_turn(question)
+        compacted = self._begin_turn(question, internal=internal)
         if compacted:
             yield ("compacted", None)
 
@@ -665,11 +668,14 @@ class ChatSession:
         self.store.delete(self.session_id)
 
     # ---- 内部实现 ----
-    def _begin_turn(self, question: str) -> bool:
+    def _begin_turn(self, question: str, *, internal: bool = False) -> bool:
         text = (question or "").strip()
         if not text:
             raise ValueError("问题不能为空")
-        self.messages.append(HumanMessage(content=text))
+        message = HumanMessage(content=text)
+        if internal:
+            message.additional_kwargs["alembic_internal"] = True
+        self.messages.append(message)
         return self._maybe_compact()
 
     def _invoke(self, history: list[BaseMessage]) -> list[BaseMessage]:

@@ -8,6 +8,8 @@ ALEMBIC 是一个本地优先的智能体工作区。后端使用 Python + FastA
 - 多轮会话持久化、上下文压缩、任务清单、向用户提问。
 - 按权限模式审批工具调用；支持只读模式、命令策略和凭据路径保护。
 - 多供应商、多模型，每个模型可以单独设置推理等级。
+- 命令输出实时推送；后台任务有独立视图，完成时主动通知并续跑。
+- 输入区支持导入附件、手动压缩上下文，并实时显示上下文占用比例。
 
 架构图、数据流和不可破坏的约定见 [HANDOVER.md](HANDOVER.md)。
 
@@ -107,7 +109,7 @@ npm run preview     # 4173 端口预览，/api 仍代理到后端
 - 每个工作区行有「＋ 新建对话」和「⋯ 菜单」（重命名 / 删除）。删除工作区会连同它的对话一起删除，操作前会确认。
 - 对话按工作区分组，历史保存在 `memory/`，重新打开应用后仍可恢复。
 
-对话区支持流式输出、Markdown 渲染、上下文占用提示和停止生成。工具调用与模型思考会按实际顺序显示为工作步骤；一轮结束且存在文件改动时，独立卡片汇总修改了多少个文件、总新增 / 删除行数，点击文件名可以在右侧栏以 Diff View 打开，悬停文件名可以看到改动预览。
+对话区支持流式输出、Markdown 渲染、上下文占用提示和停止生成。停止生成会中断当前轮的前台命令，并停止当前会话正在运行的后台任务；其他会话的后台任务不受影响。工具调用与模型思考会按实际顺序显示为工作步骤；命令执行期间会实时显示输出。一轮结束且存在文件改动时，独立卡片汇总修改了多少个文件、总新增 / 删除行数，点击文件名可以在右侧栏以 Diff View 打开，悬停文件名可以看到改动预览。
 
 ### 2.3 模型切换与推理等级
 
@@ -160,6 +162,25 @@ npm run preview     # 4173 端口预览，/api 仍代理到后端
 - **完全展开**：始终显示全部步骤、思考与输出，不自动收起。
 
 收起时机可选「回答结束后」或「下次有新消息时」。手动展开的轮次不会被强制收起；完全展开模式下该选项不可用。开启「显示代码工作视图」后，每轮还会展示代码改动、命令以及文件 / 网页读取轨迹。
+
+### 2.8 后台任务
+
+右上角侧边栏按钮左侧显示「n个后台任务」，数字是当前保留的任务总数。点开后分为「运行中」和「已完成」两组，可以分别展开。每个任务依次显示使用的终端（`powershell` / `cmd` / `gitbash` / `wsl`）、命令、结果（运行中、退出码或已停止）和运行时间。
+
+- 点击任务行展开详情：上方是完整命令，下方是终端输出。
+- 运行中的任务有「停止」按钮，停止会结束整个进程树。
+- 停止生成会一并停止当前会话里仍在运行的后台任务；其他会话的任务不受影响。
+- 面板不显示表格边框和列标题；运行中的输出会定时刷新。
+- `start_process` 默认在任务结束时通知会话。模型会收到一条内部续跑消息，继续检查结果、修复失败或汇报完成；长期运行的服务可以在启动时设置 `notify=False`，避免退出时自动续跑。
+
+### 2.9 输入区工具
+
+输入框左下角有「＋」按钮，展开后分为两组：
+
+- **添加 → 文件**：选择文件后上传到当前工作区的 `.alembic/attachments/<会话ID>/`，文件会显示在输入框上方，可点右侧「×」取消导入。发送时附件路径会写入用户消息，Agent 可以用 `read_file`、`read_document`、`read_image` 读取。
+- **命令 → 压缩 `compact`**：立即压缩当前会话的较早历史，并刷新会话摘要与上下文占用；正在生成时不可用。
+
+输入框右侧的轮次统计和模型选择按钮之间有一个上下文占用圆环，右侧显示百分比。圆环在每轮完成、切换会话或手动压缩后更新；数据来自模型 API 的 token 用量，拿不到时退回本地估算。
 
 ## 3. 模型与供应商
 
@@ -222,6 +243,7 @@ Final Answer: ...
 - **压缩方式**：较早对话压缩成以 `[Conversation summary]` 开头的摘要，保留最近 12 条消息。摘要语言跟随对话语言；摘要失败时降级为「省略更早消息 + 明确提示」，对话不中断。
 - **工具输出预算**：单条工具结果超过 12000 tokens 会先截断再写入历史并留下标记，避免一次大输出撑爆窗口。
 - **本地持久化**：会话历史保存在 `memory/<会话ID>.json`，进程重启或换终端后可以继续。文件里包含消息类型、工具调用参数与结果。
+- **手动压缩**：输入区「＋ → 命令 → 压缩」或命令行 `/compact` 可以立即压缩；网页端同时刷新上下文占用圆环。
 - **运行保护**：模型调用失败自动重试；单轮模型调用数与工具调用数都有上限。
 
 命令行可以用 `/compact` 立即压缩、`/status` 查看占用与阈值、`/new` 开新会话。
@@ -293,14 +315,16 @@ Final Answer: ...
 | `move_file(source, destination, overwrite=False)` | 移动 / 重命名；不能把目录移进自己的子目录 |
 | `copy_file(source, destination, overwrite=False)` | 复制文件或目录 |
 | `delete_file(path, recursive=False)` | 删除文件 / 目录；工作区根目录与 `.git` 受保护，非空目录需 `recursive=True` |
-| `run_command(command, cwd="", timeout=0, terminal="", description="")` | 执行 shell 命令；`terminal` 可临时指定 powershell / cmd / gitbash / wsl；`description` 会作为审批卡主说明 |
-| `start_process(command, cwd="", terminal="", description="")` | 后台启动长任务（dev server / watch），立即返回进程 ID |
+| `run_command(command, cwd="", timeout=0, terminal="", description="")` | 执行 shell 命令；输出实时推送，停止生成时结束进程树；`terminal` 可临时指定 powershell / cmd / gitbash / wsl；`description` 会作为审批卡主说明 |
+| `start_process(command, cwd="", terminal="", description="", notify=True)` | 后台启动长任务（dev server / watch），立即返回进程 ID；`notify` 控制退出时是否自动续跑 |
 | `list_processes()` / `read_process_logs(process_id, tail=200)` | 查看后台进程与日志尾部 |
 | `wait_process(process_id, timeout=30, pattern="", tail=60)` | 等待进程退出，或日志中出现某个模式 |
 | `stop_process(process_id)` | 停止进程及其子进程 |
 | `tools_search(query, limit=0)` | 按能力搜索并加载扩展工具；加载后同轮可用 |
 
 凭据路径额外受保护：`.ssh` / `.aws` / `.kube` / `.gnupg` / `.docker` 目录、`.netrc` / `.npmrc` / `.pypirc`、SSH 私钥以及 `.pem` / `.key` / `.p12` / `.pfx` / `.jks` / `.keystore` 不允许读取；这些凭据目录与 `.netrc` 也不允许写入。`.env` 可以写入但读不回来；应用自己的数据目录也不允许 Agent 访问。子进程只继承白名单环境变量，模型密钥不会出现在命令环境里。
+
+`run_command` 在 POSIX 上使用 PTY 读取 stdout，在 Windows 上使用管道实时读取；两路输出都会推送 `tool_output` 事件，最终结果仍分开列出 stdout 与 stderr。停止生成或超时会结束整个进程树；Windows 优先使用 Job Object，拿不到时回退到 `taskkill /T`。
 
 ### 5.3 读后写
 
@@ -340,7 +364,7 @@ Final Answer: ...
 - `apply_patch(patch)`：应用标准 unified diff，支持多文件、多 hunk、新建与删除。仍然遵守读后写；适合跨文件重构，只改一处时用 `edit_file` 更直接。
 - `git_status()` / `git_diff(path="", staged=False, context=3)`：查看分支、改动与 unified diff。
 - `git_commit(message, files=None)`：只提交已暂存内容；传 `files` 时先 `git add` 这些路径，不会静默执行 `git add -A`。
-- `start_process` / `list_processes` / `read_process_logs` / `wait_process` / `stop_process`：后台运行 dev server、watch 或长脚本。启动与停止属于执行命令，是否审批取决于权限模式。日志写到数据目录的 `logs/processes/`，停止时会结束子进程。
+- `start_process` / `list_processes` / `read_process_logs` / `wait_process` / `stop_process`：后台运行 dev server、watch 或长脚本。启动与停止属于执行命令，是否审批取决于权限模式。日志写到数据目录的 `logs/processes/`，停止时会结束子进程。任务退出时通过 `/api/processes/events` 主动推送完成事件，前端据此刷新任务面板并触发内部续跑；`wait_process` 仍保留给需要显式等待的场景，但常规后台任务不必用它挂住整轮。
 
 ### 5.7 任务清单与提问
 
@@ -527,6 +551,7 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 | `<home>/memory/*.json` | 会话历史 |
 | `<home>/memory/todos/*.json` | 会话级任务清单 |
 | `<home>/logs/processes/` | 后台进程日志（`MEMORY_DIR` 覆写时跟随其父目录） |
+| `<workspace>/.alembic/attachments/<会话ID>/` | 输入区导入的附件；工作区内的隐藏目录 |
 
 网页端保存的 API Key 与密钥参数只写入这些本地文件；接口只返回掩码。`python -m web` 启动时会打印实际数据目录。`DATA_DIR`、`MEMORY_DIR`、`MODELS_FILE`、`TOOLS_FILE`、`WORKSPACE_FILE`、`PREFERENCES_FILE` 可以分别覆盖对应路径。
 
@@ -610,7 +635,11 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 - `GET /api/workspace/files`、`GET /api/workspace/file`
 - `GET /api/sessions`、`POST /api/sessions`、`DELETE /api/sessions/{id}`
 - `GET /api/sessions/{id}/messages`、`GET /api/sessions/{id}/todos`
-- `POST /api/chat`（SSE 流式）
+- `POST /api/sessions/{id}/compact`、`POST /api/sessions/{id}/cancel`
+- `POST /api/sessions/{id}/attachments`（原始字节体，`filename` 与 `workspace_id` 走查询参数）
+- `POST /api/chat`（SSE 流式，支持 `attachments` / `internal`）
+- `GET /api/processes`、`GET /api/processes/{id}`、`POST /api/processes/{id}/stop`
+- `GET /api/processes/events`（后台任务状态 SSE）
 - `POST /api/approvals/{request_id}`、`GET /api/approvals`、`DELETE /api/approvals`
 - `POST /api/questions/{question_id}`
 
@@ -645,9 +674,11 @@ tools/
   patch.py git.py processes.py shell.py
   todo.py questions.py time.py weather.py
   paths.py command_policy.py command_brief.py env.py
+  winjob.py             Windows Job Object：按进程树停止命令
 web/
-  server.py             路由、SSE、审批、工作区、供应商
+  server.py             路由、SSE、审批、工作区、供应商、进程视图
   runtime.py            按当前设置装配 Agent
+  process_events.py     后台任务完成事件的分发
   auth.py approvals.py questions.py
 frontend/
   src/                  Vue 界面、Pinia 状态、Markdown 与 Diff 渲染
@@ -663,7 +694,7 @@ tests/                  *_test.py，全部离线
 ### 9.2 测试
 
 ```powershell
-# 后端：437 个离线测试
+# 后端：447 个离线测试
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py" -v
 
 # 前端：类型检查 + 生产构建
@@ -671,7 +702,7 @@ cd frontend
 npm run build
 ```
 
-测试覆盖时间工具、会话持久化、上下文压缩、命令行交互、网页接口、工具注册表与错误契约、ReAct 循环、文件工具、文档抽取、网页抓取、任务清单、提问中继、后台进程和工具审批。全部离线运行，不调用真实模型。当前有一个依赖宿主终端的 Git Bash 用例在环境不具备时会跳过。
+测试覆盖时间工具、会话持久化、上下文压缩、命令行交互、网页接口、工具注册表与错误契约、ReAct 循环、文件工具、文档抽取、网页抓取、任务清单、提问中继、后台进程、实时命令输出与取消、附件与上下文压缩接口、工具审批。全部离线运行，不调用真实模型。当前有一个依赖宿主终端的 Git Bash 用例在环境不具备时会跳过。
 
 ### 9.3 桌面外壳与打包
 

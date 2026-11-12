@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 from langchain.tools import tool
@@ -34,6 +35,7 @@ from tools.env import build_child_env
 from tools.errors import tool_error, truncate
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
 from tools.terminals import TERMINAL_CHOICES, build_invocation, terminal_label
+from tools.winjob import WindowsJob
 
 _IS_WINDOWS = os.name == "nt"
 _MAX_LOG_BYTES = 1_000_000
@@ -64,6 +66,15 @@ class ProcessRecord:
     terminal: str = "powershell"
     started_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     stopped_at: str = ""
+    ended_at: str = ""
+    session_id: str = ""
+    workspace: str = ""
+    description: str = ""
+    notify_on_exit: bool = True
+    stop_requested: bool = False
+    started_monotonic: float = field(default_factory=time.monotonic)
+    ended_monotonic: float | None = None
+    job: WindowsJob | None = field(default=None, repr=False)
 
     @property
     def pid(self) -> int:
@@ -77,19 +88,89 @@ class ProcessRecord:
     def exit_code(self) -> int | None:
         return self.popen.poll()
 
+    @property
+    def duration_seconds(self) -> float:
+        end = self.ended_monotonic if self.ended_monotonic is not None else time.monotonic()
+        return max(0.0, end - self.started_monotonic)
+
+    @property
+    def status(self) -> str:
+        if self.running:
+            return "running"
+        if self.stop_requested:
+            return "stopped"
+        return "completed" if self.exit_code == 0 else "failed"
+
+    def public(self) -> dict:
+        """给进程视图使用的结构；不包含 Popen 对象。"""
+        return {
+            "id": self.id,
+            "command": self.command,
+            "cwd": str(self.cwd),
+            "workspace": self.workspace,
+            "session_id": self.session_id,
+            "description": self.description,
+            "terminal": self.terminal,
+            "terminal_label": terminal_label(self.terminal),
+            "status": self.status,
+            "running": self.running,
+            "exit_code": self.exit_code,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "duration_seconds": round(self.duration_seconds, 3),
+            "notify": self.notify_on_exit,
+            "log_path": str(self.log_path),
+            "pid": self.pid,
+        }
+
 
 class ProcessManager:
     """进程表与日志目录；一个应用实例共享一份。"""
 
-    def __init__(self, log_dir: str | Path) -> None:
+    def __init__(
+        self,
+        log_dir: str | Path,
+        *,
+        on_event: Callable[[str, dict], None] | None = None,
+    ) -> None:
         self.log_dir = Path(log_dir).expanduser()
         self._records: dict[str, ProcessRecord] = {}
         self._lock = threading.Lock()
+        self._on_event = on_event
         try:
             self.log_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
         _MANAGERS.append(self)
+
+    def _emit(self, kind: str, payload: dict) -> None:
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(kind, payload)
+        except Exception:
+            pass
+
+    def _watch(self, record: ProcessRecord) -> None:
+        """等待进程结束并发出完成事件，供网页端和模型继续处理。"""
+        try:
+            record.popen.wait()
+        except Exception:
+            pass
+        with self._lock:
+            if not record.ended_at:
+                record.ended_at = datetime.now().isoformat(timespec="seconds")
+                record.ended_monotonic = time.monotonic()
+        if record.job is not None:
+            record.job.close()
+            record.job = None
+        payload = record.public()
+        payload["log_tail"] = self._tail(record, 80)
+        self._emit("process_completed", payload)
+
+    def _tail(self, record: ProcessRecord, lines: int) -> str:
+        _, text = self.read_log(record.id, lines)
+        return text
 
     # ---- 生命周期 ----
     def start(
@@ -98,6 +179,10 @@ class ProcessManager:
         cwd: Path,
         workspace: Path | None,
         terminal: str = "powershell",
+        *,
+        session_id: str = "",
+        description: str = "",
+        notify: bool = True,
     ) -> ProcessRecord:
         text = (command or "").strip()
         if not text:
@@ -131,17 +216,24 @@ class ProcessManager:
             handle = log_path.open("wb")
         except OSError as exc:
             raise OSError(f"无法创建日志文件 {log_path}：{exc}") from exc
+        job = WindowsJob.create()
         try:
             kwargs["stdout"] = handle
             popen = subprocess.Popen(invocation.argv, **kwargs)
         except OSError:
             handle.close()
+            if job is not None:
+                job.close()
             raise
         finally:
             try:
                 handle.close()
             except OSError:
                 pass
+        if job is not None:
+            if not job.assign(popen):
+                job.close()
+                job = None
 
         record = ProcessRecord(
             id=process_id,
@@ -150,10 +242,17 @@ class ProcessManager:
             popen=popen,
             log_path=log_path,
             terminal=chosen,
+            session_id=session_id,
+            workspace=str(workspace or cwd),
+            description=description,
+            notify_on_exit=bool(notify),
+            job=job,
         )
         with self._lock:
             self._records[process_id] = record
             self._prune_locked()
+        self._emit("process_started", record.public())
+        threading.Thread(target=self._watch, args=(record,), daemon=True).start()
         return record
 
     def list(self) -> list[ProcessRecord]:
@@ -197,14 +296,20 @@ class ProcessManager:
         if not record.running:
             return record
 
+        # 用户主动停止不再触发“后台任务完成，继续处理”，但仍会推送状态更新。
+        record.notify_on_exit = False
+        record.stop_requested = True
         pid = record.pid
+        job = record.job
         try:
-            if _IS_WINDOWS:
+            if job is not None:
+                job.terminate()
+            elif _IS_WINDOWS:
                 # /T 连子进程一起结束；/F 避免 GUI/控制台进程忽略 terminate
                 subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     capture_output=True,
-                    timeout=10,
+                    timeout=2,
                     env=build_child_env(),
                 )
             else:
@@ -225,8 +330,25 @@ class ProcessManager:
                 record.popen.wait(timeout=3)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        if job is not None:
+            job.close()
+            record.job = None
         record.stopped_at = datetime.now().isoformat(timespec="seconds")
+        with self._lock:
+            if not record.ended_at:
+                record.ended_at = record.stopped_at
+                record.ended_monotonic = time.monotonic()
         return record
+
+    def stop_session(self, session_id: str, timeout: float = 5.0) -> int:
+        """停止某个会话正在运行的全部后台任务。"""
+        sid = (session_id or "").strip()
+        if not sid:
+            return 0
+        targets = [record for record in self.list() if record.running and record.session_id == sid]
+        for record in targets:
+            self.stop(record.id, timeout=timeout)
+        return len(targets)
 
     def cleanup(self) -> None:
         for record in self.list():
@@ -281,23 +403,25 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
         cwd: str = "",
         terminal: str = "",
         description: str = "",
+        notify: bool = True,
     ) -> str:
-        """在后台启动一条命令，立即返回进程 ID；输出写入日志文件。
+        """Start a command in the background and return immediately.
 
-        适合 dev server、watch 构建、长时间脚本。需要看结果时用
-        read_process_logs；不需要时用 stop_process 结束，避免留下后台进程。
+        Use this for dev servers, watch builds, and long-running scripts.
+        Completion is delivered to the conversation as a background event when
+        ``notify`` is true; the current turn does not need to wait. Set
+        ``notify=False`` for servers that are expected to keep running.
 
         Args:
-            command: 要执行的命令，例如 "npm run dev"。
-            cwd: 相对工作区的执行目录，默认工作区根目录。
-            terminal: 临时指定 powershell / cmd / gitbash / wsl；
-                留空时使用「设置 → 通用」里的终端偏好。
-            description: 用一句白话说明这个后台进程要做什么
-                （例如「启动前端开发服务器，监听 5173 端口」）。
-                审批卡片用它作为主标题，请勿重复命令原文或罗列参数。
+            command: The command to run, for example "npm run dev".
+            cwd: Working directory relative to the workspace; defaults to the workspace root.
+            terminal: Optional terminal override: powershell / cmd / gitbash / wsl.
+            description: One plain sentence describing what the process does. It is shown in the approval card.
+            notify: Whether to notify the conversation when the process exits.
 
         Returns:
-            进程 ID、PID 与日志位置；启动失败时返回 ``Error:``。
+            Process ID, PID, command, terminal, and log location; returns an
+            ``Error:`` string when the process cannot be started.
         """
         text = (command or "").strip()
         if not text:
@@ -319,7 +443,15 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
                 hint="可选 powershell / cmd / gitbash / wsl。",
             )
         try:
-            record = manager.start(text, workdir, ctx.workspace, terminal=chosen)
+            record = manager.start(
+                text,
+                workdir,
+                ctx.workspace,
+                terminal=chosen,
+                session_id=ctx.session_id,
+                description=description,
+                notify=notify,
+            )
         except (OSError, ValueError) as exc:
             return tool_error("spawn_failed", f"无法启动进程：{exc}。")
 
@@ -329,6 +461,7 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
             f"命令：{record.command}\n"
             f"终端：{terminal_label(record.terminal)}\n"
             f"目录：{display_path(ctx.workspace, workdir)}\n"
+            f"完成通知：{'开' if record.notify_on_exit else '关'}\n"
             f"日志：{record.log_path}\n"
             "用 read_process_logs 查看输出，用 stop_process 结束。"
         )
@@ -341,7 +474,12 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
             return "当前没有后台进程。"
         lines = [f"后台进程（{len(records)} 个）："]
         for record in records:
-            status = f"运行中 (PID {record.pid})" if record.running else f"已退出 (code {record.exit_code})"
+            if record.running:
+                status = f"运行中 (PID {record.pid}, {record.duration_seconds:.1f}s)"
+            elif record.status == "stopped":
+                status = "已停止"
+            else:
+                status = f"已退出 (code {record.exit_code})"
             lines.append(f"- {record.id} · {status} · {record.command}")
             lines.append(f"  启动：{record.started_at}，日志：{record.log_path.name}")
         return truncate("\n".join(lines), ctx.max_output_chars)
