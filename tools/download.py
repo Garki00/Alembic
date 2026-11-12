@@ -129,15 +129,15 @@ def build_download_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
 
     @tool
     def download_file(url: str, path: str = "", overwrite: bool = False) -> str:
-        """把远程文件下载到工作区，适合 PDF、图片、压缩包等二进制内容。
+        """Download a remote file to the workspace; suitable for binary content such as PDFs, images, and archives.
 
         Args:
-            url: 完整的 http/https 地址。
-            path: 保存到工作区的相对路径；留空时从 URL 推断文件名。
-            overwrite: 目标已存在时是否覆盖（需要在审批里确认）。
+            url: A complete http/https address.
+            path: The relative path in the workspace to save to; if left empty, the filename is inferred from the URL.
+            overwrite: Whether to overwrite when the target already exists (requires confirmation in approval).
 
         Returns:
-            保存路径、大小、类型与最终 URL；失败时返回 ``Error:``。
+            The save path, size, type, and final URL; returns ``Error:`` on failure.
         """
         text = (url or "").strip()
         if not text:

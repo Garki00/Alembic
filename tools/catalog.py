@@ -259,11 +259,13 @@ def build_tools_search(config, ctx):
 
     @tool
     def tools_search(query: str, limit: int = 0) -> str:
-        """Search and load extended tools for the current session.
+        """Search the live tool registry for capabilities missing from the
+        current toolset, and load matched tools into this turn.
 
-        Use this when the task needs document/image parsing, downloads,
-        background processes, Git workflows, timezones, or weather. The
-        returned tools become available immediately in this turn.
+        Trigger this whenever the task needs an action you cannot perform
+        with the tools already loaded — before assuming the capability 
+        exists. The registry is the source of truth; this description 
+        is not a catalog and does not enumerate what is available.
 
         Args:
             query: Capability to look for, e.g. "PDF document", "图片 OCR",

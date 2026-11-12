@@ -262,18 +262,20 @@ def build_document_tools(ctx: ToolContext) -> list:
 
     @tool
     def read_document(path: str, offset: int = 0, limit: int = 0) -> str:
-        """读取 PDF / Word / Excel / PowerPoint / 文本文件，返回抽取后的文字。
+        """Read PDF / Word / Excel / PowerPoint / text files and return the extracted text.
 
-        适合读取用户放进工作区的文档；纯文本文件也可以继续用 read_file
-        （带行号、更方便编辑）。文档很长时用 offset 分段读取。
+        Suitable for reading documents that the user has placed in the workspace; for plain text files,
+        read_file can still be used (it includes line numbers and is more convenient for editing).
+        For very long documents, use offset to read in segments.
 
         Args:
-            path: 相对工作区的文件路径。
-            offset: 从第几个字符开始返回，默认 0。
-            limit: 本次最多返回多少字符；0 表示使用工具默认预算。
+            path: File path relative to the workspace.
+            offset: The character position to start returning from; defaults to 0.
+            limit: The maximum number of characters to return this time; 0 means use the tool's default budget.
 
         Returns:
-            首行为文档类型与总字符数，随后是正文；末尾提示下一段的 offset。
+            The first line contains the document type and total character count, followed by the body text;
+            the end includes a hint for the next segment's offset.
         """
         try:
             target = resolve_in_workspace(ctx.workspace, path)

@@ -196,13 +196,14 @@ def build_file_read_tools(ctx: ToolContext) -> list:
 
     @tool
     def list_dir(path: str = ".") -> str:
-        """列出工作区内某个目录的文件与子目录。
+        """List the files and subdirectories in a directory within the workspace.
 
         Args:
-            path: 相对工作区的目录路径，默认 "." 表示工作区根目录。
+            path: The directory path relative to the workspace; defaults to "." for the workspace root.
 
         Returns:
-            每行一项：目录以 "/" 结尾，文件附大小；超出上限时说明省略数量。
+            One item per line: directories end with "/", files include their size; when over the limit,
+            the number of omitted entries is noted.
         """
         target = _resolve_or_none(ctx, path)
         if isinstance(target, str):
@@ -235,15 +236,16 @@ def build_file_read_tools(ctx: ToolContext) -> list:
 
     @tool
     def read_file(path: str, offset: int = 1, limit: int = 200) -> str:
-        """读取工作区内文本文件的内容，带行号。
+        """Read the contents of a text file within the workspace, with line numbers.
 
         Args:
-            path: 相对工作区的文件路径。
-            offset: 起始行号，从 1 开始。
-            limit: 本次最多读取的行数（上限 2000），大文件请分段读取。
+            path: The file path relative to the workspace.
+            offset: The starting line number, beginning at 1.
+            limit: The maximum number of lines to read this time (upper limit 2000); for large files, read in segments.
 
         Returns:
-            首行为文件概况，随后是 "行号| 内容"；文件更长时提示下一段的 offset。
+            The first line is a file overview, followed by "line number| content"; when the file is longer,
+            a hint for the next segment's offset is provided.
         """
         target = _resolve_or_none(ctx, path)
         if isinstance(target, str):
@@ -291,16 +293,17 @@ def build_file_read_tools(ctx: ToolContext) -> list:
 
     @tool
     def search_files(pattern: str, path: str = ".", glob: str = "", max_results: int = 50) -> str:
-        """按正则表达式搜索工作区内文件的内容，返回匹配行。
+        """Search file contents within the workspace using a regular expression, returning matching lines.
 
         Args:
-            pattern: Python 正则表达式，例如 "def build_"、"TODO|FIXME"。
-            path: 搜索起点（文件或目录），默认工作区根目录。
-            glob: 只搜索匹配该通配符的文件名，例如 "*.py"；留空表示全部。
-            max_results: 最多返回的匹配行数（上限 200）。
+            pattern: A Python regular expression, e.g. "def build_" or "TODO|FIXME".
+            path: The search starting point (file or directory); defaults to the workspace root.
+            glob: Only search file names matching this wildcard, e.g. "*.py"; leave empty to search all.
+            max_results: The maximum number of matching lines to return (upper limit 200).
 
         Returns:
-            每行 "路径:行号: 内容"；没有匹配时说明已搜索的文件数。
+            Each line is "path:line number: content"; when there are no matches, the number of files searched
+            is reported.
         """
         try:
             regex = re.compile(pattern)
@@ -369,18 +372,18 @@ def build_file_read_tools(ctx: ToolContext) -> list:
 
     @tool
     def find_files(pattern: str, path: str = ".", max_results: int = 100) -> str:
-        """按文件名或相对路径查找文件，支持通配符（如 *.py、**/*.test.ts）。
+        """Find files by file name or relative path, supporting wildcards (e.g. *.py, **/*.test.ts).
 
-        和 search_files 的区别：search_files 搜的是文件**内容**，本工具只按
-        路径/文件名匹配，适合在不知道文件在哪时先定位。
+        Difference from search_files: search_files searches file **contents**, while this tool matches only by
+        path/file name, making it suitable for locating a file when you don't know where it is.
 
         Args:
-            pattern: 文件名或相对路径的 glob；不含通配符时按文件名子串匹配。
-            path: 查找起点（目录），默认工作区根目录。
-            max_results: 最多返回多少条（上限 300）。
+            pattern: A glob for the file name or relative path; when it contains no wildcard, matches by file name substring.
+            path: The search starting point (directory); defaults to the workspace root.
+            max_results: The maximum number of entries to return (upper limit 300).
 
         Returns:
-            每行一个相对路径与大小；没有匹配时说明已扫描的文件数。
+            One relative path and size per line; when there are no matches, the number of files scanned is reported.
         """
         text = (pattern or "").strip()
         if not text:
@@ -437,15 +440,15 @@ def build_file_read_tools(ctx: ToolContext) -> list:
 
     @tool
     def file_stat(path: str = ".") -> str:
-        """查看文件或目录的元信息：类型、大小、修改时间、行数。
+        """View metadata for a file or directory: type, size, modification time, and line count.
 
-        适合在读取大文件前先判断大小，或确认某个路径是否还存在。
+        Suitable for checking the size before reading a large file, or confirming whether a path still exists.
 
         Args:
-            path: 相对工作区的文件或目录路径，默认 "." 表示工作区根目录。
+            path: The file or directory path relative to the workspace; defaults to "." for the workspace root.
 
         Returns:
-            类型、大小、修改时间；文本文件额外给出行数。
+            Type, size, and modification time; for text files, the line count is also provided.
         """
         target = _resolve_or_none(ctx, path)
         if isinstance(target, str):
@@ -482,16 +485,16 @@ def build_file_write_tools(ctx: ToolContext) -> list:
 
     @tool
     def write_file(path: str, content: str) -> str:
-        """把内容完整写入文件（覆盖已有内容，必要时创建目录）。
+        """Write content fully to a file (overwriting existing content, creating directories if necessary).
 
-        覆盖已有文件前，必须先调用 read_file 读过它。
+        Before overwriting an existing file, you must first read it by calling read_file.
 
         Args:
-            path: 相对工作区的文件路径。
-            content: 完整的文件内容（不是增量补丁；局部修改请用 edit_file）。
+            path: The file path relative to the workspace.
+            content: The complete file content (not an incremental patch; for partial modifications, use edit_file).
 
         Returns:
-            写入结果的路径、行数与字节数。
+            The path, line count, and byte count of the write result.
         """
         target = _resolve_or_none(ctx, path, access="write")
         if isinstance(target, str):
@@ -552,19 +555,19 @@ def build_file_write_tools(ctx: ToolContext) -> list:
 
     @tool
     def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
-        """用精确字符串替换修改文件的局部内容。
+        """Modify part of a file's content by exact string replacement.
 
-        编辑前必须先 read_file 读该文件。``old_string`` 必须在文件中唯一出现，
-        否则请补足上下文或改用 ``replace_all=True``。
+        Before editing, you must first read the file with read_file. ``old_string`` must appear uniquely in the file;
+        otherwise, add more surrounding context or use ``replace_all=True`` instead.
 
         Args:
-            path: 相对工作区的文件路径。
-            old_string: 要被替换的原文（含缩进，必须精确匹配）。
-            new_string: 替换后的新文本。
-            replace_all: 为 True 时替换所有出现位置。
+            path: The file path relative to the workspace.
+            old_string: The original text to be replaced (including indentation; must match exactly).
+            new_string: The new text to replace it with.
+            replace_all: When True, replace all occurrences.
 
         Returns:
-            替换处数与文件路径。
+            The number of replacements and the file path.
         """
         target = _resolve_or_none(ctx, path, access="write")
         if isinstance(target, str):
@@ -627,13 +630,13 @@ def build_file_write_tools(ctx: ToolContext) -> list:
 
     @tool
     def make_dir(path: str) -> str:
-        """在工作区内创建一个目录（必要时创建多级父目录）。
+        """Create a directory within the workspace (creating multiple parent levels if necessary).
 
         Args:
-            path: 相对工作区的目录路径。
+            path: The directory path relative to the workspace.
 
         Returns:
-            创建结果；已存在且是目录时返回提示而不是失败。
+            The creation result; if it already exists and is a directory, a notice is returned instead of a failure.
         """
         target = _resolve_or_none(ctx, path, access="write")
         if isinstance(target, str):
@@ -653,17 +656,40 @@ def build_file_write_tools(ctx: ToolContext) -> list:
 
     @tool
     def delete_file(path: str, recursive: bool = False) -> str:
-        """删除工作区内的文件或目录（不可恢复，执行前需要审批）。
+        """Delete a file or directory inside the workspace. Deletion is
+        permanent and cannot be undone.
 
-        工作区根目录与 .git 目录禁止删除；非空目录必须显式传
-        ``recursive=True``。删除前建议先用 list_dir / file_stat 确认目标。
+        This tool is destructive. Before calling it, make sure the resolved
+        target is exactly what the user intends to remove — confirm with the
+        user when the request is ambiguous, and be aware that relative paths
+        may resolve differently than expected. Do not infer targets from
+        guesses; when the path was not given explicitly, verify it by
+        whatever means are available (listing, reading surrounding context,
+        or asking), not by assuming a fixed tool sequence.
+
+        Safety rules (not an exhaustive allowlist — err toward refusing):
+            - The workspace root itself must never be deleted.
+            - VCS metadata directories (e.g. .git and equivalents) must
+              never be deleted.
+            - Any path that looks like credentials, secrets, or user data
+              outside the task's scope should be treated as protected when
+              in doubt.
+            - Deleting a non-empty directory requires recursive=True; do
+              not add recursive=True merely to make a failed call succeed —
+              first confirm the directory's contents are intended for removal.
 
         Args:
-            path: 相对工作区的文件或目录路径。
-            recursive: 删除目录时是否递归删除其中的内容。
+            path: Path to the file or directory, relative to the workspace.
+            recursive: Whether to delete directory contents recursively.
+                Only set this after confirming the directory's contents
+                should be removed.
 
         Returns:
-            删除结果；目标不存在或受保护时返回 ``Error:``。
+            On success: confirmation of what was deleted.
+            On failure: an ``Error:`` message that distinguishes between
+            (a) target not found — the path may be wrong; re-check it before
+            retrying, and (b) target protected or refused — stop and report
+            to the user rather than attempting workarounds.
         """
         target = _resolve_or_none(ctx, path, access="write")
         if isinstance(target, str):
@@ -690,17 +716,18 @@ def build_file_write_tools(ctx: ToolContext) -> list:
 
     @tool
     def move_file(source: str, destination: str, overwrite: bool = False) -> str:
-        """移动或重命名工作区内的文件/目录（执行前需要审批）。
+        """Move or rename a file/directory within the workspace (requires approval before execution).
 
-        不能把目录移动到它自己的子目录里；覆盖已有文件前必须先读过它。
+        A directory cannot be moved into its own subdirectory; before overwriting an existing file,
+        you must first read it.
 
         Args:
-            source: 原路径（相对工作区）。
-            destination: 目标路径（相对工作区），父目录会自动创建。
-            overwrite: 目标已存在时是否覆盖（仅支持文件）。
+            source: The original path (relative to the workspace).
+            destination: The destination path (relative to the workspace); parent directories are created automatically.
+            overwrite: Whether to overwrite when the target already exists (files only).
 
         Returns:
-            移动结果；路径越界、目标已存在等情况返回 ``Error:``。
+            The move result; cases such as path traversal or an existing target return ``Error:``.
         """
         src = _resolve_or_none(ctx, source)
         if isinstance(src, str):
@@ -747,17 +774,18 @@ def build_file_write_tools(ctx: ToolContext) -> list:
 
     @tool
     def copy_file(source: str, destination: str, overwrite: bool = False) -> str:
-        """复制工作区内的文件或目录（执行前需要审批）。
+        """Copy a file or directory within the workspace (requires approval before execution).
 
-        目标已存在时默认拒绝；覆盖已有文件前必须先读过它。
+        If the target already exists, it is rejected by default; before overwriting an existing file,
+        you must first read it.
 
         Args:
-            source: 原路径（相对工作区）。
-            destination: 目标路径（相对工作区），父目录会自动创建。
-            overwrite: 目标已存在时是否覆盖（仅支持文件）。
+            source: The original path (relative to the workspace).
+            destination: The destination path (relative to the workspace); parent directories are created automatically.
+            overwrite: Whether to overwrite when the target already exists (files only).
 
         Returns:
-            复制结果；路径越界、目标已存在等情况返回 ``Error:``。
+            The copy result; cases such as path traversal or an existing target return ``Error:``.
         """
         src = _resolve_or_none(ctx, source)
         if isinstance(src, str):
