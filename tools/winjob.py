@@ -100,6 +100,11 @@ class WindowsJob:
             process_handle = int(popen._handle)  # type: ignore[attr-defined]
         except (AttributeError, TypeError, ValueError):
             return False
+        return self.assign_handle(process_handle)
+
+    def assign_handle(self, process_handle: int) -> bool:
+        if os.name != "nt" or not self.handle:
+            return False
         return bool(_kernel32.AssignProcessToJobObject(self.handle, process_handle))
 
     def terminate(self) -> None:

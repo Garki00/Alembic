@@ -24,8 +24,9 @@ if TYPE_CHECKING:  # 仅用于类型标注，避免运行时循环导入
     from threading import Event
 
     from tools.catalog import ToolActivation
-    from tools.questions import Asker
     from tools.processes import ProcessManager
+    from tools.questions import Asker
+    from tools.sandbox.base import SandboxPolicy, SandboxRunner
     from tools.todo import TodoStore
 
 
@@ -55,6 +56,8 @@ class ToolContext:
         activation: 当前会话的扩展工具激活状态；``None`` 时扩展工具不可加载。
         enabled_tool_names: 用户设置里实际启用的具体工具名，供 tools_search 过滤。
         cancel_event: 停止生成时置位的取消信号，前台命令会轮询它并结束进程树。
+        sandbox: 命令沙盒后端；``None`` 时命令工具必须失败关闭，不能直接执行。
+        sandbox_policy: 本次运行的沙盒策略（工作区、网络、临时目录）。
     """
 
     workspace: Path | None = None
@@ -69,6 +72,8 @@ class ToolContext:
     process_manager: ProcessManager | None = None
     emit: Callable[[str, dict[str, Any]], None] | None = None
     cancel_event: "Event | None" = None
+    sandbox: "SandboxRunner | None" = None
+    sandbox_policy: "SandboxPolicy | None" = None
     #: 视觉通道：``(data_url, prompt) -> 文字描述``。由运行时用当前模型注入；
     #: ``None`` 时 ``read_image`` 返回 ``vision_unavailable``。
     vision: Callable[[str, str], str] | None = None

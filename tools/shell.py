@@ -9,10 +9,10 @@
 - 子进程只继承白名单环境变量，模型密钥不会被命令读到；
 - 强制超时，避免一条挂起的命令拖死整轮对话；
 - stdout / stderr 实时读取并推送 ``tool_output`` 事件，前端可以边跑边看；
-- 停止生成时通过 ``cancel_event`` 结束整个进程树。
+- 命令通过平台沙盒后端启动，停止生成时结束整个进程树。
 
-注意：这不是操作系统级沙盒。命令与后端进程属于同一个 OS 用户，真正限制
-它能做什么的是命令策略（高危命令直接拒绝）与用户审批，而不是本模块。
+注意：命令不再以后端进程的用户身份执行。没有可用沙盒时命令必须失败关闭，
+不能退化为宿主机直接执行。
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import os
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 from langchain.tools import tool
 
@@ -29,13 +30,13 @@ from tools.context import ToolContext
 from tools.env import build_child_env
 from tools.errors import tool_error, truncate
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
+from tools.sandbox.base import SandboxError, sandbox_unavailable
 from tools.terminals import (
     TERMINAL_CHOICES,
     TerminalUnavailable,
     build_invocation,
     terminal_label,
 )
-from tools.winjob import WindowsJob
 
 _MAX_TIMEOUT = 600
 _MAX_CAPTURE_BYTES = 2_000_000
@@ -67,43 +68,6 @@ def _block(title: str, text: str, max_chars: int) -> list[str]:
         body = "(空)"
     body = truncate(body, max_chars, keep_tail=True)
     return [f"--- {title} ---", body]
-
-
-def _terminate_tree(popen: subprocess.Popen, job: WindowsJob | None = None) -> None:
-    """结束命令及其子进程，避免只杀 shell 留下孤儿。"""
-    if popen.poll() is not None:
-        if job is not None:
-            job.close()
-        return
-    if job is not None:
-        job.terminate()
-    elif os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(popen.pid), "/T", "/F"],
-                capture_output=True,
-                timeout=2,
-                env=build_child_env(),
-            )
-        except (OSError, subprocess.SubprocessError):
-            pass
-    else:
-        import signal
-
-        try:
-            os.killpg(os.getpgid(popen.pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    try:
-        popen.wait(timeout=3)
-    except subprocess.TimeoutExpired:
-        try:
-            popen.kill()
-            popen.wait(timeout=2)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    if job is not None:
-        job.close()
 
 
 class _OutputPump:
@@ -169,107 +133,58 @@ class _OutputPump:
 
 def _run_process(
     invocation,
+    command_line: str,
     env: dict[str, str],
     limit: float,
     ctx: ToolContext,
 ) -> tuple[int | None, str, str, bool, bool, float]:
-    """启动命令并实时读取输出。
-
-    Returns:
-        ``(returncode, stdout, stderr, cancelled, timed_out, elapsed)``
-    """
-    kwargs: dict = {
-        "cwd": invocation.cwd,
-        "shell": invocation.shell,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
-        "env": env,
-        "bufsize": 0,
-    }
-    pty_master = None
-    if os.name == "nt":
-        kwargs["stdin"] = subprocess.PIPE
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        # POSIX: give stdout/stdin a real PTY so progress bars and TTY-aware
-        # tools behave like a normal terminal. stderr stays a pipe so the final
-        # result can still separate stdout and stderr.
-        import pty
-
-        pty_master, slave = pty.openpty()
-        kwargs["stdin"] = slave
-        kwargs["stdout"] = slave
-        kwargs["start_new_session"] = True
+    """启动命令并实时读取输出；命令只能通过沙盒后端启动。"""
+    if ctx.sandbox is None or ctx.sandbox_policy is None:
+        raise sandbox_unavailable(
+            "当前没有可用的命令沙盒，命令未执行。",
+            hint="以管理员身份运行 scripts/setup-sandbox.ps1。",
+        )
 
     started = time.monotonic()
-    job = WindowsJob.create()
     try:
-        popen = subprocess.Popen(invocation.argv, **kwargs)
-    except Exception:
-        if job is not None:
-            job.close()
+        process = ctx.sandbox.spawn(
+            command=command_line,
+            cwd=Path(invocation.cwd or ctx.workspace or Path.cwd()),
+            env=env,
+            policy=ctx.sandbox_policy,
+            tty=False,
+            shell=bool(invocation.shell),
+        )
+    except SandboxError:
         raise
-    if job is not None:
-        if not job.assign(popen):
-            job.close()
-            job = None
-    try:
-        if pty_master is not None:
-            try:
-                os.close(slave)
-            except OSError:
-                pass
-            stdout_stream = os.fdopen(pty_master, "rb", buffering=0)
-            try:
-                # Non-interactive calls should not wait forever for stdin.
-                os.write(pty_master, b"\x04")
-            except OSError:
-                pass
-        else:
-            stdout_stream = popen.stdout
-        if popen.stdin is not None:
-            # 没有交互输入通道时立即发 EOF，避免命令一直等 stdin。
-            try:
-                popen.stdin.close()
-            except (OSError, ValueError):
-                pass
-        stdout = _OutputPump(stdout_stream, "stdout", ctx)
-        stderr = _OutputPump(popen.stderr, "stderr", ctx)
-        stdout.start()
-        stderr.start()
+    except Exception as exc:
+        raise SandboxError("sandbox_spawn_failed", f"沙盒启动失败：{exc}") from exc
 
+    stdout = _OutputPump(process.stdout, "stdout", ctx)
+    stderr = _OutputPump(process.stderr, "stderr", ctx)
+    stdout.start()
+    stderr.start()
+    try:
         cancelled = False
         timed_out = False
-        while popen.poll() is None:
+        while process.poll() is None:
             if ctx.cancel_event is not None and ctx.cancel_event.is_set():
                 cancelled = True
-                _terminate_tree(popen, job)
+                process.terminate()
                 break
             if time.monotonic() - started > limit:
                 timed_out = True
-                _terminate_tree(popen, job)
+                process.terminate()
                 break
             time.sleep(0.05)
-        code = popen.poll()
+        code = process.poll()
         stdout.join()
         stderr.join()
         return code, stdout.text, stderr.text, cancelled, timed_out, time.monotonic() - started
     finally:
-        if popen.poll() is None:
-            _terminate_tree(popen, job)
-        elif job is not None:
-            job.close()
-        for stream in (popen.stdout, popen.stderr, popen.stdin):
-            try:
-                if stream is not None:
-                    stream.close()
-            except (OSError, ValueError):
-                pass
-        if pty_master is not None:
-            try:
-                os.close(pty_master)
-            except OSError:
-                pass
+        if process.poll() is None:
+            process.terminate()
+        process.close()
 
 
 def build_shell_tools(ctx: ToolContext) -> list:
@@ -327,6 +242,12 @@ def build_shell_tools(ctx: ToolContext) -> list:
                 f"不支持的终端：{terminal}。",
                 hint="可选 powershell / cmd / gitbash / wsl。",
             )
+        if chosen == "wsl":
+            return tool_error(
+                "sandbox_unsupported",
+                "Windows 沙盒下不能使用 WSL 终端：WSL 进程不继承沙盒令牌。",
+                hint="改用 powershell / cmd / gitbash；需要 WSL 时使用独立的 Linux 沙盒后端。",
+            )
         try:
             invocation = build_invocation(chosen, text, workdir)
         except TerminalUnavailable as exc:
@@ -336,11 +257,21 @@ def build_shell_tools(ctx: ToolContext) -> list:
                 hint="请在「设置 → 通用 → 终端偏好」里换一个可用终端，或安装对应工具。",
             )
 
+        if invocation.shell:
+            command_line = str(invocation.argv)
+        elif os.name == "nt":
+            command_line = subprocess.list2cmdline([str(item) for item in invocation.argv])
+        else:
+            import shlex
+
+            command_line = shlex.join([str(item) for item in invocation.argv])
         env = build_child_env({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
         try:
             code, stdout_text, stderr_text, cancelled, timed_out, elapsed = _run_process(
-                invocation, env, float(limit), ctx
+                invocation, command_line, env, float(limit), ctx
             )
+        except SandboxError as exc:
+            return tool_error(exc.code, exc.message, hint=exc.hint)
         except OSError as exc:
             return tool_error(
                 "spawn_failed",

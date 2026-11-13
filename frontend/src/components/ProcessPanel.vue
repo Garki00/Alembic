@@ -81,7 +81,7 @@ onBeforeUnmount(() => {
             :class="{ open: processes.expandedId === task.id }"
           >
             <button type="button" class="process-summary" @click="processes.toggleTask(task.id)">
-              <span class="process-terminal">{{ task.terminal }}</span>
+              <span class="process-terminal">{{ task.terminal }}<small v-if="task.sandboxed"> · 沙盒</small></span>
               <span class="process-command" :title="task.command">{{ task.command }}</span>
               <span class="process-result running">{{ resultText(task) }}</span>
               <span class="process-time">{{ durationText(task.duration_seconds) }}</span>
@@ -116,7 +116,7 @@ onBeforeUnmount(() => {
             :class="{ open: processes.expandedId === task.id }"
           >
             <button type="button" class="process-summary" @click="processes.toggleTask(task.id)">
-              <span class="process-terminal">{{ task.terminal }}</span>
+              <span class="process-terminal">{{ task.terminal }}<small v-if="task.sandboxed"> · 沙盒</small></span>
               <span class="process-command" :title="task.command">{{ task.command }}</span>
               <span class="process-result" :class="{ failed: task.status === 'failed' }">{{ resultText(task) }}</span>
               <span class="process-time">{{ durationText(task.duration_seconds) }}</span>

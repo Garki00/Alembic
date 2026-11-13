@@ -28,6 +28,7 @@ from tools.catalog import (
     visible_tool_names,
 )
 from tools.registry import build_tools
+from tools.sandbox.base import SandboxPolicy
 
 
 #: 各供应商的默认 Base URL。所有供应商都走 OpenAI 兼容的 /chat/completions；
@@ -87,6 +88,8 @@ def tool_context(
     activation: ToolActivation | None = None,
     enabled_names: frozenset[str] = frozenset(),
     cancel_event=None,
+    sandbox=None,
+    sandbox_policy: SandboxPolicy | None = None,
 ) -> ToolContext:
     """把网页端的工作区字符串变成工具上下文。"""
     text = (workspace or "").strip()
@@ -105,6 +108,8 @@ def tool_context(
         activation=activation,
         enabled_tool_names=enabled_names,
         cancel_event=cancel_event,
+        sandbox=sandbox,
+        sandbox_policy=sandbox_policy,
     )
 
 
@@ -125,6 +130,8 @@ def build_runtime(
     terminal: str = "powershell",
     activation: ToolActivation | None = None,
     cancel_event=None,
+    sandbox=None,
+    sandbox_config: Mapping[str, Any] | None = None,
 ):
     """返回 ``(agent, summarizer)``，供一轮对话使用。
 
@@ -146,6 +153,17 @@ def build_runtime(
     enabled_entries = set(enabled_tools)
     enabled_names = enabled_tool_names(enabled_entries)
     active = activation or ToolActivation()
+    cfg = dict(sandbox_config or {})
+    policy = None
+    if sandbox is not None and workspace:
+        policy = SandboxPolicy(
+            workspace=Path(workspace).expanduser().resolve(),
+            session_id=session_id,
+            network=str(cfg.get("network") or "offline"),
+            allowed_domains=tuple(cfg.get("allowed_domains") or ()),
+            allowed_ports=tuple(int(item) for item in (cfg.get("allowed_ports") or (443, 80))),
+            proxy_url=f"http://127.0.0.1:{cfg.get('proxy_port', 47831)}",
+        )
     ctx = tool_context(
         workspace,
         session_id=session_id,
@@ -158,6 +176,8 @@ def build_runtime(
         activation=active,
         enabled_names=enabled_names,
         cancel_event=cancel_event,
+        sandbox=sandbox,
+        sandbox_policy=policy,
     )
     tools = build_tools(enabled_entries, tool_configs or {}, ctx)
     resolved_engine = (engine or settings.agent_engine).strip().lower()

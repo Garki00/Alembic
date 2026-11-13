@@ -8,6 +8,8 @@ import type {
   Preferences,
   ProviderInfo,
   ProviderPayload,
+  SandboxConfig,
+  SandboxStatus,
   SessionSummary,
   TerminalInfo,
   ThinkingLevel,
@@ -42,6 +44,8 @@ export const useWorkspaceStore = defineStore('workspace', {
     sessions: [] as SessionSummary[],
     terminals: [] as TerminalInfo[],
     preferences: { ...DEFAULT_PREFERENCES } as Preferences,
+    sandbox: null as SandboxStatus | null,
+    sandboxConfig: null as SandboxConfig | null,
     needsSetup: false,
     ready: false,
   }),
@@ -84,6 +88,8 @@ export const useWorkspaceStore = defineStore('workspace', {
       this.sessions = data.sessions || []
       this.terminals = data.terminals || []
       this.preferences = data.preferences || { ...DEFAULT_PREFERENCES }
+      this.sandbox = data.sandbox || null
+      this.sandboxConfig = data.sandbox_config || null
       this.needsSetup = Boolean(data.needs_setup)
       this.ready = true
     },
@@ -91,6 +97,21 @@ export const useWorkspaceStore = defineStore('workspace', {
     async refreshSessions(): Promise<void> {
       const data = await api<{ sessions: SessionSummary[] }>('/api/sessions')
       this.sessions = data.sessions || []
+    },
+
+    async refreshSandbox(): Promise<void> {
+      const status = await api<SandboxStatus>('/api/sandbox/status')
+      this.sandbox = status
+      const data = await api<{ config: SandboxConfig }>('/api/sandbox/config')
+      this.sandboxConfig = data.config
+    },
+
+    async saveSandboxConfig(patch: Partial<SandboxConfig>): Promise<void> {
+      const data = await api<{ config: SandboxConfig }>('/api/sandbox/config', {
+        method: 'PUT',
+        body: patch,
+      })
+      this.sandboxConfig = data.config
     },
 
     applyProviders(data: {

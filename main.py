@@ -25,6 +25,9 @@ from config.storage import ensure_storage
 from tools.context import SessionRef
 from tools.processes import ProcessManager
 from tools.questions import console_asker
+from tools.sandbox import create_sandbox
+from tools.sandbox.base import SandboxPolicy
+from tools.sandbox.config import SandboxConfigStore
 from tools.todo import TodoStore, render_todos
 
 HELP_TEXT = """可用命令：
@@ -301,11 +304,23 @@ def main() -> None:
     session_ref = SessionRef(args.session)
     todo_store = TodoStore(SessionStore().directory / "todos")
     process_manager = ProcessManager(Path(settings.app_home) / "logs" / "processes")
+    sandbox_config = SandboxConfigStore(Path(settings.data_dir) / "sandbox.json")
+    sandbox = create_sandbox(config=sandbox_config)
+    workspace = Path(settings.workspace_dir or Path.cwd()).expanduser().resolve()
+    policy = SandboxPolicy(
+        workspace=workspace,
+        session_id=args.session,
+        network=str(sandbox_config.get().get("network") or "offline"),
+        allowed_domains=tuple(sandbox_config.get().get("allowed_domains") or ()),
+        allowed_ports=tuple(int(item) for item in (sandbox_config.get().get("allowed_ports") or (443, 80))),
+    )
     ctx = cli_tool_context(
         session_ref=session_ref,
         asker=console_asker,
         todo_store=todo_store,
         process_manager=process_manager,
+        sandbox=sandbox,
+        sandbox_policy=policy,
     )
     try:
         model = build_model()

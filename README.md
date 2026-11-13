@@ -32,6 +32,7 @@ ALEMBIC 是一个本地优先的智能体工作区。后端使用 Python + FastA
 - Python 3.11 及以上
 - [uv](https://docs.astral.sh/uv/)
 - Node.js 与 npm
+- 命令沙盒：Windows 10 1809+ x64，本地 NTFS 工作区；首次安装需要管理员权限
 
 首次安装依赖：
 
@@ -42,6 +43,14 @@ cd frontend
 npm install
 cd ..
 ```
+
+命令执行需要一次性初始化原生沙盒（用当前账户打开管理员 PowerShell；不要换成另一个管理员账户）：
+
+```powershell
+.\scripts\setup-sandbox.ps1
+```
+
+之后日常启动不需要管理员权限。没有初始化时，文件工具和对话仍可使用，但所有命令工具会返回 `sandbox_unavailable`。
 
 一键启动后端与前端：
 
@@ -324,7 +333,7 @@ Final Answer: ...
 
 凭据路径额外受保护：`.ssh` / `.aws` / `.kube` / `.gnupg` / `.docker` 目录、`.netrc` / `.npmrc` / `.pypirc`、SSH 私钥以及 `.pem` / `.key` / `.p12` / `.pfx` / `.jks` / `.keystore` 不允许读取；这些凭据目录与 `.netrc` 也不允许写入。`.env` 可以写入但读不回来；应用自己的数据目录也不允许 Agent 访问。子进程只继承白名单环境变量，模型密钥不会出现在命令环境里。
 
-`run_command` 在 POSIX 上使用 PTY 读取 stdout，在 Windows 上使用管道实时读取；两路输出都会推送 `tool_output` 事件，最终结果仍分开列出 stdout 与 stderr。停止生成或超时会结束整个进程树；Windows 优先使用 Job Object，拿不到时回退到 `taskkill /T`。
+`run_command` 在沙盒子进程中实时读取 stdout / stderr，两路输出都会推送 `tool_output` 事件，最终结果仍分开列出。停止生成、超时或客户端断开时会结束整个进程树；Windows 使用 Job Object 管理进程树，POSIX 原生后端尚未落地。
 
 ### 5.3 读后写
 
@@ -478,11 +487,34 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 - **直接拒绝**：格式化磁盘、管理磁盘 / 分区、删除系统盘根目录、注销 WSL 发行版、破坏引导记录、删除注册表根键、关机 / 重启、擦除磁盘空闲空间、Base64 编码的长命令等不可恢复操作。返回 `Error: [blocked_by_policy]`，不弹审批，也不能用「始终允许」绕过。
 - **风险提示**：递归删除、强制推送、硬重置、结束进程、修改权限、远程下载后执行、创建计划任务 / 服务 / 启动项、访问凭据文件等可恢复但危险的操作，会在审批卡片上说明风险原因。
 
-策略按命令文本匹配，会做小写化与空白折叠。它不是完整的 shell 解释器，也无法阻止刻意混淆的命令；目标是拦住常见的高破坏性误操作，并给审批提供可解释的理由。
+策略按命令文本匹配，会做小写化与空白折叠。它不是完整的 shell 解释器，也无法阻止刻意混淆的命令；它是审批之外的补充，真正隔离由下一节的命令沙盒提供。
 
-`run_command` 会在本机真实执行命令，没有操作系统级沙箱。真正的隔离边界应由操作系统或容器提供；这里的边界是工作区路径限制、命令策略和用户审批。
+### 6.4 命令沙盒
 
-### 6.4 超时与失败关闭
+命令不会以桌面用户身份直接执行。Windows 后端为命令创建独立的低权限本地用户，并通过 ACL、Job Object 和按用户匹配的 Windows Firewall 约束：
+
+- 首次使用需要以管理员身份运行一次 `scripts\setup-sandbox.ps1`；它创建 `AlembicSandboxOffline` / `AlembicSandboxOnline` 两个标准用户、防火墙规则和 DPAPI 保护的凭据文件。
+- 应用日常运行不需要管理员权限，也不以管理员身份运行。
+- 工作区授予沙盒用户 `Modify`；应用数据目录、`.ssh` / `.aws` / `.kube` / `.gnupg` / `.docker`、`.netrc` / `.npmrc` / `.pypirc`、私钥和工作区 `.env` 加 deny ACE。
+- 子进程自动加入 Job Object；停止生成、超时、客户端断开都会结束整个进程树。
+- 网络策略：
+  - `offline`：完全断网。
+  - `allowlist`：沙盒用户只能连接本机 `127.0.0.1:47831` 的 HTTP CONNECT 代理，代理只放行列出的域名和端口；未列出的域名直接返回 403。
+- 离线 / 允许列表切换在「设置 → 通用 → 命令沙盒」中完成；允许域名保存在 `data/sandbox.json`。
+- 沙盒不可用（未初始化、代理端口被占用、工作区不是本地 NTFS 等）时，命令工具返回 `Error: [sandbox_unavailable]`，不会回退到宿主机执行。
+- Windows 沙盒下不能选择 WSL 终端：WSL 由独立服务启动，不能保证继承沙盒用户和 Job Object；需要 WSL 时使用独立的 Linux 沙盒后端。
+- 文件工具仍使用工作区路径校验和应用层凭据保护；它们不是通过这个子进程沙盒执行的。
+- 当前原生后端只覆盖 Windows；Linux/macOS 在对应后端落地前，命令工具同样失败关闭，不会退回宿主机执行。
+
+```powershell
+# 管理员 PowerShell，在仓库根目录执行一次
+.\scripts\setup-sandbox.ps1
+.\scripts\setup-sandbox.ps1 -Verify
+# 卸载
+.\scripts\setup-sandbox.ps1 -Uninstall
+```
+
+### 6.5 超时与失败关闭
 
 - 等待审批超过 `APPROVAL_TIMEOUT` 秒按拒绝处理，默认 600 秒。
 - 等待提问超过 `QUESTION_TIMEOUT` 秒返回未回答，默认 600 秒。
@@ -505,7 +537,7 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 .\.venv\Scripts\python.exe main.py --list-sessions          # 列出已保存的会话
 ```
 
-命令行默认工作区是当前目录，可用 `WORKSPACE_DIR` 指定。文件类工具直接读写所在目录；审批默认使用「工作区内修改」语义，命令执行前会在终端询问。
+命令行默认工作区是当前目录，可用 `WORKSPACE_DIR` 指定。文件类工具直接读写所在目录；审批默认使用「工作区内修改」语义，命令执行前会在终端询问。命令同样经过沙盒；未运行 `setup-sandbox.ps1` 时命令工具会返回 `sandbox_unavailable`。
 
 命令行与网页端有两处独立配置：
 
@@ -548,6 +580,9 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 | `<home>/data/tools.json` | 工具启用状态与参数 |
 | `<home>/data/workspace.json` | 命名工作区列表与当前激活项 |
 | `<home>/data/preferences.json` | 权限模式、终端偏好、链接打开方式、工作步骤展示、收起时机、代码工作视图 |
+| `<home>/data/sandbox.json` | 沙盒网络模式、允许域名与端口 |
+| `<home>/data/sandbox-users.json` | 沙盒本地用户的 DPAPI 加密凭据（仅当前用户可读） |
+| `<home>/data/sandbox-setup.json` | 沙盒初始化标记 |
 | `<home>/memory/*.json` | 会话历史 |
 | `<home>/memory/todos/*.json` | 会话级任务清单 |
 | `<home>/logs/processes/` | 后台进程日志（`MEMORY_DIR` 覆写时跟随其父目录） |
@@ -630,6 +665,7 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 - `POST /api/providers/fetch`
 - `GET /api/tools`、`PUT /api/tools/{name}`
 - `GET /api/preferences`、`PUT /api/preferences`
+- `GET /api/sandbox/status`、`GET /api/sandbox/config`、`PUT /api/sandbox/config`
 - `GET /api/workspaces`、`POST /api/workspaces`、`PATCH /api/workspaces/{id}`、`DELETE /api/workspaces/{id}`
 - `POST /api/workspaces/{id}/activate`、`GET /api/workspaces/browse`
 - `GET /api/workspace/files`、`GET /api/workspace/file`
@@ -675,6 +711,11 @@ tools/
   todo.py questions.py time.py weather.py
   paths.py command_policy.py command_brief.py env.py
   winjob.py             Windows Job Object：按进程树停止命令
+  sandbox/
+    base.py             沙盒策略 / 状态 / 进程协议
+    windows.py          专用本地用户、ACL、Job Object、命令启动
+    proxy.py            本机 HTTP CONNECT 代理与域名允许列表
+    config.py           data/sandbox.json 配置
 web/
   server.py             路由、SSE、审批、工作区、供应商、进程视图
   runtime.py            按当前设置装配 Agent
@@ -685,6 +726,8 @@ frontend/
   vite.config.ts        /api 代理与 5173 / 4173 端口
 scripts/
   dev.ps1 dev.cmd       一键启动开发环境
+  setup-sandbox.ps1     管理员一次性初始化命令沙盒
+  verify-sandbox.ps1    校验沙盒用户、防火墙与配置
   reset-config.ps1      重置配置
 desktop/                Electron 外壳（暂未适配当前前端）
 packaging/              PyInstaller 后端打包
@@ -694,7 +737,7 @@ tests/                  *_test.py，全部离线
 ### 9.2 测试
 
 ```powershell
-# 后端：447 个离线测试
+# 后端：454 个离线测试
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py" -v
 
 # 前端：类型检查 + 生产构建
@@ -702,7 +745,7 @@ cd frontend
 npm run build
 ```
 
-测试覆盖时间工具、会话持久化、上下文压缩、命令行交互、网页接口、工具注册表与错误契约、ReAct 循环、文件工具、文档抽取、网页抓取、任务清单、提问中继、后台进程、实时命令输出与取消、附件与上下文压缩接口、工具审批。全部离线运行，不调用真实模型。当前有一个依赖宿主终端的 Git Bash 用例在环境不具备时会跳过。
+测试覆盖时间工具、会话持久化、上下文压缩、命令行交互、网页接口、工具注册表与错误契约、ReAct 循环、文件工具、文档抽取、网页抓取、任务清单、提问中继、后台进程、实时命令输出与取消、沙盒策略与域名匹配、附件与上下文压缩接口、工具审批。全部离线运行，不调用真实模型。原生 Windows 沙盒的集成探针需要管理员初始化后单独运行，见 `scripts/verify-sandbox.ps1`。当前有一个依赖宿主终端的 Git Bash 用例在环境不具备时会跳过。
 
 ### 9.3 桌面外壳与打包
 

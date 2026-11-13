@@ -1,9 +1,9 @@
 # ALEMBIC 交接文档（HANDOVER）
 
 > 给接手的智能体 / 开发者：先读这一份，再动代码。
-> 最后更新：2026-11-12，新增后台任务面板、前后台命令取消与 Job Object 进程树停止、
-> 实时命令输出、后台任务完成 SSE 与自动续跑、附件导入、手动压缩和上下文占用圆环；
-> 447 个后端测试全绿（1 个 Git Bash 用例因宿主限制跳过）。
+> 最后更新：2026-11-13，新增 Windows 原生命令沙盒（专用本地用户 + ACL + Job Object +
+> 按用户防火墙 + 域名代理）、命令失败关闭、沙盒状态 API 与设置面板；同步更新后台任务、
+> 前后台取消、实时输出、附件、压缩和上下文圆环；454 个后端测试全绿（1 个跳过）。
 
 ## 1. 这是什么
 
@@ -16,7 +16,13 @@
   OpenAI 兼容接口（Claude 走 Anthropic 兼容端点）；一个供应商下可挂多个模型，
   每个模型有独立的可选推理等级集合（none/low/high/max）、当前等级与温度；
 - 命令执行实时推送 stdout/stderr；停止生成会通过 `cancel_event` 结束前台命令，
-  并停止当前会话仍在运行的后台任务；Windows 用 Job Object（`tools/winjob.py`）按进程树停止，POSIX 用进程组；
+  并停止当前会话仍在运行的后台任务；Windows 用 Job Object 按进程树停止，
+  其他平台没有原生沙盒后端时命令 fail closed；
+- **Windows 命令沙盒**：`scripts/setup-sandbox.ps1` 创建两个专用本地用户；
+  `tools/sandbox/windows.py` 用 `CreateProcessWithLogonW` 启动，ACL 限定工作区，
+  `tools/winjob.py` 管理进程树，防火墙按用户阻断网络；`allowlist` 模式只允许本机
+  HTTP CONNECT 代理，域名由 `tools/sandbox/proxy.py` 校验。没有沙盒时命令失败关闭，
+  没有宿主机回退；
 - 后台任务有独立进程视图：`GET /api/processes` 提供运行中与已完成列表，
   `/api/processes/events` 推送完成事件；`start_process(notify=True)` 的任务退出后
   自动触发一次内部续跑，长期服务可设 `notify=False`；
@@ -44,6 +50,9 @@
 uv sync                                              # 建 .venv、装 Python 依赖
 cd frontend; npm install; cd ..                      # 装前端依赖
 
+# 管理员 PowerShell，仅一次
+.\scripts\setup-sandbox.ps1
+
 .\scripts\dev.ps1                                    # 后端 8000 + 前端 5173，自动开浏览器
 
 # 或者两个终端：
@@ -54,7 +63,7 @@ cd frontend; npm run dev                             # http://127.0.0.1:5173
 验证：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 447 个测试
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 454 个测试
 cd frontend
 npm run build                                        # vue-tsc + vite build
 ```
@@ -91,6 +100,11 @@ tools/
   env.py                 子进程环境变量白名单（剥离模型密钥）
   terminals.py          终端偏好与 PowerShell / CMD / Git Bash / WSL 构造
   winjob.py              Windows Job Object：按进程树停止命令与后台任务
+  sandbox/
+    base.py             沙盒策略 / 状态 / 进程协议；没有可用后端时 fail closed
+    windows.py          专用本地用户、ACL、CreateProcessWithLogonW、Job Object
+    proxy.py            本机 HTTP CONNECT 代理与域名允许列表
+    config.py           data/sandbox.json 网络模式与允许域名
   files.py               list_dir / read_file / search_files / find_files / file_stat
                          write_file / edit_file / make_dir / delete_file / move_file / copy_file
   documents.py           read_document（PDF / DOCX / XLSX / PPTX / 文本，按字符偏移分段）
@@ -138,6 +152,8 @@ frontend/
     assets/main.css      设计系统（纸白 + 薄荷绿）
 scripts/
   dev.ps1 / dev.cmd      一键启动本地开发环境
+  setup-sandbox.ps1      管理员一次性初始化 Windows 命令沙盒
+  verify-sandbox.ps1     校验沙盒用户、防火墙与配置
   reset-config.ps1/.cmd  清除 Alembic / SmartAgent 配置，重新查看初始化向导
 desktop/                 Electron 外壳（旧版，未适配 Vue 前端）
 packaging/               PyInstaller（已移除 web/static；桌面打包未适配）
@@ -324,6 +340,24 @@ App.vue onMounted
 - `tool_result` 事件让工作步骤在流式期间就能显示结果；历史会话通过
   `ToolMessage.tool_call_id` 与 `AIMessage.tool_calls[].id` 配对。
 
+### 4.6 命令沙盒
+
+```
+run_command / start_process
+  → ToolContext.sandbox.spawn(command, cwd, env, SandboxPolicy)
+  → WindowsSandbox.prepare_workspace：icacls 给专用用户授工作区 Modify、加凭据 deny
+  → CreateProcessWithLogonW(专用本地用户, 独立管道)
+  → WindowsJob 加入进程树
+  → 命令退出 → 进程结束 → 日志/状态
+```
+
+- `offline` 使用 `AlembicSandboxOffline`，防火墙阻断全部出站/入站。
+- `allowlist` 使用 `AlembicSandboxOnline`，只允许到本机代理端口；代理再按域名放行。
+- `scripts/setup-sandbox.ps1` 是唯一需要管理员权限的步骤；应用运行时不提权。
+- 没有可用后端时 `run_command` / `start_process` 返回 `sandbox_unavailable`；不允许直接 `subprocess.Popen`。
+- 文件工具不经过该子进程沙盒，仍由 `tools/paths.py` 做工作区与凭据校验。
+- Windows 下 WSL 终端被拒绝，因为 WSL 服务不能保证继承沙盒用户令牌和 Job Object。
+
 ## 5. 不可破坏的约定
 
 1. **工具清单只有一处**：`tools/registry.py`。不要在 `agents/`、`web/`、`frontend/` 里再写工具名字列表。
@@ -405,6 +439,14 @@ App.vue onMounted
 37. **附件只写工作区**：`POST /api/sessions/{id}/attachments` 把原始字节写入
     `<workspace>/.alembic/attachments/<会话ID>/`；聊天时服务端校验路径并构造
     `[Attached files]` 块。不要把附件写到工作区外，否则文件工具无法读取。
+38. **命令必须经过 `ToolContext.sandbox`**：`tools/shell.py` 和 `tools/processes.py`
+    不允许直接调用 `subprocess.Popen` 执行模型命令。没有沙盒时返回
+    `sandbox_unavailable`，不要加宿主机回退。
+39. **沙盒用户不是管理员**：`scripts/setup-sandbox.ps1` 创建的两个账号只用于执行命令；
+    不要把它们加入 Administrators，也不要在应用进程里保存明文密码。凭据只以 DPAPI
+    形式保存到 `data/sandbox-users.json`，文件 ACL 仅当前用户可读。
+40. **网络默认最严**：`SandboxPolicy.network` 默认 `offline`；只有 `allowlist` 才启动
+    本机代理并注入 `HTTP_PROXY` / `HTTPS_PROXY`。WSL 终端在 Windows 沙盒下必须拒绝。
 
 ## 6. 环境坑（这台机器上真实踩过的）
 
@@ -430,16 +472,17 @@ App.vue onMounted
 3. 开发模式可让 Electron 指向 `http://127.0.0.1:5173`，生产模式指向打包后的静态目录；
 4. 后端继续只跑 `/api`，保留 token / 随机端口 / sidecar 逻辑。
 
-另：`run_command` 现在是流式执行（POSIX PTY / Windows 管道）；停止生成会结束当前
-前台命令的进程树，并停止当前会话由 `ProcessManager` 管理的后台任务（Job Object /
-`taskkill`）。`wait_process` 仍存在，但常规后台任务应依赖完成事件和内部续跑，不要用它挂住整轮。
+另：`run_command` 是流式执行（当前 Windows 沙盒使用管道），并且只能通过
+`ToolContext.sandbox` 启动；停止生成会结束当前前台命令的进程树，并停止当前会话由
+`ProcessManager` 管理的后台任务。`wait_process` 仍存在，但常规后台任务应依赖完成事件
+和内部续跑，不要用它挂住整轮。
 
 ## 8. 还没做的
 
 - 前端组件/单元测试（当前只做 `vue-tsc` + 构建 + 手动验证）；
 - Electron 适配、安装包、代码签名、应用图标；
 - 生产部署的静态资源服务（Nginx / Caddy / 一个独立静态服务器）；
-- Windows 原生 ConPTY（当前 Windows 用流式管道，POSIX 用 PTY）、审批卡片 diff 视图、
+- Windows 原生 ConPTY（当前 Windows 沙盒用管道）、审批卡片 diff 视图、
   多文件补丁事务回滚；
 - 文本 ReAct 是单步串行（每轮一个工具），提示词每步重发历史；默认的
   `tool_calling` 可并行返回多个工具调用，延迟更低；
@@ -498,11 +541,16 @@ App.vue onMounted
     停止；`run_command` 改为流式输出，停止生成会结束前台进程树并停止当前会话后台
     任务；新增 `/api/processes` 与 `/api/processes/events`；`start_process(notify=True)`
     完成时通过 SSE 触发内部续跑。输入区新增附件导入、手动压缩与上下文占用圆环；
-    `tests/process_view_test.py` 覆盖进程事件、取消、附件与压缩；测试 447。**
+    `tests/process_view_test.py` 覆盖进程事件、取消、附件与压缩；测试 454。**
+21. **Windows 原生命令沙盒：`tools/sandbox/` 统一 `SandboxRunner` 接口，未初始化时
+    fail closed；`scripts/setup-sandbox.ps1` 创建离线/允许列表两个标准用户和按用户
+    防火墙；`WindowsSandbox` 用专用用户 + ACL + Job Object 启动，`allowlist` 走本机
+    CONNECT 代理；新增 `/api/sandbox/status`、`/api/sandbox/config` 和设置面板状态。
+    `tools/shell.py` / `tools/processes.py` 已删除宿主机直接执行路径；测试 454。**
 
 ## 10. 给接手者的建议顺序
 
-1. 跑一遍后端测试，确认 447 全绿；再 `cd frontend && npm run build`；
+1. 跑一遍后端测试，确认 454 全绿；再 `cd frontend && npm run build`；
 2. 读 `web/runtime.py`（默认 `create_agent`）、`agents/react.py`（可选文本 ReAct）、
    `tools/registry.py`、`web/server.py`、`agents/context.py`，够理解后端 85%；
 3. 读 `frontend/src/stores/chat.ts`、`frontend/src/api/chat.ts`、`frontend/src/App.vue`，

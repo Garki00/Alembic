@@ -51,13 +51,10 @@ def cli_tool_context(
     asker=None,
     todo_store=None,
     process_manager=None,
+    sandbox=None,
+    sandbox_policy=None,
 ) -> ToolContext:
-    """命令行模式的工具上下文：工作区默认是当前目录。
-
-    ``session_ref`` / ``asker`` / ``todo_store`` / ``process_manager`` 由
-    main.py 注入；命令行切换会话时只改 ``session_ref.session_id``，
-    已装配的工具无需重建。
-    """
+    """命令行模式的工具上下文：工作区默认是当前目录。"""
     workspace = Path(settings.workspace_dir or Path.cwd()).expanduser().resolve()
     return ToolContext(
         workspace=workspace,
@@ -68,6 +65,8 @@ def cli_tool_context(
         asker=asker,
         todo_store=todo_store,
         process_manager=process_manager,
+        sandbox=sandbox,
+        sandbox_policy=sandbox_policy,
     )
 
 

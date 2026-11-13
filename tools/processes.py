@@ -34,8 +34,8 @@ from tools.context import ToolContext
 from tools.env import build_child_env
 from tools.errors import tool_error, truncate
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
+from tools.sandbox.base import SandboxError, SandboxPolicy, SandboxProcess
 from tools.terminals import TERMINAL_CHOICES, build_invocation, terminal_label
-from tools.winjob import WindowsJob
 
 _IS_WINDOWS = os.name == "nt"
 _MAX_LOG_BYTES = 1_000_000
@@ -61,7 +61,7 @@ class ProcessRecord:
     id: str
     command: str
     cwd: Path
-    popen: subprocess.Popen
+    process: SandboxProcess
     log_path: Path
     terminal: str = "powershell"
     started_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
@@ -74,19 +74,22 @@ class ProcessRecord:
     stop_requested: bool = False
     started_monotonic: float = field(default_factory=time.monotonic)
     ended_monotonic: float | None = None
-    job: WindowsJob | None = field(default=None, repr=False)
+    sandboxed: bool = True
+    sandbox_backend: str = "windows-local-user"
+    network: str = "offline"
+    log_threads: list[threading.Thread] = field(default_factory=list, repr=False)
 
     @property
     def pid(self) -> int:
-        return int(self.popen.pid or 0)
+        return int(self.process.pid or 0)
 
     @property
     def running(self) -> bool:
-        return self.popen.poll() is None
+        return self.process.poll() is None
 
     @property
     def exit_code(self) -> int | None:
-        return self.popen.poll()
+        return self.process.poll()
 
     @property
     def duration_seconds(self) -> float:
@@ -121,7 +124,41 @@ class ProcessRecord:
             "notify": self.notify_on_exit,
             "log_path": str(self.log_path),
             "pid": self.pid,
+            "sandboxed": self.sandboxed,
+            "sandbox_backend": self.sandbox_backend,
+            "network": self.network,
         }
+
+
+class _LogPump(threading.Thread):
+    """Copy one process stream into the task log file."""
+
+    def __init__(self, stream, path: Path) -> None:
+        super().__init__(daemon=True, name=f"alembic-log-{path.stem}")
+        self.stream = stream
+        self.path = path
+
+    def run(self) -> None:
+        try:
+            handle = self.path.open("ab", buffering=0)
+        except OSError:
+            return
+        try:
+            while True:
+                chunk = self.stream.read(8192)
+                if not chunk:
+                    break
+                try:
+                    handle.write(chunk)
+                except OSError:
+                    break
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                handle.close()
+            except OSError:
+                pass
 
 
 class ProcessManager:
@@ -154,16 +191,16 @@ class ProcessManager:
     def _watch(self, record: ProcessRecord) -> None:
         """等待进程结束并发出完成事件，供网页端和模型继续处理。"""
         try:
-            record.popen.wait()
+            record.process.wait()
         except Exception:
             pass
+        for thread in record.log_threads:
+            thread.join(timeout=2)
         with self._lock:
             if not record.ended_at:
                 record.ended_at = datetime.now().isoformat(timespec="seconds")
                 record.ended_monotonic = time.monotonic()
-        if record.job is not None:
-            record.job.close()
-            record.job = None
+        record.process.close()
         payload = record.public()
         payload["log_tail"] = self._tail(record, 80)
         self._emit("process_completed", payload)
@@ -183,6 +220,8 @@ class ProcessManager:
         session_id: str = "",
         description: str = "",
         notify: bool = True,
+        sandbox=None,
+        policy: SandboxPolicy | None = None,
     ) -> ProcessRecord:
         text = (command or "").strip()
         if not text:
@@ -190,63 +229,67 @@ class ProcessManager:
         chosen = (terminal or "powershell").strip().lower()
         if chosen not in TERMINAL_CHOICES:
             raise ValueError(f"不支持的终端：{terminal}")
+        if sandbox is None or policy is None:
+            raise SandboxError(
+                "sandbox_unavailable",
+                "当前没有可用的命令沙盒，后台任务未启动。",
+                hint="以管理员身份运行 scripts/setup-sandbox.ps1，然后重试。",
+            )
         with self._lock:
             running = sum(1 for record in self._records.values() if record.running)
         if running >= 10:
             raise ValueError("同时运行的后台进程过多（上限 10），请先停止不用的进程")
         process_id = f"proc-{uuid4().hex[:8]}"
         log_path = self.log_dir / f"{process_id}.log"
+        try:
+            log_path.write_bytes(b"")
+        except OSError as exc:
+            raise OSError(f"无法创建日志文件 {log_path}：{exc}") from exc
 
         invocation = build_invocation(chosen, text, cwd)
         env = build_child_env({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
-        kwargs: dict = {
-            "cwd": invocation.cwd,
-            "shell": invocation.shell,
-            "stdin": subprocess.DEVNULL,
-            "stdout": None,
-            "stderr": subprocess.STDOUT,
-            "env": env,
-        }
-        if _IS_WINDOWS:
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        if invocation.shell:
+            command_line = str(invocation.argv)
+        elif _IS_WINDOWS:
+            command_line = subprocess.list2cmdline([str(item) for item in invocation.argv])
         else:
-            kwargs["start_new_session"] = True
+            import shlex
 
+            command_line = shlex.join([str(item) for item in invocation.argv])
         try:
-            handle = log_path.open("wb")
-        except OSError as exc:
-            raise OSError(f"无法创建日志文件 {log_path}：{exc}") from exc
-        job = WindowsJob.create()
-        try:
-            kwargs["stdout"] = handle
-            popen = subprocess.Popen(invocation.argv, **kwargs)
-        except OSError:
-            handle.close()
-            if job is not None:
-                job.close()
+            process = sandbox.spawn(
+                command=command_line,
+                cwd=Path(invocation.cwd or cwd),
+                env=env,
+                policy=policy,
+                tty=False,
+                shell=bool(invocation.shell),
+            )
+        except SandboxError:
             raise
-        finally:
-            try:
-                handle.close()
-            except OSError:
-                pass
-        if job is not None:
-            if not job.assign(popen):
-                job.close()
-                job = None
+        except Exception as exc:
+            raise SandboxError("sandbox_spawn_failed", f"沙盒启动失败：{exc}") from exc
 
+        log_threads = [
+            _LogPump(stream, log_path)
+            for stream in (process.stdout, process.stderr)
+            if stream is not None
+        ]
+        for thread in log_threads:
+            thread.start()
         record = ProcessRecord(
             id=process_id,
             command=text,
             cwd=cwd,
-            popen=popen,
+            process=process,
             log_path=log_path,
             terminal=chosen,
             session_id=session_id,
             workspace=str(workspace or cwd),
             description=description,
             notify_on_exit=bool(notify),
-            job=job,
+            network=policy.normalized_network(),
+            log_threads=log_threads,
         )
         with self._lock:
             self._records[process_id] = record
@@ -299,40 +342,10 @@ class ProcessManager:
         # 用户主动停止不再触发“后台任务完成，继续处理”，但仍会推送状态更新。
         record.notify_on_exit = False
         record.stop_requested = True
-        pid = record.pid
-        job = record.job
         try:
-            if job is not None:
-                job.terminate()
-            elif _IS_WINDOWS:
-                # /T 连子进程一起结束；/F 避免 GUI/控制台进程忽略 terminate
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"],
-                    capture_output=True,
-                    timeout=2,
-                    env=build_child_env(),
-                )
-            else:
-                import signal
-
-                try:
-                    os.killpg(os.getpgid(pid), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    pass
-        except (OSError, subprocess.SubprocessError):
+            record.process.terminate(timeout=timeout)
+        except Exception:
             pass
-
-        try:
-            record.popen.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            try:
-                record.popen.kill()
-                record.popen.wait(timeout=3)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-        if job is not None:
-            job.close()
-            record.job = None
         record.stopped_at = datetime.now().isoformat(timespec="seconds")
         with self._lock:
             if not record.ended_at:
@@ -442,6 +455,12 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
                 f"不支持的终端：{terminal}。",
                 hint="可选 powershell / cmd / gitbash / wsl。",
             )
+        if chosen == "wsl":
+            return tool_error(
+                "sandbox_unsupported",
+                "Windows 沙盒下不能使用 WSL 终端：WSL 进程不继承沙盒令牌。",
+                hint="改用 powershell / cmd / gitbash；需要 WSL 时使用独立的 Linux 沙盒后端。",
+            )
         try:
             record = manager.start(
                 text,
@@ -451,7 +470,11 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
                 session_id=ctx.session_id,
                 description=description,
                 notify=notify,
+                sandbox=ctx.sandbox,
+                policy=ctx.sandbox_policy,
             )
+        except SandboxError as exc:
+            return tool_error(exc.code, exc.message, hint=exc.hint)
         except (OSError, ValueError) as exc:
             return tool_error("spawn_failed", f"无法启动进程：{exc}。")
 

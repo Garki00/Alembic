@@ -16,8 +16,11 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from agents.context import SessionMeta
 from tools.processes import ProcessManager
+from tools.sandbox.base import SandboxPolicy
 from web.process_events import ProcessEventHub
 from web.server import create_app
+
+from tests.sandbox_fake import FakeSandbox
 
 
 def make_tempdir(prefix: str = "proc_") -> Path:
@@ -49,6 +52,8 @@ class ProcessManagerEventTest(unittest.TestCase):
             self.tmp / "logs",
             on_event=self._on_event,
         )
+        self.sandbox = FakeSandbox()
+        self.policy = SandboxPolicy(workspace=self.tmp)
         self.addCleanup(self.manager.cleanup)
 
     def _on_event(self, kind, payload):
@@ -65,6 +70,8 @@ class ProcessManagerEventTest(unittest.TestCase):
             session_id="session-1",
             description="test",
             notify=True,
+            sandbox=self.sandbox,
+            policy=self.policy,
         )
         self.assertTrue(self.ready.wait(8), self.events)
         completed = [item for kind, item in self.events if kind == "process_completed"][0]
@@ -79,7 +86,10 @@ class ProcessManagerEventTest(unittest.TestCase):
 
     def test_user_stop_disables_auto_continue(self):
         command = f'"{sys.executable}" -c "import time; time.sleep(10)"'
-        record = self.manager.start(command, self.tmp, self.tmp, session_id="session-2")
+        record = self.manager.start(
+            command, self.tmp, self.tmp, session_id="session-2",
+            sandbox=self.sandbox, policy=self.policy,
+        )
         time.sleep(0.5)
         stopped = self.manager.stop(record.id)
         self.assertIsNotNone(stopped)
@@ -117,6 +127,8 @@ class ProcessViewApiTest(unittest.TestCase):
         self.workspace.mkdir()
         info = self.app.state.workspaces.add(str(self.workspace), "ws")
         self.workspace_id = info.id
+        self.sandbox = FakeSandbox()
+        self.policy = SandboxPolicy(workspace=self.workspace)
 
     def test_process_list_detail_and_stop(self):
         record = self.app.state.processes.start(
@@ -124,6 +136,8 @@ class ProcessViewApiTest(unittest.TestCase):
             self.workspace,
             self.workspace,
             session_id="s1",
+            sandbox=self.sandbox,
+            policy=self.policy,
         )
         listing = self.client.get("/api/processes").json()
         self.assertEqual(listing["running"], 1)
@@ -140,17 +154,19 @@ class ProcessViewApiTest(unittest.TestCase):
         self.app.state.cancels["s1"] = event
         command = f'"{sys.executable}" -c "import time; time.sleep(10)"'
         mine = self.app.state.processes.start(
-            command, self.workspace, self.workspace, session_id="s1"
+            command, self.workspace, self.workspace, session_id="s1",
+            sandbox=self.sandbox, policy=self.policy,
         )
         other = self.app.state.processes.start(
-            command, self.workspace, self.workspace, session_id="s2"
+            command, self.workspace, self.workspace, session_id="s2",
+            sandbox=self.sandbox, policy=self.policy,
         )
         self.addCleanup(self.app.state.processes.stop, other.id)
         response = self.client.post("/api/sessions/s1/cancel")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(event.is_set())
         self.assertEqual(response.json()["stopped_processes"], 1)
-        self.assertIsNotNone(mine.popen.poll())
+        self.assertIsNotNone(mine.process.poll())
         self.assertTrue(other.running)
         self.client.post("/api/sessions/s2/cancel?background=0")
         self.assertTrue(other.running)

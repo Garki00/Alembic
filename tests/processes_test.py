@@ -10,6 +10,9 @@ from uuid import uuid4
 
 from tools.context import ToolContext
 from tools.processes import ProcessManager, build_process_tools
+from tools.sandbox.base import SandboxPolicy
+
+from tests.sandbox_fake import FakeSandbox
 
 
 def make_root() -> Path:
@@ -25,7 +28,13 @@ class ProcessToolsTest(unittest.TestCase):
         self.root = make_root()
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.manager = ProcessManager(self.root / "logs")
-        ctx = ToolContext(workspace=self.root, max_output_chars=5000, process_manager=self.manager)
+        ctx = ToolContext(
+            workspace=self.root,
+            max_output_chars=5000,
+            process_manager=self.manager,
+            sandbox=FakeSandbox(),
+            sandbox_policy=SandboxPolicy(workspace=self.root),
+        )
         self.tools = {tool.name: tool for tool in build_process_tools(ctx)}
         self.addCleanup(self.manager.cleanup)
 
@@ -100,6 +109,14 @@ class ProcessToolsTest(unittest.TestCase):
     def test_empty_command(self):
         text = self.tools["start_process"].invoke({"command": "  "})
         self.assertTrue(text.startswith("Error: [empty_command]"), text)
+
+    def test_background_command_without_sandbox_fails_closed(self):
+        manager = ProcessManager(self.root / "logs-nosandbox")
+        ctx = ToolContext(workspace=self.root, process_manager=manager)
+        tools = {tool.name: tool for tool in build_process_tools(ctx)}
+        text = tools["start_process"].invoke({"command": "echo hello"})
+        self.assertTrue(text.startswith("Error: [sandbox_unavailable]"), text)
+        manager.cleanup()
 
 
 if __name__ == "__main__":

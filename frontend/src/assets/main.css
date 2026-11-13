@@ -380,6 +380,7 @@ html.resizing .inspector-resizer::after {
     color: var(--emerald);
     font: 10px var(--mono);
 }
+.process-terminal small { color: var(--soft); font-size: 9px; }
 .process-command {
     flex: 1;
     min-width: 0;

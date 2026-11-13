@@ -42,6 +42,8 @@ from config.store import (
 )
 from tools.catalog import ToolActivation
 from tools.processes import ProcessManager
+from tools.sandbox import create_sandbox
+from tools.sandbox.config import SandboxConfigStore
 from tools.terminals import available_terminals
 from tools.todo import TodoStore
 from web.approvals import ApprovalBroker, ApprovalRegistry
@@ -134,6 +136,12 @@ class PreferencesPayload(BaseModel):
     terminal: str | None = None
     link_target: str | None = None
     developer_tools: bool | None = None
+
+
+class SandboxConfigPayload(BaseModel):
+    network: str | None = None
+    allowed_domains: list[str] | None = None
+    allowed_ports: list[int] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +244,8 @@ def create_app(
     workspaces = WorkspaceStore(paths.workspace_file, default=settings.default_workspace)
     preferences = PreferencesStore(paths.preferences_file)
     sessions = SessionStore(memory_dir or settings.memory_dir)
+    sandbox_config = SandboxConfigStore(Path(paths.data_dir) / "sandbox.json")
+    sandbox = create_sandbox(config=sandbox_config)
 
     app = FastAPI(title="ALEMBIC Workspace", version="0.1.0")
     # 桌面外壳会注入随机 token；不设则保持「本机直接打开就能用」的旧行为。
@@ -264,6 +274,8 @@ def create_app(
     app.state.workspaces = workspaces
     app.state.preferences = preferences
     app.state.sessions = sessions
+    app.state.sandbox = sandbox
+    app.state.sandbox_config = sandbox_config
     app.state.runtime_factory = runtime_factory
     app.state.locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
     # 每个会话当前一轮的取消信号；停止生成时同时中断前台命令。
@@ -316,6 +328,36 @@ def create_app(
     @app.get("/api/health")
     def health():
         return {"ok": True, "model": models.active_model_id, "time": datetime.now().isoformat(timespec="seconds")}
+
+    # ---- 沙盒 ----
+    @app.get("/api/sandbox/status")
+    def sandbox_status():
+        status = app.state.sandbox.status() if app.state.sandbox is not None else None
+        if status is None:
+            return {
+                "ready": False,
+                "backend": "none",
+                "platform": "unsupported",
+                "detail": "当前平台没有原生沙盒后端。",
+                "network_modes": [],
+                "allowed_domains": [],
+                "reasons": ["unsupported_platform"],
+            }
+        return status.public()
+
+    @app.get("/api/sandbox/config")
+    def sandbox_config_get():
+        return {"config": sandbox_config.get()}
+
+    @app.put("/api/sandbox/config")
+    def sandbox_config_put(payload: SandboxConfigPayload):
+        try:
+            updated = sandbox_config.update(payload.model_dump(exclude_none=True))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if app.state.sandbox is not None:
+            app.state.sandbox.close()
+        return {"config": updated}
 
     # ---- 后台任务视图 ----
     @app.get("/api/processes/events")
@@ -389,6 +431,16 @@ def create_app(
             "active_workspace_id": workspaces.active_id,
             "sessions": [_session_summary(sessions, meta) for meta in sessions.list_sessions()],
             "preferences": preferences.get(),
+            "sandbox": app.state.sandbox.status().public() if app.state.sandbox is not None else {
+                "ready": False,
+                "backend": "none",
+                "platform": "unsupported",
+                "detail": "当前平台没有原生沙盒后端。",
+                "network_modes": [],
+                "allowed_domains": [],
+                "reasons": ["unsupported_platform"],
+            },
+            "sandbox_config": sandbox_config.get(),
             "terminals": [
                 {
                     "value": item.value,
@@ -912,6 +964,8 @@ def create_app(
                 terminal=terminal,
                 activation=activation,
                 cancel_event=cancel_event,
+                sandbox=app.state.sandbox,
+                sandbox_config=sandbox_config.get(),
             )
         except Exception as exc:
             if "cancel_event" in locals():

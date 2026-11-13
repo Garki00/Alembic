@@ -12,8 +12,11 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from tools.context import ToolContext
+from tools.sandbox.base import SandboxPolicy
 from tools.shell import build_shell_tools
 from tools.terminals import available_terminals
+
+from tests.sandbox_fake import FakeSandbox
 
 
 def make_root() -> Path:
@@ -25,14 +28,22 @@ def make_root() -> Path:
 
 
 class ShellTest(unittest.TestCase):
+    def make_context(self, **kwargs):
+        return ToolContext(
+            workspace=self.root,
+            max_output_chars=2000,
+            command_timeout=20,
+            sandbox=FakeSandbox(),
+            sandbox_policy=SandboxPolicy(workspace=self.root),
+            **kwargs,
+        )
+
     def setUp(self):
         self.root = make_root()
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.run_command = {
             tool.name: tool
-            for tool in build_shell_tools(
-                ToolContext(workspace=self.root, max_output_chars=2000, command_timeout=20)
-            )
+            for tool in build_shell_tools(self.make_context())
         }["run_command"]
         self.available = {item.value: item.available for item in available_terminals()}
 
@@ -155,12 +166,7 @@ class ShellTest(unittest.TestCase):
         tool = {
             item.name: item
             for item in build_shell_tools(
-                ToolContext(
-                    workspace=self.root,
-                    max_output_chars=2000,
-                    command_timeout=20,
-                    emit=lambda kind, data: events.append((kind, data)),
-                )
+                self.make_context(emit=lambda kind, data: events.append((kind, data)))
             )
         }["run_command"]
         text = tool.invoke({"command": self.cwd_command})
@@ -175,12 +181,7 @@ class ShellTest(unittest.TestCase):
         tool = {
             item.name: item
             for item in build_shell_tools(
-                ToolContext(
-                    workspace=self.root,
-                    max_output_chars=2000,
-                    command_timeout=20,
-                    cancel_event=cancel,
-                )
+                self.make_context(cancel_event=cancel)
             )
         }["run_command"]
         timer = threading.Timer(0.4, cancel.set)
@@ -192,6 +193,14 @@ class ShellTest(unittest.TestCase):
             timer.cancel()
         self.assertTrue(text.startswith("Error: [cancelled]"), text)
         self.assertLess(time.monotonic() - started, 8)
+
+    def test_command_without_sandbox_fails_closed(self):
+        tool = {
+            item.name: item
+            for item in build_shell_tools(ToolContext(workspace=self.root))
+        }["run_command"]
+        text = tool.invoke({"command": "echo hello"})
+        self.assertTrue(text.startswith("Error: [sandbox_unavailable]"), text)
 
 
 if __name__ == "__main__":

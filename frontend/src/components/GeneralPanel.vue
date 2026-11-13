@@ -23,6 +23,8 @@ const store = useWorkspaceStore()
 const ui = useUiStore()
 
 const preferences = computed(() => store.preferences)
+const sandbox = computed(() => store.sandbox)
+const sandboxConfig = computed(() => store.sandboxConfig)
 
 const MODES = TRANSCRIPT_MODES
 const TIMINGS = COLLAPSE_TIMINGS
@@ -102,6 +104,18 @@ async function setTerminal(event: Event): Promise<void> {
   }
 }
 
+async function setSandboxNetwork(event: Event): Promise<void> {
+  const element = event.target as HTMLSelectElement
+  try {
+    await store.saveSandboxConfig({ network: element.value })
+    await store.refreshSandbox()
+    ui.showToast('沙盒网络策略已更新')
+  } catch (error) {
+    ui.showToast(errorMessage(error), true)
+    element.value = store.sandboxConfig?.network || 'offline'
+  }
+}
+
 async function setLinkTarget(event: Event): Promise<void> {
   const element = event.target as HTMLSelectElement
   const value = element.value as LinkTarget
@@ -164,6 +178,44 @@ async function setDeveloperTools(event: Event): Promise<void> {
               </option>
             </select>
             <div class="general-hint">{{ currentTerminalHint }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-title">命令沙盒</div>
+      <div class="general-list">
+        <div class="general-row">
+          <div class="general-text">
+            <div class="general-title">运行状态</div>
+            <div class="general-desc">
+              {{ sandbox?.detail || '沙盒状态未知' }}。不可用时命令工具会失败关闭，不会在宿主机直接执行。
+            </div>
+          </div>
+          <div class="general-control">
+            <span class="general-hint">{{ sandbox?.ready ? '已就绪' : '不可用' }}</span>
+            <div v-if="sandbox?.reasons?.length" class="general-hint">
+              {{ sandbox.reasons.join('、') }}
+            </div>
+          </div>
+        </div>
+
+        <div class="general-row">
+          <div class="general-text">
+            <div class="general-title">网络策略</div>
+            <div class="general-desc">
+              offline 完全断网；allowlist 只允许经本机代理访问列出的域名。
+            </div>
+          </div>
+          <div class="general-control">
+            <select class="general-select" :value="sandboxConfig?.network || 'offline'" @change="setSandboxNetwork">
+              <option value="offline">离线</option>
+              <option value="allowlist">允许列表</option>
+            </select>
+            <div class="general-hint">
+              {{ sandboxConfig?.allowed_domains?.length || 0 }} 个允许域名
+            </div>
           </div>
         </div>
       </div>

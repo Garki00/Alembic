@@ -147,6 +147,26 @@ export interface BootstrapData {
   sessions: SessionSummary[]
   preferences: Preferences
   terminals: TerminalInfo[]
+  sandbox?: SandboxStatus
+  sandbox_config?: SandboxConfig
+}
+
+export interface SandboxStatus {
+  ready: boolean
+  backend: string
+  platform: string
+  detail: string
+  network_modes: string[]
+  allowed_domains: string[]
+  reasons: string[]
+}
+
+export interface SandboxConfig {
+  version: number
+  network: 'offline' | 'allowlist' | string
+  allowed_domains: string[]
+  allowed_ports: number[]
+  proxy_port: number
 }
 
 export type TranscriptViewMode = 'compact' | 'standard' | 'detailed' | 'verbose'
@@ -209,6 +229,9 @@ export interface ProcessInfo {
   notify: boolean
   log_path: string
   pid: number
+  sandboxed?: boolean
+  sandbox_backend?: string
+  network?: string
   /** 仅 process_completed 事件携带，用于内部续跑提示。 */
   log_tail?: string
 }
