@@ -58,11 +58,18 @@ function findOpenToolEvent(
   return undefined
 }
 
+function thoughtKey(text: string): string {
+  // Providers sometimes normalize spaces/newlines between the streamed
+  // reasoning chunks and the final message. Compare without whitespace.
+  return text.replace(/\s+/g, '')
+}
+
 function addThought(assistant: AssistantTurn, text: string): void {
   const clean = text.trim()
   if (!clean) return
+  const key = thoughtKey(clean)
   const duplicate = assistant.workEvents.some(
-    (event) => event.kind === 'thought' && event.text.trim() === clean,
+    (event) => event.kind === 'thought' && thoughtKey(event.text) === key,
   )
   if (duplicate) return
   assistant.workEvents.push({ kind: 'thought', id: newId('thought'), text: clean })
@@ -425,8 +432,9 @@ export const useChatStore = defineStore('chat', {
                   // 完整 thought 事件可能晚于流式增量到达；同文只保留一条。
                   const clean = text.trim()
                   if (!clean) break
+                  const key = thoughtKey(clean)
                   const duplicate = assistant.workEvents.some(
-                    (event) => event.kind === 'thought' && event.text.trim() === clean,
+                    (event) => event.kind === 'thought' && thoughtKey(event.text) === key,
                   )
                   if (!duplicate) {
                     assistant.workEvents.push({ kind: 'thought', id, text: clean })

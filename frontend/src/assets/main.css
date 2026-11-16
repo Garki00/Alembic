@@ -6,7 +6,7 @@
     --ink: #4c5549;
     --muted: #65735f;
     --soft: #8b9787;
-    --mint: #dcefe3;
+    --mint: #d2ddd6;
     --mint-deep: #c9e4d4;
     --emerald: #397157;
     --emerald-deep: #2f5f4a;
@@ -35,7 +35,11 @@ h1, h2, h3, p { margin-top: 0; }
 a { color: var(--emerald); }
 button { font: inherit; color: inherit; cursor: pointer; }
 [hidden] { display: none !important; }
-::selection { background: var(--mint); color: #263e30; }
+/* ::selection { background: var(--mint); color: #263e30; } */
+::selection {
+  background: #a8cbb7;
+  color: #1f3a2c;
+}
 :focus-visible { outline: 2px solid var(--emerald); outline-offset: 2px; border-radius: 3px; }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -1866,7 +1870,7 @@ html.resizing .inspector-resizer::after {
 .provider-model-labels,
 .provider-model-row {
     display: grid;
-    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.1fr) 126px 74px 52px;
+    grid-template-columns: 30px minmax(0, 1.5fr) minmax(0, 1.1fr) 52px;
     gap: 8px;
     align-items: center;
 }
@@ -1928,6 +1932,56 @@ html.resizing .inspector-resizer::after {
 @media (max-width: 760px) {
     .provider-model-labels { display: none; }
     .provider-model-row { grid-template-columns: 1fr; }
+}
+
+.model-advanced-toggle {
+    width: 26px;
+    height: 28px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--card);
+    color: var(--soft);
+    cursor: pointer;
+    line-height: 1;
+}
+.model-advanced-toggle:hover { color: var(--ink); border-color: #9cc6ab; }
+.model-advanced-panel {
+    grid-column: 1 / -1;
+    padding: 10px 12px 12px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: rgba(246, 250, 247, 0.6);
+}
+.model-advanced-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 14px;
+    align-items: end;
+}
+.model-check {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--ink);
+}
+.model-check input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    margin: 0;
+    accent-color: var(--emerald);
+}
+.model-advanced-field {
+    display: grid;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--soft);
+}
+.model-advanced-field input { width: 100%; }
+.model-thinking { align-self: end; }
+@media (max-width: 760px) {
+    .model-advanced-grid { grid-template-columns: 1fr; }
 }
 
 /* ---------- 推理等级 ---------- */

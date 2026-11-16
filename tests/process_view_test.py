@@ -223,7 +223,7 @@ class ProcessViewApiTest(unittest.TestCase):
         user = [item for item in history["messages"] if item["role"] == "user"][0]
         self.assertTrue(user.get("internal"))
 
-    def test_compact_endpoint_rewrites_history(self):
+    def test_compact_endpoint_keeps_visible_history(self):
         self.client.post("/api/providers", json={
             "provider": "openai",
             "name": "test",
@@ -248,6 +248,11 @@ class ProcessViewApiTest(unittest.TestCase):
         self.assertTrue(body["compacted"])
         self.assertLess(body["messages"], len(messages))
         self.assertGreater(body["max_tokens"], 0)
+
+        history = self.client.get("/api/sessions/s3/messages").json()
+        self.assertEqual(len(history["messages"]), len(messages))
+        self.assertIn("question 0", history["messages"][0]["content"])
+        self.assertFalse(any("[Conversation summary]" in item["content"] for item in history["messages"]))
 
 
 if __name__ == "__main__":

@@ -65,8 +65,10 @@ def create_chat_model(model_cfg: ModelConfig):
         "temperature": model_cfg.temperature,
         "base_url": base_url,
     }
+    if model_cfg.max_output_tokens:
+        kwargs["max_tokens"] = int(model_cfg.max_output_tokens)
     thinking = (model_cfg.thinking or "none").strip().lower()
-    if thinking in {"low", "high", "max"}:
+    if model_cfg.supports_reasoning and thinking in {"low", "high", "max"}:
         # 供应商若不支持该参数会自行忽略或报错；none 表示不显式指定。
         kwargs["reasoning_effort"] = thinking
 
@@ -171,7 +173,7 @@ def build_runtime(
         todo_store=todo_store,
         process_manager=process_manager,
         emit=emit,
-        vision=vision_from_model(model),
+        vision=vision_from_model(model) if model_cfg.supports_images else None,
         terminal=terminal,
         activation=active,
         enabled_names=enabled_names,

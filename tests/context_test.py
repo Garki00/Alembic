@@ -23,6 +23,7 @@ from agents.context import (
     compact_messages,
     context_tokens,
     estimate_tokens,
+    message_text,
     reasoning_text,
     session_slug,
 )
@@ -443,6 +444,21 @@ class ChatSessionTest(unittest.TestCase):
             self.assertEqual(session.stats()["compactions"], 1)
             # 压缩后的历史以摘要开头，且仍保留最近的消息
             self.assertTrue(session.messages[0].content.startswith(SUMMARY_PREFIX))
+            # 用户可见原文不受压缩影响
+            visible = "\n".join(message_text(item) for item in session.display_messages)
+            self.assertIn("问题 1", visible)
+            self.assertFalse(session.display_messages[0].content.startswith(SUMMARY_PREFIX))
+            reloaded = ChatSession(
+                StubAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                summarizer=summarizer,
+                hydrate=True,
+            )
+            reloaded_visible = "\n".join(
+                message_text(item) for item in reloaded.display_messages
+            )
+            self.assertIn("问题 1", reloaded_visible)
 
     def test_manual_compact(self):
         with workspace_tempdir() as tmp:
@@ -624,7 +640,7 @@ class StepThoughtTest(unittest.TestCase):
                 ai1 = AIMessage(
                     content="",
                     tool_calls=[{"name": "read_file", "args": {"path": "a"}, "id": "call-1"}],
-                    additional_kwargs={"reasoning_content": f"  {first}\n"},
+                    additional_kwargs={"reasoning_content": f"  {first.replace(' ', '  ')}\n"},
                 )
                 yield ("values", {"messages": [*history, ai1]})
                 tool = ToolMessage(content="内容", tool_call_id="call-1", name="read_file")

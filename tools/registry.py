@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Mapping, Sequence
 
 from tools.context import ToolContext
+from tools.atomic_edit import build_atomic_edit_tools
 from tools.catalog import build_tools_search
 from tools.documents import build_document_tools
 from tools.download import build_download_tools
@@ -192,6 +193,10 @@ def _build_patch(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
     return build_patch_tools(ctx)
 
 
+def _build_atomic_edit(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
+    return build_atomic_edit_tools(ctx)
+
+
 def _build_todo(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
     return build_todo_tools(ctx)
 
@@ -307,6 +312,14 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         risk=RISK_WRITE,
         tool_names=("apply_patch",),
         builder=_build_patch,
+    ),
+    "batch_edit": ToolSpec(
+        name="batch_edit",
+        label="原子批量编辑",
+        description="一次提交多处精确替换；全部成功才落盘，失败不改任何文件。",
+        risk=RISK_WRITE,
+        tool_names=("batch_edit",),
+        builder=_build_atomic_edit,
     ),
     "fetch_url": ToolSpec(
         name="fetch_url",

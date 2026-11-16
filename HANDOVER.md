@@ -3,7 +3,7 @@
 > 给接手的智能体 / 开发者：先读这一份，再动代码。
 > 最后更新：2026-11-13，新增 Windows 原生命令沙盒（专用本地用户 + ACL + Job Object +
 > 按用户防火墙 + 域名代理）、命令失败关闭、沙盒状态 API 与设置面板；同步更新后台任务、
-> 前后台取消、实时输出、附件、压缩和上下文圆环；454 个后端测试全绿（1 个跳过）。
+> 前后台取消、实时输出、附件、压缩和上下文圆环；467 个后端测试全绿（1 个跳过）。
 
 ## 1. 这是什么
 
@@ -14,7 +14,9 @@
   `AGENT_ENGINE=react` 可切到 `agents/react.py` 的文本 ReAct 循环（已硬化）。
   模型供应商支持深度求索 / OpenAI / Claude / 千问 / 硅基流动 / 自定义，统一走
   OpenAI 兼容接口（Claude 走 Anthropic 兼容端点）；一个供应商下可挂多个模型，
-  每个模型有独立的可选推理等级集合（none/low/high/max）、当前等级与温度；
+  每个模型有独立的可选推理等级集合（none/low/high/max）、当前等级、温度、
+  是否支持扩展思考/图片输入、上下文长度与最大输出 tokens；默认上限由
+  `default_model_limits()` 按模型家族给出；
 - 命令执行实时推送 stdout/stderr；停止生成会通过 `cancel_event` 结束前台命令，
   并停止当前会话仍在运行的后台任务；Windows 用 Job Object 按进程树停止，
   其他平台没有原生沙盒后端时命令 fail closed；
@@ -63,7 +65,7 @@ cd frontend; npm run dev                             # http://127.0.0.1:5173
 验证：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 454 个测试
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py"   # 467 个测试
 cd frontend
 npm run build                                        # vue-tsc + vite build
 ```
@@ -113,6 +115,7 @@ tools/
   search.py              web_search（Bing / DuckDuckGo / Tavily / Brave / Serper / SearXNG）
   download.py            download_file（流式下载、SSRF、大小上限、.part 保护）
   patch.py               apply_patch（标准 unified diff，多文件 / 多 hunk）
+  atomic_edit.py         batch_edit（多处精确替换，校验后原子提交/回滚）
   git.py                 git_status / git_diff / git_commit（参数列表调用，不走 shell）
   todo.py                todo_write + TodoStore（会话级任务清单）
   questions.py           ask_user_question / Question / 终端提问通道
@@ -288,8 +291,10 @@ App.vue onMounted
 ```
 
 - 数据单位是**供应商**：`providers[].models[]`，每个模型有 `thinking_levels`
-  （可多选）与当前 `thinking`（none/low/high/max），以及 temperature；
-  `active_provider_id` + `active_model_id` 指向当前模型。
+  （可多选）与当前 `thinking`（none/low/high/max）、temperature、supports_reasoning、
+  supports_images、context_length、max_output_tokens；`active_provider_id` +
+  `active_model_id` 指向当前模型。默认值由 `default_model_limits()` 按模型家族给出，
+  用户可在供应商编辑的每行左侧箭头里覆盖。
 - 新安装**不自动创建工作区**：`WorkspaceStore._seed()` 返回空列表；前端
   `App.initialize()` 在没有工作区时直接显示 `WelcomePanel` 的「选择工作区」按钮，
   并隐藏输入框。添加工作区后才出现 composer。
@@ -483,7 +488,7 @@ run_command / start_process
 - Electron 适配、安装包、代码签名、应用图标；
 - 生产部署的静态资源服务（Nginx / Caddy / 一个独立静态服务器）；
 - Windows 原生 ConPTY（当前 Windows 沙盒用管道）、审批卡片 diff 视图、
-  多文件补丁事务回滚；
+  `apply_patch` 的跨文件事务回滚（`batch_edit` 已具备）；
 - 文本 ReAct 是单步串行（每轮一个工具），提示词每步重发历史；默认的
   `tool_calling` 可并行返回多个工具调用，延迟更低；
 - 文档图片 OCR / 视觉模型、@文件引用与粘贴截图；
@@ -541,16 +546,30 @@ run_command / start_process
     停止；`run_command` 改为流式输出，停止生成会结束前台进程树并停止当前会话后台
     任务；新增 `/api/processes` 与 `/api/processes/events`；`start_process(notify=True)`
     完成时通过 SSE 触发内部续跑。输入区新增附件导入、手动压缩与上下文占用圆环；
-    `tests/process_view_test.py` 覆盖进程事件、取消、附件与压缩；测试 454。**
+    `tests/process_view_test.py` 覆盖进程事件、取消、附件与压缩；测试 467。**
 21. **Windows 原生命令沙盒：`tools/sandbox/` 统一 `SandboxRunner` 接口，未初始化时
     fail closed；`scripts/setup-sandbox.ps1` 创建离线/允许列表两个标准用户和按用户
     防火墙；`WindowsSandbox` 用专用用户 + ACL + Job Object 启动，`allowlist` 走本机
     CONNECT 代理；新增 `/api/sandbox/status`、`/api/sandbox/config` 和设置面板状态。
-    `tools/shell.py` / `tools/processes.py` 已删除宿主机直接执行路径；测试 454。**
+    `tools/shell.py` / `tools/processes.py` 已删除宿主机直接执行路径；测试 467。**
+22. **思考去重：供应商流式 reasoning 与最终 AIMessage 的空格/换行常不一致，旧逻辑用
+    `strip()` / `endswith()` 直接比较，导致同一条思考出现两次。现在后端 `context.py`
+    与前端 `chat.ts` 都用“去掉所有空白”的指纹比较；`tests/context_test.py` 增加了
+    空格差异回归用例。测试 467。**
+23. **原子批量编辑：新增 `batch_edit`（`tools/atomic_edit.py`）。一次提交多文件/多处
+    精确替换；先在内存中全部校验，任一失败不落盘；提交阶段失败会回滚已写文件。
+    注册表、`BASIC_TOOLS`、审批摘要和审批卡展开项已同步。**
+24. **压缩后的可见原文 + 模型高级设置：`SessionStore` 同时保存模型上下文 `messages`
+    和用户可见原文 `display_messages`，历史接口读后者；摘要提示词改为英文，用户仍看到
+    完整问答。每个模型新增 supports_reasoning / supports_images / context_length /
+    max_output_tokens，供应商编辑行左侧箭头展开这些字段与温度、推理等级；上下文阈值
+    和 `max_tokens` 按模型生效。`/api/providers/fetch` 会解析 OpenRouter 风格的
+    context_length / max_completion_tokens / input_modalities / supported_parameters，
+    没有元数据时回退 `default_model_limits()`。测试 467。**
 
 ## 10. 给接手者的建议顺序
 
-1. 跑一遍后端测试，确认 454 全绿；再 `cd frontend && npm run build`；
+1. 跑一遍后端测试，确认 467 全绿；再 `cd frontend && npm run build`；
 2. 读 `web/runtime.py`（默认 `create_agent`）、`agents/react.py`（可选文本 ReAct）、
    `tools/registry.py`、`web/server.py`、`agents/context.py`，够理解后端 85%；
 3. 读 `frontend/src/stores/chat.ts`、`frontend/src/api/chat.ts`、`frontend/src/App.vue`，

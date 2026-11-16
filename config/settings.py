@@ -1,7 +1,5 @@
 # config/settings.py
 """运行时配置：全部来自环境变量（可通过项目根目录的 .env 注入）。
-
-优化版本 - 参考 Claude Code 设计理念，支持复杂任务的处理能力
 """
 
 import os

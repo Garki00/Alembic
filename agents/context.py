@@ -52,7 +52,7 @@ SUMMARY_PREFIX = "[Conversation summary]"
 _SUMMARY_PROMPT = """Summarize this conversation for continuation.
 Keep only: user goals, confirmed facts and decisions, changed files, verification
 results, and unresolved next steps. Omit greetings, repetition, raw tool output,
-and secrets. Use the conversation language. Output bullets only.
+and secrets. Output bullets only.
 
 Conversation:
 {messages}
@@ -82,6 +82,11 @@ def message_text(message: Any) -> str:
                     parts.append(text)
         return "".join(parts)
     return str(content or "")
+
+
+def thought_key(text: str) -> str:
+    """用于去重的思考指纹：忽略空格、换行等供应商侧格式差异。"""
+    return re.sub(r"\s+", "", text or "")
 
 
 def reasoning_text(message: Any) -> str:
@@ -288,17 +293,45 @@ class SessionStore:
             logger.warning("读取会话 %s 失败，按新会话处理：%s", session_id, exc)
             return [], SessionMeta(session_id=session_id)
 
-    def save(self, session_id: str, messages: Sequence[BaseMessage], meta: SessionMeta) -> bool:
+    def load_display(self, session_id: str) -> list[BaseMessage]:
+        """用户可见的完整原文；旧会话没有该字段时退回模型消息。"""
+        path = self.path(session_id)
+        if not path.exists():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("读取会话原文 %s 失败：%s", session_id, exc)
+            return []
+        raw = payload.get("display_messages")
+        if not isinstance(raw, list):
+            raw = payload.get("messages", [])
+        try:
+            return messages_from_dict(raw)
+        except (TypeError, ValueError) as exc:
+            logger.warning("解析会话原文 %s 失败：%s", session_id, exc)
+            return []
+
+    def save(
+        self,
+        session_id: str,
+        messages: Sequence[BaseMessage],
+        meta: SessionMeta,
+        display_messages: Sequence[BaseMessage] | None = None,
+    ) -> bool:
+        visible = list(display_messages if display_messages is not None else messages)
         payload = {
             "session_id": meta.session_id,
             "created_at": meta.created_at,
             "updated_at": meta.updated_at,
             "turns": meta.turns,
             "compactions": meta.compactions,
-            "message_count": len(messages),
+            "message_count": len(visible),
             "last_compaction_turn": meta.last_compaction_turn,
             "workspace_id": meta.workspace_id,
             "messages": messages_to_dict(list(messages)),
+            # 用户可见的完整原文；模型上下文可以独立压缩，不能覆盖这一份。
+            "display_messages": messages_to_dict(visible),
         }
         path = self.path(session_id)
         try:
@@ -456,9 +489,13 @@ class ChatSession:
         )
 
         self.messages: list[BaseMessage] = []
+        self.display_messages: list[BaseMessage] = []
         self.meta = SessionMeta(session_id=self.session_id)
         if hydrate:
             self.messages, self.meta = self.store.load(self.session_id)
+            self.display_messages = self.store.load_display(self.session_id)
+            if not self.display_messages:
+                self.display_messages = list(self.messages)
         # 工作区归属以调用方为准（会话文件里的旧值可能为空）
         if workspace_id:
             self.meta.workspace_id = workspace_id
@@ -495,7 +532,9 @@ class ChatSession:
         }
 
     def recent(self, limit: int = 10) -> list[BaseMessage]:
-        return self.messages[-limit:] if limit > 0 else list(self.messages)
+        """用户可见的最近原文；压缩只影响模型上下文。"""
+        source = self.display_messages or self.messages
+        return source[-limit:] if limit > 0 else list(source)
 
     # ---- 主流程 ----
     def ask(self, question: str) -> TurnResult:
@@ -507,6 +546,8 @@ class ChatSession:
         except BaseException:
             # 本轮失败：撤销刚追加的提问，保持历史一致
             self.messages = history[:-1]
+            if self.display_messages:
+                self.display_messages.pop()
             raise
         return self._finish_turn(history, messages, compacted)
 
@@ -609,19 +650,20 @@ class ChatSession:
                         if native_reasoning:
                             # The same reasoning often arrives twice: once as
                             # streamed chunks and once on the final AIMessage.
-                            # If the accumulated stream ends with this text, the
-                            # UI already has it; just remember it so a content
-                            # thought with identical text is not emitted either.
-                            already_streamed = streamed_reasoning.strip().endswith(native_reasoning)
+                            # Providers may normalize spaces/newlines between
+                            # the two, so compare whitespace-insensitive keys.
+                            native_key = thought_key(native_reasoning)
+                            already_streamed = thought_key(streamed_reasoning).endswith(native_key)
                             if already_streamed:
-                                emitted_thoughts.add(native_reasoning)
-                            elif native_reasoning not in emitted_thoughts:
-                                emitted_thoughts.add(native_reasoning)
+                                emitted_thoughts.add(native_key)
+                            elif native_key not in emitted_thoughts:
+                                emitted_thoughts.add(native_key)
                                 yield ("thought", native_reasoning)
                         if derive_step_thoughts and calls:
                             thought_text = message_text(message).strip()
-                            if thought_text and thought_text not in emitted_thoughts:
-                                emitted_thoughts.add(thought_text)
+                            thought_text_key = thought_key(thought_text)
+                            if thought_text_key and thought_text_key not in emitted_thoughts:
+                                emitted_thoughts.add(thought_text_key)
                                 yield ("thought", thought_text)
                         for call in calls:
                             key = str(call.get("id") or call.get("name"))
@@ -638,6 +680,8 @@ class ChatSession:
                             )
         except BaseException:
             self.messages = history[:-1]
+            if self.display_messages:
+                self.display_messages.pop()
             raise
 
         result = self._finish_turn(history, messages or history, compacted)
@@ -664,6 +708,7 @@ class ChatSession:
     def reset(self) -> None:
         """清空当前会话（同时删除磁盘上的历史文件）。"""
         self.messages = []
+        self.display_messages = []
         self.meta = SessionMeta(session_id=self.session_id)
         self.store.delete(self.session_id)
 
@@ -676,6 +721,7 @@ class ChatSession:
         if internal:
             message.additional_kwargs["alembic_internal"] = True
         self.messages.append(message)
+        self.display_messages.append(message)
         return self._maybe_compact()
 
     def _invoke(self, history: list[BaseMessage]) -> list[BaseMessage]:
@@ -693,6 +739,9 @@ class ChatSession:
         messages = cap_tool_outputs(messages, self.max_tool_output_tokens)
         self.messages = messages
         new_messages = messages[len(history):] if len(messages) >= len(history) else []
+        if new_messages:
+            # 模型上下文可能刚被压缩，但用户可见的原文始终按增量追加。
+            self.display_messages.extend(new_messages)
 
         self.meta.turns += 1
         self.meta.updated_at = _now()
@@ -719,4 +768,9 @@ class ChatSession:
             return False
 
     def _persist(self) -> None:
-        self.store.save(self.session_id, self.messages, self.meta)
+        self.store.save(
+            self.session_id,
+            self.messages,
+            self.meta,
+            display_messages=self.display_messages or self.messages,
+        )

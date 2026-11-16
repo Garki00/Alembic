@@ -17,6 +17,10 @@ export interface ProviderModelInfo {
   thinking: ThinkingLevel
   thinking_levels: ThinkingLevel[]
   temperature: number
+  supports_reasoning: boolean
+  supports_images: boolean
+  context_length: number
+  max_output_tokens: number
 }
 
 export interface ProviderInfo {
@@ -37,6 +41,10 @@ export interface ProviderModelPayload {
   thinking: ThinkingLevel
   thinking_levels: ThinkingLevel[]
   temperature?: number
+  supports_reasoning?: boolean
+  supports_images?: boolean
+  context_length?: number
+  max_output_tokens?: number
 }
 
 export interface ProviderPayload {
@@ -60,6 +68,10 @@ export interface ActiveModelInfo {
   temperature: number
   thinking: ThinkingLevel
   thinking_levels: ThinkingLevel[]
+  supports_reasoning: boolean
+  supports_images: boolean
+  context_length: number
+  max_output_tokens: number
   updated_at: string
   api_key_set: boolean
   api_key_hint: string
@@ -269,9 +281,17 @@ export interface BrowseResult {
   dirs: Array<{ name: string; path: string }>
 }
 
+export interface UpstreamModelMeta {
+  context_length?: number
+  max_output_tokens?: number
+  supports_images?: boolean
+  supports_reasoning?: boolean
+}
+
 export interface FetchModelsResponse {
   base_url: string
   models: string[]
+  metadata?: Record<string, UpstreamModelMeta>
 }
 
 export type ApprovalDecision = 'once' | 'always' | 'deny'

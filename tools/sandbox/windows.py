@@ -118,6 +118,10 @@ if _IS_WINDOWS:
     _kernel32.CreateFileW.restype = wt.HANDLE
     _kernel32.GetFileAttributesW.argtypes = [wt.LPCWSTR]
     _kernel32.GetFileAttributesW.restype = wt.DWORD
+    _kernel32.GetDriveTypeW.argtypes = [wt.LPCWSTR]
+    _kernel32.GetDriveTypeW.restype = wt.UINT
+    _kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    _kernel32.LocalFree.restype = ctypes.c_void_p
     _crypt32.CryptUnprotectData.argtypes = [
         ctypes.POINTER(_DATA_BLOB), ctypes.POINTER(wt.LPWSTR),
         ctypes.POINTER(_DATA_BLOB), ctypes.c_void_p, ctypes.c_void_p,
@@ -163,10 +167,23 @@ def _create_pipe(inherit_write: bool) -> tuple[wt.HANDLE, wt.HANDLE]:
     return read, write
 
 
-def _fd(handle: int) -> int:
-    import msvcrt
+def _handle_value(handle) -> int:
+    """Return a ctypes HANDLE/c_void_p (or plain int) as a Python int."""
+    if isinstance(handle, ctypes.c_void_p):
+        return int(handle.value or 0)
+    return int(handle or 0)
 
-    return msvcrt.open_osfhandle(int(handle), os.O_RDONLY)
+
+def _fd(handle) -> int:
+    # msvcrt.open_osfhandle() accepts a C int and overflows when Windows
+    # returns a handle above 2^31. Call _open_osfhandle with intptr_t instead.
+    function = ctypes.CDLL("ucrtbase", use_errno=True)._open_osfhandle
+    function.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    function.restype = ctypes.c_int
+    fd = function(ctypes.c_void_p(_handle_value(handle)), os.O_RDONLY | os.O_BINARY)
+    if fd == -1:
+        raise OSError(ctypes.get_errno(), "无法把沙盒管道转换成文件描述符")
+    return fd
 
 
 def _null_handle() -> int:
@@ -177,7 +194,7 @@ def _null_handle() -> int:
         "NUL", _GENERIC_READ, 0, ctypes.byref(sa), _OPEN_EXISTING,
         _FILE_ATTRIBUTE_NORMAL, None,
     )
-    return int(handle or 0)
+    return _handle_value(handle)
 
 
 class _WindowsSandboxProcess:
@@ -267,7 +284,7 @@ class WindowsSandbox:
 
     def _load_users(self) -> None:
         try:
-            data = json.loads(self._users_path.read_text(encoding="utf-8"))
+            data = json.loads(self._users_path.read_text(encoding="utf-8-sig"))
             if isinstance(data, dict):
                 self._users = {
                     key: value for key, value in data.items()
@@ -278,7 +295,7 @@ class WindowsSandbox:
 
     def _setup_ready(self) -> bool:
         try:
-            data = json.loads(self._setup_path.read_text(encoding="utf-8"))
+            data = json.loads(self._setup_path.read_text(encoding="utf-8-sig"))
             return bool(data.get("ready"))
         except (OSError, ValueError, AttributeError):
             return False
@@ -536,7 +553,7 @@ class WindowsSandbox:
                 raise ctypes.WinError(ctypes.get_last_error())
             _kernel32.CloseHandle(pi.hThread)
             job = WindowsJob.create()
-            if job is None or not job.assign_handle(int(pi.hProcess)):
+            if job is None or not job.assign_handle(_handle_value(pi.hProcess)):
                 if job is not None:
                     job.close()
                 _kernel32.TerminateProcess(pi.hProcess, 1)
@@ -547,7 +564,7 @@ class WindowsSandbox:
                 _kernel32.CloseHandle(stdin_handle)
                 stdin_handle = 0
             return _WindowsSandboxProcess(
-                process_handle=int(pi.hProcess),
+                process_handle=_handle_value(pi.hProcess),
                 pid=int(pi.dwProcessId),
                 stdout=stdout_stream,
                 stderr=stderr_stream,

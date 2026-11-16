@@ -28,6 +28,7 @@ BASIC_TOOLS: tuple[str, ...] = (
     "write_file",
     "edit_file",
     "apply_patch",
+    "batch_edit",
     "make_dir",
     "move_file",
     "copy_file",

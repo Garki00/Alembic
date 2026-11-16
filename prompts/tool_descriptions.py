@@ -14,6 +14,7 @@ TOOL_MODEL_DESCRIPTIONS = {
     "write_file": "Write a complete file; read it first if it exists.",
     "edit_file": "Replace one exact string in a file.",
     "apply_patch": "Apply a unified diff across files or hunks.",
+    "batch_edit": "Atomically apply several exact replacements in one call.",
     "make_dir": "Create directories, including parents.",
     "delete_file": "Delete a file or directory; recursive deletion is explicit.",
     "move_file": "Move or rename a workspace path.",

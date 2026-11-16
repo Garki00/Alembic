@@ -28,6 +28,11 @@ interface ModelRow {
   thinking: ThinkingLevel
   thinking_levels: ThinkingLevel[]
   temperature: number
+  supports_reasoning: boolean
+  supports_images: boolean
+  context_length: number
+  max_output_tokens: number
+  expanded: boolean
 }
 
 const props = withDefaults(
@@ -55,6 +60,27 @@ const ui = useUiStore()
 
 let rowSeq = 0
 
+function modelDefaults(model: string, provider: string) {
+  const text = `${provider} ${model}`.toLowerCase()
+  let context = 128000
+  let output = 8192
+  if (text.includes('gpt-5')) [context, output] = [400000, 128000]
+  else if (text.includes('gpt-4.1')) [context, output] = [1048576, 32768]
+  else if (text.includes('gpt-4o') || text.includes('gpt-4-turbo')) [context, output] = [128000, 16384]
+  else if (/(^|\W)(o1|o3|o4)(\W|$)/.test(text)) [context, output] = [200000, 100000]
+  else if (text.includes('claude')) [context, output] = [200000, 64000]
+  else if (text.includes('gemini')) [context, output] = [1048576, 8192]
+  else if (text.includes('qwen')) [context, output] = [131072, 8192]
+  else if (text.includes('deepseek')) [context, output] = [128000, 8192]
+  else if (text.includes('glm')) [context, output] = [128000, 4096]
+
+  const images = [
+    'gpt-4o', 'gpt-4.1', 'gpt-5', 'claude', 'gemini',
+    'vision', 'qwen-vl', 'qwen2.5-vl', 'vl-', 'omni', 'llava',
+  ].some((token) => text.includes(token))
+  return { context, output, images }
+}
+
 function emptyModel(): ModelRow {
   rowSeq += 1
   return {
@@ -65,6 +91,11 @@ function emptyModel(): ModelRow {
     thinking: 'high',
     thinking_levels: [...DEFAULT_THINKING_LEVELS],
     temperature: 0,
+    supports_reasoning: true,
+    supports_images: false,
+    context_length: 0,
+    max_output_tokens: 0,
+    expanded: false,
   }
 }
 
@@ -79,6 +110,11 @@ function toRow(model: ProviderModelInfo): ModelRow {
     thinking: normalized.thinking,
     thinking_levels: normalized.levels,
     temperature: model.temperature ?? 0,
+    supports_reasoning: model.supports_reasoning ?? true,
+    supports_images: model.supports_images ?? false,
+    context_length: model.context_length || 0,
+    max_output_tokens: model.max_output_tokens || 0,
+    expanded: false,
   }
 }
 
@@ -109,6 +145,18 @@ function addModel(): void {
 
 function removeModel(index: number): void {
   form.models.splice(index, 1)
+}
+
+function toggleAdvanced(row: ModelRow): void {
+  row.expanded = !row.expanded
+}
+
+function applyModelDefaults(row: ModelRow): void {
+  if (!row.model.trim()) return
+  const limits = modelDefaults(row.model, form.provider)
+  if (!row.context_length) row.context_length = limits.context
+  if (!row.max_output_tokens) row.max_output_tokens = limits.output
+  if (!row.supports_images) row.supports_images = limits.images
 }
 
 function toggleLevel(row: ModelRow, level: ThinkingLevel, event: Event): void {
@@ -143,15 +191,29 @@ async function fetchUpstream(): Promise<void> {
     })
     const existing = new Set(form.models.map((row) => row.model.trim()).filter(Boolean))
     let added = 0
+    let enriched = 0
     for (const model of data.models || []) {
       if (!model || existing.has(model)) continue
       const row = emptyModel()
       row.model = model
+      applyModelDefaults(row)
+      const meta = data.metadata?.[model]
+      if (meta) {
+        if (meta.context_length) row.context_length = meta.context_length
+        if (meta.max_output_tokens) row.max_output_tokens = meta.max_output_tokens
+        if (typeof meta.supports_images === 'boolean') row.supports_images = meta.supports_images
+        if (typeof meta.supports_reasoning === 'boolean') row.supports_reasoning = meta.supports_reasoning
+      }
       form.models.push(row)
       existing.add(model)
       added += 1
+      if (meta) enriched += 1
     }
-    ui.showToast(added ? `已从上游添加 ${added} 个模型` : '上游模型都已在列表中')
+    ui.showToast(
+      added
+        ? `已从上游添加 ${added} 个模型${enriched ? `（${enriched} 个带能力信息）` : ''}`
+        : '上游模型都已在列表中',
+    )
   } catch (err) {
     localError.value = errorMessage(err)
   } finally {
@@ -198,6 +260,10 @@ function payload(): ProviderPayload | null {
     thinking: row.thinking,
     thinking_levels: row.thinking_levels,
     temperature: Number(row.temperature) || 0,
+    supports_reasoning: row.supports_reasoning,
+    supports_images: row.supports_images,
+    context_length: Number(row.context_length) || 0,
+    max_output_tokens: Number(row.max_output_tokens) || 0,
   }))
   return {
     id: props.initial?.id ?? null,
@@ -266,16 +332,15 @@ defineExpose({ validate, payload })
       <div class="provider-models-head">
         <div>
           <div class="general-title">模型列表</div>
-          <div class="general-desc">从上游获取或手动添加；每个模型可单独设置思考等级。</div>
+          <div class="general-desc">从上游获取或手动添加；左侧箭头展开模型能力、上下文长度、输出上限与温度。</div>
         </div>
         <button type="button" class="btn-outline" @click="addModel">＋ 添加模型</button>
       </div>
 
       <div class="provider-model-labels" aria-hidden="true">
+        <span></span>
         <span>模型 ID</span>
         <span>显示名称</span>
-        <span>思考等级（可多选）</span>
-        <span>温度</span>
         <span></span>
       </div>
       <div v-if="!form.models.length" class="provider-models-empty">
@@ -286,23 +351,58 @@ defineExpose({ validate, payload })
         :key="row.key"
         class="provider-model-row"
       >
-        <input v-model="row.model" placeholder="例如 deepseek-chat" autocomplete="off" />
+        <button
+          type="button"
+          class="model-advanced-toggle"
+          :aria-expanded="row.expanded"
+          title="模型能力与参数"
+          @click="toggleAdvanced(row)"
+        >{{ row.expanded ? '⌃' : '⌄' }}</button>
+        <input
+          v-model="row.model"
+          placeholder="例如 deepseek-chat"
+          autocomplete="off"
+          @change="applyModelDefaults(row)"
+        />
         <input v-model="row.name" placeholder="可选" autocomplete="off" />
-        <details class="thinking-multi">
-          <summary>{{ levelsSummary(row.thinking_levels) }}</summary>
-          <div class="thinking-options">
-            <label v-for="option in THINKING_OPTIONS" :key="option.value">
-              <input
-                type="checkbox"
-                :checked="row.thinking_levels.includes(option.value)"
-                @change="toggleLevel(row, option.value, $event)"
-              />
-              {{ option.label }}
-            </label>
-          </div>
-        </details>
-        <input v-model.number="row.temperature" type="number" min="0" max="2" step="0.1" />
         <button type="button" class="btn-mini danger" @click="removeModel(index)">删除</button>
+        <div v-if="row.expanded" class="model-advanced-panel">
+          <div class="model-advanced-grid">
+            <label class="model-check">
+              <input v-model="row.supports_reasoning" type="checkbox" />
+              支持扩展思考
+            </label>
+            <label class="model-check">
+              <input v-model="row.supports_images" type="checkbox" />
+              支持图片输入
+            </label>
+            <label class="model-advanced-field">
+              <span>上下文长度</span>
+              <input v-model.number="row.context_length" type="number" min="1" step="1024" />
+            </label>
+            <label class="model-advanced-field">
+              <span>最大输出 tokens</span>
+              <input v-model.number="row.max_output_tokens" type="number" min="1" step="1024" />
+            </label>
+            <label class="model-advanced-field">
+              <span>温度</span>
+              <input v-model.number="row.temperature" type="number" min="0" max="2" step="0.1" />
+            </label>
+            <details class="thinking-multi model-thinking">
+              <summary>{{ levelsSummary(row.thinking_levels) }}</summary>
+              <div class="thinking-options">
+                <label v-for="option in THINKING_OPTIONS" :key="option.value">
+                  <input
+                    type="checkbox"
+                    :checked="row.thinking_levels.includes(option.value)"
+                    @change="toggleLevel(row, option.value, $event)"
+                  />
+                  {{ option.label }}
+                </label>
+              </div>
+            </details>
+          </div>
+        </div>
       </div>
     </div>
 

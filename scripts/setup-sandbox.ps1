@@ -1,4 +1,4 @@
-# scripts/setup-sandbox.ps1
+﻿# scripts/setup-sandbox.ps1
 # 一次性管理员初始化：创建两个专用低权限用户、防火墙规则和 App 可读的凭据文件。
 # 日常运行不需要管理员；应用本身不会以管理员身份运行。
 param(
@@ -8,8 +8,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$offlineUser = "AlembicOffline"
-$onlineUser = "AlembicOnline"
+Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+$offlineUser = "AlembicSandboxOffline"
+$onlineUser = "AlembicSandboxOnline"
 $rulePrefix = "AlembicSandbox"
 
 function Test-Admin {
@@ -76,6 +77,14 @@ function New-RandomPassword {
     return [Convert]::ToBase64String($bytes) + "aA1!"
 }
 
+function Write-JsonFile([string]$path, $value) {
+    # Windows PowerShell 5.1 的 Set-Content -Encoding UTF8 会写 BOM，
+    # Python json 读取时会失败；这里明确写无 BOM 的 UTF-8。
+    $json = $value | ConvertTo-Json -Depth 6
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($path, $json, $utf8)
+}
+
 function New-SandboxUser([string]$name, [string]$password) {
     $existing = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
     if ($null -eq $existing) {
@@ -95,7 +104,8 @@ function New-SandboxUser([string]$name, [string]$password) {
         $secure = ConvertTo-SecureString $password -AsPlainText -Force
         $credential = New-Object System.Management.Automation.PSCredential($name, $secure)
         Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" `
-            -ArgumentList "/c exit" -Credential $credential -Wait -WindowStyle Hidden | Out-Null
+            -ArgumentList "/c exit" -Credential $credential -LoadUserProfile `
+            -Wait -WindowStyle Hidden | Out-Null
     } catch {
         Write-Warning "无法预创建 $name 的用户配置文件：$($_.Exception.Message)"
     }
@@ -157,17 +167,17 @@ $payload = @{
         profile = $onlineProfile
     }
 }
-$payload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $usersFile -Encoding UTF8
+Write-JsonFile $usersFile $payload
 $setup = @{
     ready = $true
     version = 1
     proxy_port = $ProxyPort
     updated_at = (Get-Date).ToString("o")
 }
-$setup | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $setupFile -Encoding UTF8
+Write-JsonFile $setupFile $setup
 
 if (-not (Test-Path -LiteralPath $sandboxFile)) {
-    @{
+    Write-JsonFile $sandboxFile @{
         version = 1
         network = "offline"
         allowed_domains = @(
@@ -177,7 +187,7 @@ if (-not (Test-Path -LiteralPath $sandboxFile)) {
         )
         allowed_ports = @(443, 80)
         proxy_port = $ProxyPort
-    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $sandboxFile -Encoding UTF8
+    }
 }
 
 # 凭据文件只允许当前用户和 SYSTEM 读取。

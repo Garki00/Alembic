@@ -22,7 +22,7 @@ const steps = computed(() => props.approval.steps || [])
 const showSteps = computed(() => steps.value.length > 1)
 
 // 命令原文与文件改动默认展开：说明归说明，原文始终要能看到。
-const DETAIL_OPEN_TOOLS = ['run_command', 'start_process', 'write_file', 'edit_file', 'apply_patch']
+const DETAIL_OPEN_TOOLS = ['run_command', 'start_process', 'write_file', 'edit_file', 'apply_patch', 'batch_edit']
 const detailOpen = ref(DETAIL_OPEN_TOOLS.includes(props.approval.tool))
 
 const detailLabel = computed(() => {
@@ -37,6 +37,7 @@ const detailLabel = computed(() => {
       break
     case 'edit_file':
     case 'apply_patch':
+    case 'batch_edit':
       label = '改动内容'
       break
     case 'git_commit':

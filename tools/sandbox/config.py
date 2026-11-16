@@ -44,7 +44,7 @@ class SandboxConfigStore:
                 return json.loads(json.dumps(self._cached))
             payload = self._default()
             try:
-                data = json.loads(self.path.read_text(encoding="utf-8"))
+                data = json.loads(self.path.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
                 data = {}
             if isinstance(data, dict):

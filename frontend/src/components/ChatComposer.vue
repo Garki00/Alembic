@@ -61,7 +61,9 @@ const thinkingState = computed(() => normalizeThinkingLevels(
   workspace.activeModel?.thinking_levels,
   workspace.activeModel?.thinking,
 ))
-const thinkingLevels = computed(() => thinkingState.value.levels)
+const thinkingLevels = computed(() => (
+  workspace.activeModel?.supports_reasoning === false ? [] : thinkingState.value.levels
+))
 const currentThinking = computed(() => thinkingState.value.thinking)
 const thinkingIndex = computed(() => Math.max(
   0,
@@ -496,7 +498,7 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
-        <div ref="thinkingSwitcher" class="thinking-switcher">
+        <div v-if="workspace.activeModel?.supports_reasoning !== false" ref="thinkingSwitcher" class="thinking-switcher">
           <button
             type="button"
             class="thinking-switch"

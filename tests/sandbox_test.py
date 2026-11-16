@@ -20,6 +20,13 @@ def make_tempdir() -> Path:
 
 
 class SandboxPolicyTest(unittest.TestCase):
+    def test_ctypes_handle_conversion(self):
+        import ctypes
+        from tools.sandbox.windows import _handle_value
+
+        self.assertEqual(_handle_value(ctypes.c_void_p(3068)), 3068)
+        self.assertEqual(_handle_value(3068), 3068)
+
     def test_network_normalization(self):
         workspace = Path.cwd()
         self.assertEqual(SandboxPolicy(workspace, network="allowlist").normalized_network(), "allowlist")
@@ -58,6 +65,16 @@ class SandboxConfigTest(unittest.TestCase):
         self.assertEqual(updated["network"], "allowlist")
         self.assertEqual(updated["allowed_domains"], ["example.com"])
         self.assertEqual(self.store.get()["allowed_ports"], [443])
+
+    def test_utf8_bom_from_powershell_is_accepted(self):
+        self.store.path.write_text(
+            '\ufeff{"network":"allowlist","allowed_domains":["example.com"],'
+            '"allowed_ports":[443],"proxy_port":47831}',
+            encoding="utf-8",
+        )
+        config = self.store.get()
+        self.assertEqual(config["network"], "allowlist")
+        self.assertEqual(config["allowed_domains"], ["example.com"])
 
     def test_invalid_network_rejected(self):
         with self.assertRaises(ValueError):

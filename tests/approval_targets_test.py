@@ -51,6 +51,7 @@ class ApprovalTargetTest(unittest.TestCase):
             "start_process",
             "stop_process",
             "apply_patch",
+            "batch_edit",
             "download_file",
             "git_commit",
         ):
@@ -77,6 +78,17 @@ class ApprovalTargetTest(unittest.TestCase):
         self.assertEqual(target, "a.py")
         self.assertIn("应用补丁", summary)
         self.assertIn("-x", preview)
+
+        target, summary, preview = describe_call(
+            "batch_edit",
+            {"edits": [
+                {"path": "a.html", "old_string": "old", "new_string": "new"},
+                {"path": "b.html", "old_string": "x", "new_string": "y"},
+            ]},
+        )
+        self.assertEqual(target, "a.html、b.html")
+        self.assertIn("原子编辑", summary)
+        self.assertIn("old", preview)
 
         target, summary, _preview = describe_call(
             "download_file", {"url": "https://example.com/a.pdf", "path": "docs/a.pdf"}

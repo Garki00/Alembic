@@ -130,6 +130,43 @@ class ModelStoreTest(unittest.TestCase):
                 provider.id, provider.models[0].id, "bogus"
             ))
 
+    def test_model_limits_default_to_known_maximum(self):
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "MODEL_NAME": ""}):
+            store = ModelStore(self.path)
+            provider = store.upsert_provider({
+                "provider": "openai",
+                "name": "OpenAI",
+                "base_url": "https://example.test/v1",
+                "api_key": "sk-test",
+                "models": [{"model": "gpt-4.1", "thinking": "high"}],
+            })
+            model = provider.models[0]
+            self.assertEqual(model.context_length, 1_048_576)
+            self.assertEqual(model.max_output_tokens, 32_768)
+            self.assertTrue(model.supports_images)
+            active = store.active()
+            self.assertEqual(active.context_length, 1_048_576)
+            self.assertEqual(active.max_output_tokens, 32_768)
+            self.assertTrue(active.supports_images)
+
+            updated = store.upsert_provider({
+                "id": provider.id,
+                "provider": "openai",
+                "base_url": "https://example.test/v1",
+                "api_key": "sk-test",
+                "models": [{
+                    "id": model.id,
+                    "model": "gpt-4.1",
+                    "thinking": "high",
+                    "supports_images": False,
+                    "context_length": 32000,
+                    "max_output_tokens": 4096,
+                }],
+            })
+            self.assertFalse(updated.models[0].supports_images)
+            self.assertEqual(store.active().context_length, 32000)
+            self.assertEqual(store.active().max_output_tokens, 4096)
+
     def test_legacy_flat_models_are_migrated_to_one_provider(self):
         self.path.write_text(json.dumps({
             "models": [

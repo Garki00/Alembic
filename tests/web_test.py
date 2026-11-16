@@ -534,6 +534,28 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertEqual([item["model"] for item in providers[0]["models"]], ["gpt-test"])
 
 
+class UpstreamMetadataTest(unittest.TestCase):
+    def test_openrouter_style_metadata_is_extracted(self):
+        from web.server import _upstream_model_metadata
+
+        meta = _upstream_model_metadata({
+            "id": "vendor/model",
+            "context_length": 200000,
+            "architecture": {"input_modalities": ["text", "image"]},
+            "top_provider": {"max_completion_tokens": 64000},
+            "supported_parameters": ["reasoning", "tools"],
+        })
+        self.assertEqual(meta["context_length"], 200000)
+        self.assertEqual(meta["max_output_tokens"], 64000)
+        self.assertTrue(meta["supports_images"])
+        self.assertTrue(meta["supports_reasoning"])
+
+    def test_plain_models_response_has_no_metadata(self):
+        from web.server import _upstream_model_metadata
+
+        self.assertEqual(_upstream_model_metadata({"id": "plain-model"}), {})
+
+
 class CreateChatModelTest(unittest.TestCase):
     def test_thinking_level_maps_to_reasoning_effort(self):
         from config.store import ModelConfig
@@ -553,6 +575,14 @@ class CreateChatModelTest(unittest.TestCase):
 
         cfg.thinking = "none"
         self.assertIsNone(create_chat_model(cfg).reasoning_effort)
+
+        cfg.thinking = "high"
+        cfg.supports_reasoning = False
+        self.assertIsNone(create_chat_model(cfg).reasoning_effort)
+
+        cfg.supports_reasoning = True
+        cfg.max_output_tokens = 4096
+        self.assertEqual(create_chat_model(cfg).max_tokens, 4096)
 
 
 if __name__ == "__main__":

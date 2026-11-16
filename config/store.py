@@ -102,6 +102,52 @@ class _JsonFile:
 # ---------------------------------------------------------------------------
 _THINKING_LEVELS = ("none", "low", "high", "max")
 _DEFAULT_THINKING_LEVELS = ["low", "high", "max"]
+_DEFAULT_CONTEXT_LENGTH = 128_000
+_DEFAULT_MAX_OUTPUT_TOKENS = 8_192
+
+
+def default_model_limits(provider: str, model: str) -> dict[str, Any]:
+    """已知模型的上限与能力；未知模型给出保守但可编辑的默认值。
+
+    上游 /models 只返回 ID，不返回上下文窗口或图片能力，所以这里用模型
+    家族的公开上限做默认值。用户可以在模型下拉设置里覆盖。
+    """
+    text = f"{provider} {model}".lower()
+
+    context = _DEFAULT_CONTEXT_LENGTH
+    output = _DEFAULT_MAX_OUTPUT_TOKENS
+    if "gpt-5" in text:
+        context, output = 400_000, 128_000
+    elif "gpt-4.1" in text:
+        context, output = 1_048_576, 32_768
+    elif "gpt-4o" in text or "gpt-4-turbo" in text:
+        context, output = 128_000, 16_384
+    elif any(token in text for token in ("o1", "o3", "o4")):
+        context, output = 200_000, 100_000
+    elif "claude" in text:
+        context, output = 200_000, 64_000
+    elif "gemini" in text:
+        context, output = 1_048_576, 8_192
+    elif "qwen" in text:
+        context, output = 131_072, 8_192
+    elif "deepseek" in text:
+        context, output = 128_000, 8_192
+    elif "glm" in text:
+        context, output = 128_000, 4_096
+
+    images = any(
+        token in text
+        for token in (
+            "gpt-4o", "gpt-4.1", "gpt-5", "claude", "gemini",
+            "vision", "qwen-vl", "qwen2.5-vl", "vl-", "omni", "llava",
+        )
+    )
+    return {
+        "context_length": context,
+        "max_output_tokens": output,
+        "supports_images": images,
+        "supports_reasoning": True,
+    }
 
 
 def _thinking_level(value: Any) -> str:
@@ -165,8 +211,13 @@ class ProviderModel:
     thinking: str = "high"
     thinking_levels: list[str] = field(default_factory=lambda: list(_DEFAULT_THINKING_LEVELS))
     temperature: float = 0.0
+    supports_reasoning: bool = True
+    supports_images: bool = False
+    context_length: int = 0
+    max_output_tokens: int = 0
 
-    def public(self) -> dict[str, Any]:
+    def public(self, provider: str = "") -> dict[str, Any]:
+        limits = default_model_limits(provider, self.model)
         return {
             "id": self.id,
             "model": self.model,
@@ -174,6 +225,10 @@ class ProviderModel:
             "thinking": self.thinking,
             "thinking_levels": list(self.thinking_levels),
             "temperature": self.temperature,
+            "supports_reasoning": self.supports_reasoning,
+            "supports_images": self.supports_images,
+            "context_length": self.context_length or limits["context_length"],
+            "max_output_tokens": self.max_output_tokens or limits["max_output_tokens"],
         }
 
 
@@ -199,7 +254,7 @@ class ProviderConfig:
             "base_url": self.base_url,
             "api_key_set": bool(key),
             "api_key_hint": _mask(key),
-            "models": [item.public() for item in self.models],
+            "models": [item.public(self.provider) for item in self.models],
             "updated_at": self.updated_at,
         }
 
@@ -219,6 +274,10 @@ class ModelConfig:
     temperature: float = 0.0
     thinking: str = "high"
     thinking_levels: list[str] = field(default_factory=lambda: list(_DEFAULT_THINKING_LEVELS))
+    supports_reasoning: bool = True
+    supports_images: bool = False
+    context_length: int = 0
+    max_output_tokens: int = 0
     updated_at: str = field(default_factory=_now)
 
     def public(self) -> dict[str, Any]:
@@ -296,6 +355,7 @@ class ModelStore:
         model = next((item for item in provider.models if item.id == model_id), None)
         if model is None:
             return None
+        limits = default_model_limits(provider.provider, model.model)
         return ModelConfig(
             id=model.id,
             name=model.name or model.model,
@@ -308,6 +368,10 @@ class ModelStore:
             temperature=model.temperature,
             thinking=model.thinking,
             thinking_levels=list(model.thinking_levels),
+            supports_reasoning=model.supports_reasoning,
+            supports_images=model.supports_images,
+            context_length=model.context_length or limits["context_length"],
+            max_output_tokens=model.max_output_tokens or limits["max_output_tokens"],
             updated_at=provider.updated_at,
         )
 
@@ -342,7 +406,11 @@ class ModelStore:
         if raw_models is None:
             models = list(existing.get("models", []))
         else:
-            models = self._normalize_models(raw_models, existing.get("models", []))
+            models = self._normalize_models(
+                raw_models,
+                existing.get("models", []),
+                str(payload.get("provider") or existing.get("provider") or "custom"),
+            )
 
         existing.update(
             {
@@ -533,6 +601,7 @@ class ModelStore:
         self,
         raw_models: Any,
         existing_models: Any,
+        provider: str = "",
     ) -> list[dict[str, Any]]:
         existing = {
             str(item.get("id")): item
@@ -557,6 +626,21 @@ class ModelStore:
                 raw_levels = previous.get("thinking_levels")
             current = item.get("thinking", previous.get("thinking", "max"))
             levels, current = _derive_thinking_levels(raw_levels, current)
+            limits = default_model_limits(provider, model)
+
+            def _bool_value(key: str, fallback: bool) -> bool:
+                value = item.get(key, previous.get(key, fallback))
+                if value is None:
+                    value = previous.get(key, fallback)
+                return bool(value)
+
+            def _int_value(key: str, fallback: int) -> int:
+                try:
+                    value = int(item.get(key, previous.get(key, fallback)) or fallback)
+                except (TypeError, ValueError):
+                    value = fallback
+                return max(0, value)
+
             result.append(
                 {
                     "id": model_id,
@@ -566,6 +650,18 @@ class ModelStore:
                     "thinking_levels": levels,
                     "temperature": float(
                         item.get("temperature", previous.get("temperature", 0)) or 0
+                    ),
+                    "supports_reasoning": _bool_value(
+                        "supports_reasoning", limits["supports_reasoning"]
+                    ),
+                    "supports_images": _bool_value(
+                        "supports_images", limits["supports_images"]
+                    ),
+                    "context_length": _int_value(
+                        "context_length", limits["context_length"]
+                    ),
+                    "max_output_tokens": _int_value(
+                        "max_output_tokens", limits["max_output_tokens"]
                     ),
                 }
             )
@@ -599,6 +695,9 @@ class ModelStore:
             levels, current = _derive_thinking_levels(
                 row.get("thinking_levels"), row.get("thinking")
             )
+            limits = default_model_limits(
+                str(item.get("provider") or "custom"), model
+            )
             models.append(
                 ProviderModel(
                     id=str(row.get("id") or model),
@@ -607,6 +706,18 @@ class ModelStore:
                     thinking=current,
                     thinking_levels=levels,
                     temperature=float(row.get("temperature") or 0),
+                    supports_reasoning=bool(
+                        row.get("supports_reasoning", limits["supports_reasoning"])
+                    ),
+                    supports_images=bool(
+                        row.get("supports_images", limits["supports_images"])
+                    ),
+                    context_length=int(
+                        row.get("context_length") or limits["context_length"]
+                    ),
+                    max_output_tokens=int(
+                        row.get("max_output_tokens") or limits["max_output_tokens"]
+                    ),
                 )
             )
         return ProviderConfig(

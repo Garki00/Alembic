@@ -54,6 +54,7 @@ _KEY_PREFIX = {
     "write_file": "file",
     "edit_file": "file",
     "apply_patch": "patch",
+    "batch_edit": "patch",
     "delete_file": "delete",
     "move_file": "move",
     "copy_file": "copy",
@@ -154,6 +155,25 @@ def describe_call(tool: str, args: Mapping) -> tuple[str, str, str]:
     process_id = args.get("process_id")
     if process_id is not None:
         return str(process_id), f"停止后台进程：{process_id}", _clip(json.dumps(args, ensure_ascii=False))
+
+    if tool == "batch_edit":
+        edits = args.get("edits") or []
+        if not isinstance(edits, list):
+            edits = []
+        paths = []
+        for item in edits:
+            if not isinstance(item, Mapping):
+                continue
+            path = str(item.get("path") or "").strip()
+            if path and path not in paths:
+                paths.append(path)
+        target = "、".join(paths) if paths else "多个文件"
+        preview = "\n".join(
+            f"- {item.get('path')}: {str(item.get('old_string') or '')[:120]} → {str(item.get('new_string') or '')[:120]}"
+            for item in edits
+            if isinstance(item, Mapping)
+        )
+        return target, f"原子编辑：{len(paths)} 个文件 / {len(edits)} 处", _clip(preview)
 
     if tool == "apply_patch":
         patch = str(args.get("patch") or "")

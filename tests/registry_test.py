@@ -30,6 +30,7 @@ class RegistryTest(unittest.TestCase):
                 "read_image",
                 "file_write",
                 "apply_patch",
+                "batch_edit",
                 "fetch_url",
                 "web_search",
                 "download_file",
@@ -65,6 +66,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(TOOL_SPECS["read_document"].risk, "read")
         self.assertEqual(TOOL_SPECS["read_image"].risk, "read")
         self.assertEqual(TOOL_SPECS["apply_patch"].risk, "write")
+        self.assertEqual(TOOL_SPECS["batch_edit"].risk, "write")
         self.assertEqual(TOOL_SPECS["fetch_url"].risk, "read")
         self.assertEqual(TOOL_SPECS["web_search"].risk, "read")
         self.assertEqual(TOOL_SPECS["download_file"].risk, "write")

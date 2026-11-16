@@ -65,6 +65,10 @@ class ProviderModelPayload(BaseModel):
     thinking: str = "high"
     thinking_levels: list[str] | None = None
     temperature: float = 0.0
+    supports_reasoning: bool | None = None
+    supports_images: bool | None = None
+    context_length: int = 0
+    max_output_tokens: int = 0
 
 
 class ProviderPayload(BaseModel):
@@ -197,17 +201,73 @@ def _serialize_messages(messages: Iterable[Any]) -> list[dict[str, Any]]:
     return result
 
 
+def _upstream_int(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def _upstream_model_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    """兼容 OpenRouter 等带能力字段的 /models 响应；普通供应商通常没有。"""
+    architecture = item.get("architecture") if isinstance(item.get("architecture"), dict) else {}
+    top_provider = item.get("top_provider") if isinstance(item.get("top_provider"), dict) else {}
+    context = _upstream_int(
+        item.get("context_length")
+        or item.get("context_window")
+        or item.get("max_context_length")
+        or architecture.get("context_length")
+    )
+    output = _upstream_int(
+        item.get("max_output_tokens")
+        or item.get("max_completion_tokens")
+        or top_provider.get("max_completion_tokens")
+    )
+    modalities = (
+        item.get("input_modalities")
+        or architecture.get("input_modalities")
+        or item.get("modalities")
+        or []
+    )
+    if isinstance(modalities, str):
+        modalities = [modalities]
+    supports_images = any(
+        "image" in str(value).lower() for value in modalities if value
+    ) if modalities else None
+    supported = item.get("supported_parameters") or []
+    if isinstance(supported, str):
+        supported = [supported]
+    supported_text = " ".join(str(value).lower() for value in supported)
+    supports_reasoning: bool | None = None
+    if isinstance(item.get("supports_reasoning"), bool):
+        supports_reasoning = item["supports_reasoning"]
+    elif supported_text:
+        supports_reasoning = "reasoning" in supported_text or "thinking" in supported_text
+    result: dict[str, Any] = {}
+    if context:
+        result["context_length"] = context
+    if output:
+        result["max_output_tokens"] = output
+    if supports_images is not None:
+        result["supports_images"] = bool(supports_images)
+    if supports_reasoning is not None:
+        result["supports_reasoning"] = supports_reasoning
+    return result
+
+
 def _new_session_id() -> str:
     return f"chat-{datetime.now():%Y%m%d-%H%M%S}"
 
 
-def _context_limit() -> int:
-    """当前全局配置下的上下文压缩阈值。"""
+def _context_limit(model_cfg=None) -> int:
+    """当前模型上下文压缩阈值；优先使用模型配置里的上下文长度。"""
     if settings.max_context_tokens:
         return int(settings.max_context_tokens)
+    window = int(getattr(model_cfg, "context_length", 0) or settings.model_context_window)
     return max(
         1,
-        int(settings.model_context_window * settings.compact_trigger_ratio)
+        int(window * settings.compact_trigger_ratio)
         - settings.compact_reserve_tokens,
     )
 
@@ -502,7 +562,7 @@ def create_app(
 
     @app.post("/api/providers/fetch")
     def fetch_models(payload: FetchModelsPayload):
-        """只从上游获取模型 ID 列表，不写库；由供应商编辑表单决定添加哪些。"""
+        """从上游获取模型 ID；有能力的供应商会一并返回上下文/图片/推理信息。"""
         base_url = payload.base_url.strip().rstrip("/")
         api_key = payload.api_key.strip()
         if not api_key and payload.provider_id:
@@ -524,6 +584,7 @@ def create_app(
             raise HTTPException(400, f"获取模型列表失败：{exc}") from exc
 
         ids: set[str] = set()
+        metadata: dict[str, dict[str, Any]] = {}
         if isinstance(data, dict):
             items = data.get("data") or data.get("models") or []
         elif isinstance(data, list):
@@ -532,11 +593,15 @@ def create_app(
             items = []
         for item in items:
             if isinstance(item, dict) and item.get("id"):
-                ids.add(str(item["id"]))
+                model_id = str(item["id"])
+                ids.add(model_id)
+                meta = _upstream_model_metadata(item)
+                if meta:
+                    metadata[model_id] = meta
             elif isinstance(item, str):
                 ids.add(item)
 
-        return {"base_url": base_url, "models": sorted(ids)}
+        return {"base_url": base_url, "models": sorted(ids), "metadata": metadata}
 
     # ---- 工具 ----
     @app.get("/api/tools")
@@ -760,16 +825,17 @@ def create_app(
 
     @app.get("/api/sessions/{session_id}/messages")
     def session_messages(session_id: str):
-        messages, meta = sessions.load(session_id)
-        tokens, token_source = context_tokens(messages)
+        model_messages, meta = sessions.load(session_id)
+        display_messages = sessions.load_display(session_id) or model_messages
+        tokens, token_source = context_tokens(model_messages)
         return {
             "session_id": session_id,
-            "messages": _serialize_messages(messages),
+            "messages": _serialize_messages(display_messages),
             "turns": meta.turns,
             "compactions": meta.compactions,
             "tokens": tokens,
             "token_source": token_source,
-            "max_tokens": _context_limit(),
+            "max_tokens": _context_limit(models.active()),
         }
 
     @app.post("/api/sessions/{session_id}/compact")
@@ -795,6 +861,7 @@ def create_app(
                 store=sessions,
                 summarizer=model,
                 workspace_id=meta.workspace_id,
+                model_context_window=model_cfg.context_length or None,
                 hydrate=True,
             )
             changed = session.compact()
@@ -978,6 +1045,7 @@ def create_app(
             store=sessions,
             summarizer=summarizer,
             workspace_id=workspace_id,
+            model_context_window=model_cfg.context_length or None,
         )
 
         def run_turn() -> None:

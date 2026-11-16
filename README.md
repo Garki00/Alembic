@@ -102,7 +102,7 @@ npm run preview     # 4173 端口预览，/api 仍代理到后端
 
 数据目录里还没有可用供应商时，首次打开会显示初始化向导：
 
-1. **供应商与模型**：以图标卡片列出深度求索（DeepSeek）、OpenAI、Anthropic Claude、阿里云千问、硅基流动和自定义供应商。选择模板会自动填入 Base URL；在同一个供应商下可以添加一个或多个模型，填写模型 ID、显示名称、可选推理等级与温度。也可以点「从上游获取」读取 `{base_url}/models` 的模型列表。
+1. **供应商与模型**：以图标卡片列出深度求索（DeepSeek）、OpenAI、Anthropic Claude、阿里云千问、硅基流动和自定义供应商。选择模板会自动填入 Base URL；在同一个供应商下可以添加一个或多个模型。也可以点「从上游获取」读取 `{base_url}/models`：标准接口通常只返回模型 ID，OpenRouter 等会额外提供上下文长度、最大输出、图片/推理能力，前端会一并填入；没有能力字段时使用本地模型家族默认值。
 2. **工作步骤与终端**：选择工作步骤展示档位、收起时机，以及命令工具默认使用的终端。这些选项与「设置 → 通用」一致。
 
 保存后供应商会出现在「设置 → 供应商」中。初始化完成不会自动创建工作区：对话区会显示「选择一个工作区」的提示，选择或添加目录后才出现输入框。在没有任何对话的工作区里直接输入并发送，会自动创建一条新对话。
@@ -210,8 +210,13 @@ npm run preview     # 4173 端口预览，/api 仍代理到后端
 
 - **模型 ID**：上游实际接收的模型标识，以供应商文档为准。项目不内置默认模型。
 - **显示名称**：界面上展示的名字，留空时使用模型 ID。
-- **推理等级**：可选集合为 `none / low / high / max`。运行时 `low / high / max` 映射为 `reasoning_effort`，`none` 不显式传参。上游是否支持由供应商决定。
-- **温度**：默认 `0`。
+- **高级设置（每行左侧箭头）**：
+  - 支持扩展思考：关闭后不发送 `reasoning_effort`，输入区的推理等级开关也会隐藏。
+  - 支持图片输入：关闭后 `read_image` 返回 `vision_unavailable`，不会把图片塞给纯文本模型。
+  - 上下文长度：默认按模型家族的最大上下文填写，可手动覆盖；压缩阈值按它推导。
+  - 最大输出 tokens：默认按模型家族的输出上限填写，作为 `max_tokens` 传给模型。
+  - 温度：默认 `0`。
+  - 推理等级：可选集合为 `none / low / high / max`，运行时 `low / high / max` 映射为 `reasoning_effort`。
 
 API Key 只保存在本机数据目录，接口返回时只给掩码。供应商删除后，它下面的模型一并移除；当前激活项会自动回退到其他可用模型。
 
@@ -247,9 +252,10 @@ Final Answer: ...
 
 - **多轮记忆**：每轮把历史（长会话先压缩）交给 Agent，追问和指代可以延续。
 - **token 统计**：优先使用模型 API 返回的 `usage`（包含系统提示词、工具 schema 与回复），拿不到时才退回本地字符估算。`/status` 会标明数据来源。
-- **压缩阈值**：默认按模型窗口推导，`200000 × 70% − 12000 预留 = 128000 tokens`；历史超过 60 条消息时也会触发。`MAX_CONTEXT_TOKENS` 可以覆盖 token 阈值。
+- **压缩阈值**：默认按模型窗口推导；上下文长度优先取当前模型的高级设置，未设置时回退 `MODEL_CONTEXT_WINDOW`。历史超过 `MAX_CONTEXT_MESSAGES` 条消息时也会触发，`MAX_CONTEXT_TOKENS` 可以覆盖 token 阈值。
 - **压缩间隔**：两次自动压缩之间至少间隔 2 轮，避免压缩后立刻再次触发。
-- **压缩方式**：较早对话压缩成以 `[Conversation summary]` 开头的摘要，保留最近 12 条消息。摘要语言跟随对话语言；摘要失败时降级为「省略更早消息 + 明确提示」，对话不中断。
+- **压缩方式**：较早对话压缩成以 `[Conversation summary]` 开头的英文摘要，保留最近 12 条消息；摘要提示词本身是英文，不额外要求摘要语言。摘要失败时降级为「省略更早消息 + 明确提示」，对话不中断。
+- **用户可见原文**：压缩只替换模型上下文；会话文件同时保存 `display_messages`，历史接口和界面仍显示完整问答原文，摘要只给模型看。
 - **工具输出预算**：单条工具结果超过 12000 tokens 会先截断再写入历史并留下标记，避免一次大输出撑爆窗口。
 - **本地持久化**：会话历史保存在 `memory/<会话ID>.json`，进程重启或换终端后可以继续。文件里包含消息类型、工具调用参数与结果。
 - **手动压缩**：输入区「＋ → 命令 → 压缩」或命令行 `/compact` 可以立即压缩；网页端同时刷新上下文占用圆环。
@@ -286,6 +292,7 @@ Final Answer: ...
 | `read_image` | `read_image` | 只读（需支持图片输入的模型） | 开 | 按需 |
 | `file_write` | `write_file` / `edit_file` / `make_dir` / `delete_file` / `move_file` / `copy_file` | 改工作区文件 | 开 | 常驻 |
 | `apply_patch` | `apply_patch` | 改工作区文件 | 开 | 常驻 |
+| `batch_edit` | `batch_edit` | 改工作区文件（原子多文件/多处替换） | 开 | 常驻 |
 | `fetch_url` | `fetch_url` | 只读（默认禁内网） | 开 | 常驻 |
 | `web_search` | `web_search` | 只读（默认 Bing，可换服务） | 开 | 常驻 |
 | `download_file` | `download_file` | 写工作区文件（默认禁内网） | 开 | 按需 |
@@ -320,6 +327,7 @@ Final Answer: ...
 | `file_stat(path=".")` | 查看类型、大小、修改时间与文本行数 |
 | `write_file(path, content)` | 整文件写入（必要时建目录），写入后回读大小校验 |
 | `edit_file(path, old_string, new_string, replace_all=False)` | 精确匹配替换；匹配不唯一时报 `ambiguous_match` 并给出行号 |
+| `batch_edit(edits)` | 原子批量替换：一次提交多个文件/多处；全部成功才落盘，任一失败或提交中断都会回滚，不留半套修改 |
 | `make_dir(path)` | 创建目录（可多级） |
 | `move_file(source, destination, overwrite=False)` | 移动 / 重命名；不能把目录移进自己的子目录 |
 | `copy_file(source, destination, overwrite=False)` | 复制文件或目录 |
@@ -337,7 +345,7 @@ Final Answer: ...
 
 ### 5.3 读后写
 
-`write_file`、`edit_file` 和 `apply_patch` 都遵守「读后写」：
+`write_file`、`edit_file`、`apply_patch` 和 `batch_edit` 都遵守「读后写」：
 
 - 覆盖或修改已有文件前必须先 `read_file`，否则返回 `read_required`。
 - 读过之后文件又被外部改动，返回 `stale_read`，要求重新读取，避免模型盲改。
@@ -371,6 +379,7 @@ Final Answer: ...
 ### 5.6 补丁、Git 与后台进程
 
 - `apply_patch(patch)`：应用标准 unified diff，支持多文件、多 hunk、新建与删除。仍然遵守读后写；适合跨文件重构，只改一处时用 `edit_file` 更直接。
+- `batch_edit(edits)`：一次提交多个精确替换。所有替换先在内存中校验；任一 `old_string` 缺失、重复或文件过期，整批不落盘。提交阶段失败会回滚已写文件。`edits` 每项为 `{path, old_string, new_string, replace_all?}`。
 - `git_status()` / `git_diff(path="", staged=False, context=3)`：查看分支、改动与 unified diff。
 - `git_commit(message, files=None)`：只提交已暂存内容；传 `files` 时先 `git add` 这些路径，不会静默执行 `git add -A`。
 - `start_process` / `list_processes` / `read_process_logs` / `wait_process` / `stop_process`：后台运行 dev server、watch 或长脚本。启动与停止属于执行命令，是否审批取决于权限模式。日志写到数据目录的 `logs/processes/`，停止时会结束子进程。任务退出时通过 `/api/processes/events` 主动推送完成事件，前端据此刷新任务面板并触发内部续跑；`wait_process` 仍保留给需要显式等待的场景，但常规后台任务不必用它挂住整轮。
@@ -737,7 +746,7 @@ tests/                  *_test.py，全部离线
 ### 9.2 测试
 
 ```powershell
-# 后端：454 个离线测试
+# 后端：467 个离线测试
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "*_test.py" -v
 
 # 前端：类型检查 + 生产构建
@@ -745,7 +754,7 @@ cd frontend
 npm run build
 ```
 
-测试覆盖时间工具、会话持久化、上下文压缩、命令行交互、网页接口、工具注册表与错误契约、ReAct 循环、文件工具、文档抽取、网页抓取、任务清单、提问中继、后台进程、实时命令输出与取消、沙盒策略与域名匹配、附件与上下文压缩接口、工具审批。全部离线运行，不调用真实模型。原生 Windows 沙盒的集成探针需要管理员初始化后单独运行，见 `scripts/verify-sandbox.ps1`。当前有一个依赖宿主终端的 Git Bash 用例在环境不具备时会跳过。
+测试覆盖时间工具、会话持久化、上下文压缩、命令行交互、网页接口、工具注册表与错误契约、ReAct 循环、文件工具、原子批量编辑与回滚、文档抽取、网页抓取、任务清单、提问中继、后台进程、实时命令输出与取消、沙盒策略与域名匹配、附件与上下文压缩接口、工具审批。全部离线运行，不调用真实模型。原生 Windows 沙盒的集成探针需要管理员初始化后单独运行，见 `scripts/verify-sandbox.ps1`。当前有一个依赖宿主终端的 Git Bash 用例在环境不具备时会跳过。
 
 ### 9.3 桌面外壳与打包
 
