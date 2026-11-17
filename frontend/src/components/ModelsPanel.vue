@@ -62,9 +62,7 @@ async function remove(provider: ProviderInfo): Promise<void> {
 <template>
   <section class="tab-panel" id="tab-models">
     <div class="panel-head">
-      <p class="muted">
-        以供应商为单位管理：一个供应商共用 Base URL 与 API Key，下面可以有多个模型。
-      </p>
+      <p class="muted">一个供应商可包含多个模型。</p>
       <div class="panel-actions">
         <button type="button" class="btn-outline" @click="openCreate">＋ 添加供应商</button>
       </div>

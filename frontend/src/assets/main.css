@@ -438,6 +438,7 @@ html.resizing .inspector-resizer::after {
     font-size: 15px;
 }
 .icon-btn:hover { border-color: var(--border); background: var(--card); color: var(--ink); }
+.icon-plus { width: 14px; height: 14px; }
 
 /* ---------- 对话 ---------- */
 .transcript {
@@ -886,13 +887,12 @@ html.resizing .inspector-resizer::after {
 /* ---------- 通用设置 ---------- */
 .settings-group + .settings-group { margin-top: 22px; }
 .settings-group-title {
-    font-size: 9.5px;
+    font-size: 13.5px;
     font-weight: 600;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--soft);
+    letter-spacing: 0.04em;
+    color: var(--ink);
     padding: 2px 2px 0;
-    margin-bottom: -4px;
+    margin-bottom: 2px;
 }
 .general-list { display: grid; gap: 0; }
 .general-row {
@@ -1495,7 +1495,12 @@ html.resizing .inspector-resizer::after {
 .switch input:focus-visible + .track { outline: 2px solid var(--emerald); outline-offset: 2px; }
 .tool-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-top: 12px; }
 .tool-fields .span-2 { grid-column: span 2; }
-.tool-fields textarea { min-height: 68px; font-family: var(--mono); font-size: 11px; }
+.tool-fields textarea {
+    min-height: 68px;
+    font-family: var(--mono);
+    font-size: 11px;
+    resize: horizontal;
+}
 .tool-foot { display: flex; justify-content: flex-end; margin-top: 10px; }
 .workspace-body { padding: 18px 24px 22px; display: flex; flex-direction: column; min-height: 0; }
 .workspace-form { display: flex; gap: 8px; }
@@ -1863,7 +1868,7 @@ html.resizing .inspector-resizer::after {
 }
 .provider-models-head {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
 }
@@ -1937,14 +1942,23 @@ html.resizing .inspector-resizer::after {
 .model-advanced-toggle {
     width: 26px;
     height: 28px;
+    display: inline-grid;
+    place-items: center;
+    padding: 0;
     border: 1px solid var(--border);
     border-radius: 4px;
     background: var(--card);
     color: var(--soft);
     cursor: pointer;
-    line-height: 1;
+    line-height: 0;
 }
 .model-advanced-toggle:hover { color: var(--ink); border-color: #9cc6ab; }
+.model-advanced-icon {
+    width: 12px;
+    height: 12px;
+    transition: transform 140ms ease;
+}
+.model-advanced-icon.open { transform: rotate(180deg); }
 .model-advanced-panel {
     grid-column: 1 / -1;
     padding: 10px 12px 12px;
@@ -2403,6 +2417,25 @@ html.resizing .inspector-resizer::after {
 /* 行下方空间不足时向上展开：top 对齐行的上沿，再用 translateY(-100%)
    把整个预览贴到行上方。这样预览高度变化不会改变它与鼠标的距离。 */
 .diff-hover.above { transform: translateY(-100%); }
+/* 悬停说明浮层 */
+.ui-tooltip {
+    position: fixed;
+    z-index: 90;
+    max-width: 280px;
+    padding: 5px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    box-shadow: 0 12px 26px -20px rgba(76, 85, 73, 0.55);
+    pointer-events: none;
+    transform: translateX(-50%);
+    animation: fade 120ms ease-out;
+}
+.ui-tooltip.above { transform: translate(-50%, -100%); }
 .diff-hover-head {
     display: flex;
     align-items: center;

@@ -233,21 +233,21 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "get_current_time": ToolSpec(
         name="get_current_time",
         label="时间查询",
-        description="获取本地或指定时区的时间。",
+        description="获取当前时间",
         tool_names=("get_current_time",),
         builder=_build_time,
     ),
     "list_timezones": ToolSpec(
         name="list_timezones",
         label="时区检索",
-        description="查询支持的地区与 IANA 时区。",
+        description="查询支持的时区",
         tool_names=("list_timezones",),
         builder=_build_timezone_list,
     ),
     "get_weather": ToolSpec(
         name="get_weather",
         label="实时天气",
-        description="按城市查询实时天气，需要和风天气凭据。",
+        description="查询城市实时天气，需和风天气凭据",
         fields=(
             ToolField("QWEATHER_KEY_ID", "Key ID", secret=True),
             ToolField("QWEATHER_PROJECT_ID", "Project ID"),
@@ -266,7 +266,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "file_read": ToolSpec(
         name="file_read",
         label="文件读取",
-        description="浏览工作区目录、按行读取文本、按正则搜索内容、按文件名查找、查看文件元信息。",
+        description="浏览目录、读取文件、搜索内容、查找文件",
         risk=RISK_READ,
         tool_names=("list_dir", "read_file", "search_files", "find_files", "file_stat"),
         builder=_build_file_read,
@@ -274,7 +274,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "read_document": ToolSpec(
         name="read_document",
         label="文档读取",
-        description="抽取 PDF / Word / Excel / PowerPoint / 文本的内容，支持分段读取。",
+        description="读取 PDF、Office 与文本文件",
         risk=RISK_READ,
         tool_names=("read_document",),
         builder=_build_documents,
@@ -282,7 +282,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "read_image": ToolSpec(
         name="read_image",
         label="图片读取",
-        description="用视觉模型描述工作区图片并转写文字，需要支持图片输入的模型。",
+        description="识别图片内容，需视觉模型",
         risk=RISK_READ,
         tool_names=("read_image",),
         builder=_build_images,
@@ -290,7 +290,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "file_write": ToolSpec(
         name="file_write",
         label="文件写入",
-        description="在工作区内写入、替换、移动、复制、删除文件与创建目录。",
+        description="写入、修改、移动、复制、删除文件",
         risk=RISK_WRITE,
         tool_names=(
             "write_file",
@@ -305,7 +305,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "apply_patch": ToolSpec(
         name="apply_patch",
         label="补丁编辑",
-        description="应用标准 unified diff，一次修改多个文件或多个 hunk。",
+        description="用 unified diff 批量修改文件",
         risk=RISK_WRITE,
         tool_names=("apply_patch",),
         builder=_build_patch,
@@ -313,7 +313,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "batch_edit": ToolSpec(
         name="batch_edit",
         label="原子批量编辑",
-        description="一次提交多处精确替换；全部成功才落盘，失败不改任何文件。",
+        description="多处精确替换，全部成功才落盘",
         risk=RISK_WRITE,
         tool_names=("batch_edit",),
         builder=_build_atomic_edit,
@@ -321,7 +321,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "fetch_url": ToolSpec(
         name="fetch_url",
         label="网页抓取",
-        description="抓取网页或 HTTP 接口正文，带 SSRF 防护与大小限制。",
+        description="抓取网页或接口内容",
         fields=(
             ToolField("FETCH_TIMEOUT", "超时（秒）", kind=FIELD_NUMBER, default="20"),
             ToolField("FETCH_MAX_BYTES", "最大响应字节", kind=FIELD_NUMBER, default="2000000"),
@@ -345,7 +345,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "web_search": ToolSpec(
         name="web_search",
         label="网页搜索",
-        description="按关键词搜索网页，返回标题、链接与摘要；默认 Bing，可切换其他服务。",
+        description="搜索网页，默认 Bing",
         fields=(
             ToolField(
                 "SEARCH_PROVIDER",
@@ -377,7 +377,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "download_file": ToolSpec(
         name="download_file",
         label="文件下载",
-        description="把远程 PDF / 图片 / 压缩包等下载到工作区，带 SSRF 与大小限制。",
+        description="下载文件到工作区",
         fields=(
             ToolField("DOWNLOAD_TIMEOUT", "超时（秒）", kind=FIELD_NUMBER, default="60"),
             ToolField("DOWNLOAD_MAX_BYTES", "最大字节", kind=FIELD_NUMBER, default="20000000"),
@@ -397,7 +397,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "todo_write": ToolSpec(
         name="todo_write",
         label="任务清单",
-        description="维护本会话的多步任务清单，让用户看到进度。",
+        description="维护会话任务清单",
         risk=RISK_READ,
         tool_names=("todo_write",),
         builder=_build_todo,
@@ -405,7 +405,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "ask_user_question": ToolSpec(
         name="ask_user_question",
         label="向用户提问",
-        description="需要用户补充信息或做选择时，暂停并等待回答。",
+        description="向用户提问并等待回答",
         risk=RISK_READ,
         tool_names=("ask_user_question",),
         builder=_build_questions,
@@ -413,7 +413,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "tools_search": ToolSpec(
         name="tools_search",
         label="扩展工具搜索",
-        description="按能力搜索并加载扩展工具（文档 / 图片 / 下载 / 后台进程 / Git / 时区 / 天气）。",
+        description="搜索并加载扩展工具",
         fields=(
             ToolField(
                 "TOOLS_SEARCH_LIMIT",
@@ -431,9 +431,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "run_command": ToolSpec(
         name="run_command",
         label="命令执行",
-        description="在工作区内执行 shell 命令（PowerShell / CMD / Git Bash / WSL），"
-                    "用于测试、构建、脚本和 Git；读写文件优先用文件工具，命令行只作兜底。"
-                    "执行前需要确认。",
+        description="执行 shell 命令（测试、构建、脚本、Git）",
         risk=RISK_EXEC,
         default_enabled=True,
         tool_names=("run_command",),
@@ -442,7 +440,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "background_process": ToolSpec(
         name="background_process",
         label="后台进程",
-        description="启动/停止长任务（dev server、watch），启动与停止前需要确认。",
+        description="启动或停止后台长任务",
         risk=RISK_EXEC,
         tool_names=("start_process", "stop_process"),
         builder=_build_process_exec,
@@ -450,7 +448,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "process_inspect": ToolSpec(
         name="process_inspect",
         label="进程查看",
-        description="列出后台进程、读取进程日志、等待进程退出或日志匹配（只读）。",
+        description="查看后台进程与日志",
         risk=RISK_READ,
         tool_names=("list_processes", "read_process_logs", "wait_process"),
         builder=_build_process_inspect,
@@ -458,7 +456,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "git_read": ToolSpec(
         name="git_read",
         label="Git 查看",
-        description="查看分支与工作区改动、读取 unified diff（只读）。",
+        description="查看 Git 状态与改动",
         risk=RISK_READ,
         tool_names=("git_status", "git_diff"),
         builder=_build_git_read,
@@ -466,7 +464,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "git_commit": ToolSpec(
         name="git_commit",
         label="Git 提交",
-        description="暂存指定路径并提交；不会自动 git add -A。执行前需要确认。",
+        description="暂存并提交指定文件",
         risk=RISK_EXEC,
         tool_names=("git_commit",),
         builder=_build_git_commit,
@@ -477,7 +475,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "mock_data": ToolSpec(
         name="mock_data",
         label="模拟数据",
-        description="读取「模拟数据」里配置的文本，用于测试工具参数。",
+        description="读取自定义模拟文本",
         fields=(
             ToolField(
                 "MOCK_TEXT",

@@ -37,7 +37,7 @@ export const PROVIDERS: ProviderTemplate[] = [
     baseUrl: 'https://api.deepseek.com',
     modelPlaceholder: '例如 deepseek-chat',
     modelExamples: ['deepseek-chat', 'deepseek-reasoner'],
-    hint: 'DeepSeek 官方 API，OpenAI 兼容',
+    hint: 'DeepSeek 官方 API',
     color: '#4d6bfe',
     background: '#eef1ff',
     iconPaths: [
@@ -65,7 +65,7 @@ export const PROVIDERS: ProviderTemplate[] = [
     baseUrl: 'https://api.anthropic.com/v1',
     modelPlaceholder: '例如 claude-sonnet-4-5',
     modelExamples: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'],
-    hint: '通过 Anthropic 的 OpenAI 兼容端点调用',
+    hint: '通过 Anthropic 兼容端点调用',
     color: '#c96442',
     background: '#fbf0ea',
     iconPaths: [
@@ -79,7 +79,7 @@ export const PROVIDERS: ProviderTemplate[] = [
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     modelPlaceholder: '例如 qwen-plus',
     modelExamples: ['qwen-plus', 'qwen-max', 'qwen-turbo'],
-    hint: 'DashScope 的 OpenAI 兼容模式',
+    hint: 'DashScope 兼容模式',
     color: '#615ced',
     background: '#f0efff',
     iconPaths: [
@@ -93,7 +93,7 @@ export const PROVIDERS: ProviderTemplate[] = [
     baseUrl: 'https://api.siliconflow.cn/v1',
     modelPlaceholder: '例如 deepseek-ai/DeepSeek-V3',
     modelExamples: ['deepseek-ai/DeepSeek-V3', 'Qwen/Qwen3-235B-A22B'],
-    hint: 'SiliconCloud 托管的模型',
+    hint: 'SiliconCloud 托管模型',
     color: '#0f9d8a',
     background: '#e9f7f4',
     iconPaths: [
@@ -107,7 +107,7 @@ export const PROVIDERS: ProviderTemplate[] = [
     baseUrl: '',
     modelPlaceholder: '填写上游模型 ID',
     modelExamples: [],
-    hint: '任意 OpenAI 兼容接口，请自行填写 Base URL',
+    hint: 'OpenAI 兼容接口，需填 Base URL',
     color: '#65735f',
     background: '#f1f2ec',
     stroke: true,

@@ -27,7 +27,7 @@ async function clearApprovals(): Promise<void> {
 
 <template>
   <section class="tab-panel" id="tab-tools">
-    <p class="muted">启用或禁用工具；参数保存后下一轮生效。</p>
+    <p class="muted">开关工具，参数保存后下一轮生效。</p>
 
     <div class="tool-list">
       <p v-if="!store.tools.length" class="muted">

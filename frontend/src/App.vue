@@ -4,6 +4,7 @@ import AppSidebar from './components/AppSidebar.vue'
 import ChatComposer from './components/ChatComposer.vue'
 import ChatTopbar from './components/ChatTopbar.vue'
 import ChatTranscript from './components/ChatTranscript.vue'
+import GlobalTooltip from './components/GlobalTooltip.vue'
 import InspectorSidebar from './components/InspectorSidebar.vue'
 import OnboardingModal from './components/OnboardingModal.vue'
 import ProcessPanel from './components/ProcessPanel.vue'
@@ -128,5 +129,6 @@ onBeforeUnmount(() => {
   <OnboardingModal v-if="workspace.ready && workspace.needsSetup" />
   <SettingsModal v-else-if="ui.settingsOpen" />
   <WorkspaceModal v-if="ui.workspaceModalOpen" />
+  <GlobalTooltip />
   <ToastHost />
 </template>

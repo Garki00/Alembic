@@ -180,7 +180,6 @@ onBeforeUnmount(cancelHide)
         type="button"
         class="turn-summary-row"
         :class="{ diffable: Boolean(file.diff) }"
-        :title="`${file.path}（点击查看 Diff）`"
         @click="open(file)"
         @mouseenter="showHover(file, $event)"
         @mouseleave="scheduleHide"

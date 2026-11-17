@@ -136,7 +136,7 @@ async function setDeveloperTools(event: Event): Promise<void> {
 <template>
   <section class="tab-panel" id="tab-general">
     <div class="panel-head">
-      <p class="muted">显示与执行偏好保存在本机数据目录，刷新或换窗口后仍然生效。</p>
+      <p class="muted">设置保存在本机，重启后仍然生效。</p>
     </div>
 
     <div class="settings-group">
@@ -145,7 +145,7 @@ async function setDeveloperTools(event: Event): Promise<void> {
         <div class="general-row">
           <div class="general-text">
             <div class="general-title">权限</div>
-            <div class="general-desc">控制 Agent 调用工具前是否需要你审批，以及只读与完全权限的边界。</div>
+            <div class="general-desc">选择会话的默认权限模式</div>
           </div>
           <div class="general-control">
             <select class="general-select" :value="preferences.permission_mode" @change="setPermission">
@@ -162,9 +162,7 @@ async function setDeveloperTools(event: Event): Promise<void> {
         <div class="general-row">
           <div class="general-text">
             <div class="general-title">终端偏好</div>
-            <div class="general-desc">
-              命令工具优先使用的终端；模型也可以在单次调用里临时指定其他终端。
-            </div>
+            <div class="general-desc">命令默认使用的终端</div>
           </div>
           <div class="general-control">
             <select class="general-select" :value="preferences.terminal" @change="setTerminal">
@@ -189,12 +187,11 @@ async function setDeveloperTools(event: Event): Promise<void> {
         <div class="general-row">
           <div class="general-text">
             <div class="general-title">运行状态</div>
-            <div class="general-desc">
-              {{ sandbox?.detail || '沙盒状态未知' }}。不可用时命令工具会失败关闭，不会在宿主机直接执行。
-            </div>
+            <div class="general-desc">命令在沙盒中执行，不可用时直接拒绝</div>
           </div>
           <div class="general-control">
             <span class="general-hint">{{ sandbox?.ready ? '已就绪' : '不可用' }}</span>
+            <div v-if="sandbox?.detail" class="general-hint">{{ sandbox.detail }}</div>
             <div v-if="sandbox?.reasons?.length" class="general-hint">
               {{ sandbox.reasons.join('、') }}
             </div>
@@ -204,9 +201,7 @@ async function setDeveloperTools(event: Event): Promise<void> {
         <div class="general-row">
           <div class="general-text">
             <div class="general-title">网络策略</div>
-            <div class="general-desc">
-              offline 完全断网；allowlist 只允许经本机代理访问列出的域名。
-            </div>
+            <div class="general-desc">命令可访问的网络范围</div>
           </div>
           <div class="general-control">
             <select class="general-select" :value="sandboxConfig?.network || 'offline'" @change="setSandboxNetwork">
@@ -227,7 +222,7 @@ async function setDeveloperTools(event: Event): Promise<void> {
         <div class="general-row">
           <div class="general-text">
             <div class="general-title">工作步骤展示</div>
-            <div class="general-desc">选择希望看到多少工具调用细节。不会隐藏最终答案。</div>
+            <div class="general-desc">对话里显示多少执行细节</div>
           </div>
           <div class="general-control">
             <select class="general-select" :value="preferences.transcript_view" @change="setMode">
@@ -244,7 +239,7 @@ async function setDeveloperTools(event: Event): Promise<void> {
         <div class="general-row">
           <div class="general-text">
             <div class="general-title">工作步骤收起时机</div>
-            <div class="general-desc">选择何时自动收起已完成轮次的工作步骤。</div>
+            <div class="general-desc">完成的步骤何时自动收起</div>
           </div>
           <div class="general-control">
             <select
@@ -259,8 +254,8 @@ async function setDeveloperTools(event: Event): Promise<void> {
             </select>
             <div class="general-hint">
               {{ preferences.transcript_view === 'verbose'
-                ? '完全展开模式下不会自动收起'
-                : '仅影响已完成的轮次；手动展开后不会被强制收起' }}
+                ? '完全展开时不会自动收起'
+                : '只影响已完成的轮次' }}
             </div>
           </div>
         </div>
@@ -268,7 +263,7 @@ async function setDeveloperTools(event: Event): Promise<void> {
         <div class="general-row">
           <div class="general-text">
             <div class="general-title">网页链接打开方式</div>
-            <div class="general-desc">AI 回复里的 http(s) 链接点击后在哪里打开。</div>
+            <div class="general-desc">点击回复里的链接时在哪打开</div>
           </div>
           <div class="general-control">
             <select class="general-select" :value="preferences.link_target" @change="setLinkTarget">
@@ -283,9 +278,7 @@ async function setDeveloperTools(event: Event): Promise<void> {
         <div class="general-row">
           <div class="general-text">
             <div class="general-title">显示代码工作视图</div>
-            <div class="general-desc">
-              开启后，在对话中显示本轮代码改动、命令与工具轨迹，便于检查 Agent 做了什么。
-            </div>
+            <div class="general-desc">在对话里显示代码改动和命令记录</div>
           </div>
           <div class="general-control">
             <label class="switch">

@@ -87,7 +87,15 @@ function chooseBrowser(): void {
           title="新建标签页"
           @click.stop="addOpen = !addOpen"
         >
-          +
+          <svg class="icon-plus" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M8 3.2v9.6M3.2 8h9.6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+            />
+          </svg>
         </button>
         <div v-if="addOpen" class="inspector-add-menu">
           <button type="button" @click="chooseFiles">工作区文件</button>

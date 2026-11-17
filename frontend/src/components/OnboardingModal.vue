@@ -115,7 +115,7 @@ async function finish(): Promise<void> {
             <div class="onboarding-pref-row">
               <div>
                 <div class="general-title">工作步骤展示</div>
-                <div class="general-desc">选择希望看到多少思考与工具调用细节。</div>
+                <div class="general-desc">对话里显示多少执行细节</div>
               </div>
               <select v-model="transcriptView" class="general-select">
                 <option v-for="mode in TRANSCRIPT_MODES" :key="mode.value" :value="mode.value">
@@ -130,7 +130,7 @@ async function finish(): Promise<void> {
             <div class="onboarding-pref-row">
               <div>
                 <div class="general-title">工作步骤收起时机</div>
-                <div class="general-desc">选择何时自动收起已完成轮次的工作步骤。</div>
+                <div class="general-desc">完成的步骤何时自动收起</div>
               </div>
               <select
                 v-model="collapseTiming"
@@ -148,14 +148,14 @@ async function finish(): Promise<void> {
             </div>
             <p class="onboarding-note">
               {{ transcriptView === 'verbose'
-                ? '完全展开模式下不会自动收起'
-                : '手动展开的轮次不会被强制收起' }}
+                ? '完全展开时不会自动收起'
+                : '只影响已完成的轮次' }}
             </p>
 
             <div class="onboarding-pref-row">
               <div>
                 <div class="general-title">终端偏好</div>
-                <div class="general-desc">命令工具优先使用的终端，之后可在设置里修改。</div>
+                <div class="general-desc">命令默认使用的终端</div>
               </div>
               <select v-model="terminal" class="general-select">
                 <option

@@ -330,10 +330,7 @@ defineExpose({ validate, payload })
 
     <div class="provider-models">
       <div class="provider-models-head">
-        <div>
-          <div class="general-title">模型列表</div>
-          <div class="general-desc">从上游获取或手动添加；左侧箭头展开模型能力、上下文长度、输出上限与温度。</div>
-        </div>
+        <div class="general-title">模型列表</div>
         <button type="button" class="btn-outline" @click="addModel">＋ 添加模型</button>
       </div>
 
@@ -357,7 +354,23 @@ defineExpose({ validate, payload })
           :aria-expanded="row.expanded"
           title="模型能力与参数"
           @click="toggleAdvanced(row)"
-        >{{ row.expanded ? '⌃' : '⌄' }}</button>
+        >
+          <svg
+            class="model-advanced-icon"
+            :class="{ open: row.expanded }"
+            viewBox="0 0 16 16"
+            aria-hidden="true"
+          >
+            <path
+              d="M4.5 6.5 8 10l3.5-3.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
         <input
           v-model="row.model"
           placeholder="例如 deepseek-chat"
