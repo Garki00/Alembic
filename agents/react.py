@@ -42,7 +42,8 @@ from agents.approval import (
     describe_steps,
     policy_blocked_message,
 )
-from agents.context import SUMMARY_PREFIX, message_text
+from agents.compaction import is_checkpoint_text
+from agents.context import message_text
 from prompts.react import REACT_SYSTEM_PROMPT, build_react_prompt
 from tools.command_policy import assess_command
 from tools.errors import tool_error, truncate
@@ -101,7 +102,7 @@ def format_history(messages: Sequence[BaseMessage]) -> str:
         if not text:
             continue
         if kind == "human":
-            if text.startswith(SUMMARY_PREFIX) or text.startswith("【历史对话摘要】"):
+            if is_checkpoint_text(text) or text.startswith("【历史对话摘要】"):
                 rows.append(f"Summary: {text}")
             else:
                 rows.append(f"User: {text}")

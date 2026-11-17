@@ -6,6 +6,7 @@ import type {
   BrowseResult,
   FetchModelsResponse,
   Preferences,
+  PickFolderResult,
   ProviderInfo,
   ProviderPayload,
   SandboxConfig,
@@ -154,6 +155,29 @@ export const useWorkspaceStore = defineStore('workspace', {
       this.sessions = this.sessions.filter((item) => item.id !== sessionId)
     },
 
+    async updateSession(
+      sessionId: string,
+      patch: { title?: string; pinned?: boolean; archived?: boolean },
+    ): Promise<SessionSummary> {
+      const data = await api<{ session: SessionSummary }>(
+        `/api/sessions/${encodeURIComponent(sessionId)}`,
+        { method: 'PATCH', body: patch },
+      )
+      const index = this.sessions.findIndex((item) => item.id === sessionId)
+      if (index >= 0) this.sessions.splice(index, 1, data.session)
+      else this.sessions.unshift(data.session)
+      return data.session
+    },
+
+    async branchSession(sessionId: string): Promise<SessionSummary> {
+      const data = await api<{ session: SessionSummary }>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/branch`,
+        { method: 'POST' },
+      )
+      this.sessions = [data.session, ...this.sessions]
+      return data.session
+    },
+
     async activateWorkspace(workspaceId: string): Promise<void> {
       this.activeWorkspaceId = workspaceId
       try {
@@ -197,6 +221,13 @@ export const useWorkspaceStore = defineStore('workspace', {
     async browseWorkspace(path?: string): Promise<BrowseResult> {
       const query = path ? `?path=${encodeURIComponent(path)}` : ''
       return api<BrowseResult>(`/api/workspaces/browse${query}`)
+    },
+
+    async pickWorkspaceFolder(initial = ''): Promise<PickFolderResult> {
+      return api<PickFolderResult>('/api/workspaces/pick', {
+        method: 'POST',
+        body: { initial },
+      })
     },
 
     async saveProvider(payload: ProviderPayload): Promise<ProviderInfo> {

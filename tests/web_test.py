@@ -36,6 +36,23 @@ class StubStreamAgent:
         yield ("values", {"messages": [*messages, AIMessage(content="你好")]})
 
 
+class StubCacheStreamAgent:
+    """Streams one answer whose provider usage reports a prompt-cache hit."""
+
+    def stream(self, payload, stream_mode=None):
+        messages = list(payload["messages"])
+        ai = AIMessage(
+            content="好了",
+            usage_metadata={
+                "input_tokens": 1000,
+                "output_tokens": 20,
+                "total_tokens": 1020,
+                "input_token_details": {"cache_read": 900},
+            },
+        )
+        yield ("values", {"messages": [*messages, ai]})
+
+
 class StubThoughtStreamAgent:
     emits_thought_events = True
 
@@ -396,6 +413,44 @@ class WebWorkspaceTest(unittest.TestCase):
         roles = [item["role"] for item in history["messages"]]
         self.assertEqual(roles, ["user", "assistant"])
         self.assertEqual(history["messages"][1]["content"], "你好")
+
+    def test_chat_done_event_carries_cache_usage(self):
+        """缓存读数要能到前端：done 事件带本轮 + 会话累计，历史接口带会话累计。"""
+        self.create_provider()
+        self.create_workspace()
+        original = self.app.state.runtime_factory
+        self.app.state.runtime_factory = lambda *args, **kwargs: (StubCacheStreamAgent(), None)
+        try:
+            session = self.client.post("/api/sessions", json={}).json()["session"]
+            events = []
+            with self.client.stream(
+                "POST", "/api/chat",
+                json={"session_id": session["id"], "message": "你好"},
+            ) as response:
+                buffer = ""
+                for chunk in response.iter_text():
+                    buffer += chunk
+                    while "\n\n" in buffer:
+                        raw, buffer = buffer.split("\n\n", 1)
+                        event, data = "message", ""
+                        for line in raw.splitlines():
+                            if line.startswith("event:"):
+                                event = line[6:].strip()
+                            elif line.startswith("data:"):
+                                data += line[5:].strip()
+                        if data:
+                            events.append((event, json.loads(data)))
+            history = self.client.get(f"/api/sessions/{session['id']}/messages").json()
+        finally:
+            self.app.state.runtime_factory = original
+
+        done = dict(events)["done"]
+        self.assertEqual(done["usage"]["cache_read_tokens"], 900)
+        self.assertEqual(done["usage"]["prompt_tokens"], 1000)
+        self.assertAlmostEqual(done["usage"]["hit_rate"], 0.9)
+        self.assertEqual(done["session_usage"]["cache_read_tokens"], 900)
+        self.assertEqual(done["session_usage"]["requests"], 1)
+        self.assertEqual(history["usage"]["cache_read_tokens"], 900)
 
     def test_chat_stream_exposes_thought_as_sse_event(self):
         """Thought content needed for work steps must arrive at the frontend as a standalone SSE event."""

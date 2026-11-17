@@ -13,6 +13,7 @@ import os
 import queue
 import re
 import threading
+import uuid
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,7 @@ from agents.approval import (
     tool_risks,
 )
 from agents.context import ChatSession, SessionStore, context_tokens, message_text, reasoning_text
+from agents.usage import SessionUsage
 from config.settings import settings
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
 from config.store import (
@@ -51,7 +53,7 @@ from web.approvals import ApprovalBroker, ApprovalRegistry
 from web.auth import install_auth
 from web.process_events import ProcessEventHub
 from web.questions import QuestionBroker, QuestionRegistry
-from web.runtime import build_runtime, create_chat_model
+from web.runtime import build_runtime
 
 # 前后端分离后，后端只提供 /api；页面由 frontend/ 的 Vite 应用提供。
 
@@ -126,6 +128,16 @@ class SessionPayload(BaseModel):
     workspace_id: str = ""
 
 
+class SessionPatch(BaseModel):
+    title: str | None = None
+    pinned: bool | None = None
+    archived: bool | None = None
+
+
+class FolderPickPayload(BaseModel):
+    initial: str = ""
+
+
 class ApprovalPayload(BaseModel):
     decision: str = "deny"  # once | always | deny
 
@@ -156,25 +168,41 @@ def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _session_title(session_store: SessionStore, session_id: str) -> str:
+def _clean_title(text: str) -> str:
+    """Trim a first message into a readable one-line session title."""
+    text = re.sub(r"```.*?```", " ", str(text or ""), flags=re.S)
+    text = re.sub(r"\[Attached files\].*?\[/Attached files\]", " ", text, flags=re.S)
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[\r\n\t]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" #>-")
+    return text[:40]
+
+
+def _session_title(session_store: SessionStore, session_id: str, meta=None) -> str:
+    stored = str(getattr(meta, "title", "") or "").strip()
+    if stored:
+        return stored
     messages, _ = session_store.load(session_id)
     for message in messages:
         if getattr(message, "type", "") == "human":
-            title = message_text(message).strip().replace("\n", " ")
+            raw = message_text(message)
+            title = _clean_title(raw) or re.sub(r"\s+", " ", raw).strip()[:40]
             if title:
-                return title[:40]
-    return "新会话"
+                return title
+    return "新对话"
 
 
 def _session_summary(session_store: SessionStore, meta) -> dict[str, Any]:
     return {
         "id": meta.session_id,
-        "title": _session_title(session_store, meta.session_id),
+        "title": _session_title(session_store, meta.session_id, meta),
         "turns": meta.turns,
         "messages": meta.message_count,
         "updated_at": meta.updated_at,
         "compactions": meta.compactions,
         "workspace_id": meta.workspace_id,
+        "pinned": bool(getattr(meta, "pinned", False)),
+        "archived": bool(getattr(meta, "archived", False)),
     }
 
 
@@ -693,6 +721,31 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    @app.post("/api/workspaces/pick")
+    def pick_workspace_folder(payload: FolderPickPayload):
+        """Open the system folder picker and return the chosen directory."""
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+        except Exception as exc:  # tkinter is optional in some Python builds
+            raise HTTPException(501, "当前环境无法打开系统文件选择器") from exc
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            try:
+                selected = filedialog.askdirectory(
+                    initialdir=payload.initial or None,
+                    mustexist=True,
+                    title="选择工作区目录",
+                )
+            finally:
+                root.destroy()
+        except Exception as exc:
+            raise HTTPException(500, f"无法打开系统文件选择器：{exc}") from exc
+        path = str(selected or "").strip()
+        return {"path": path, "cancelled": not bool(path)}
+
     # ---- 工作区文件浏览（右侧边栏） ----
     _SKIP_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".tmp", ".idea", ".alembic"}
     _UNSUPPORTED_SUFFIXES = {
@@ -859,6 +912,43 @@ def create_app(
         app.state.session_activations.pop(session_id, None)
         return {"ok": True}
 
+    @app.patch("/api/sessions/{session_id}")
+    def update_session(session_id: str, payload: SessionPatch):
+        messages, meta = sessions.load(session_id)
+        if payload.title is not None:
+            meta.title = _clean_title(payload.title)[:80]
+        if payload.pinned is not None:
+            meta.pinned = bool(payload.pinned)
+        if payload.archived is not None:
+            meta.archived = bool(payload.archived)
+        if not sessions.save(
+            session_id,
+            messages,
+            meta,
+            display_messages=sessions.load_display(session_id) or messages,
+        ):
+            raise HTTPException(500, "保存会话信息失败")
+        return {"session": _session_summary(sessions, meta)}
+
+    @app.post("/api/sessions/{session_id}/branch")
+    def branch_session(session_id: str):
+        _messages, meta = sessions.load(session_id)
+        base = _session_title(sessions, session_id, meta).strip() or "新对话"
+        pattern = re.compile(rf"^{re.escape(base)}\((\d+)\)$")
+        used = 0
+        for item in sessions.list_sessions():
+            if item.workspace_id != meta.workspace_id:
+                continue
+            match = pattern.match(_session_title(sessions, item.session_id, item))
+            if match:
+                used = max(used, int(match.group(1)))
+        title = f"{base}({used + 1})"
+        new_id = f"{_new_session_id()}-{uuid.uuid4().hex[:4]}"
+        created = sessions.duplicate(session_id, new_id, title)
+        if created is None:
+            raise HTTPException(404, "对话不存在或无法复制")
+        return {"session": _session_summary(sessions, created)}
+
     @app.get("/api/sessions/{session_id}/messages")
     def session_messages(session_id: str):
         model_messages, meta = sessions.load(session_id)
@@ -872,6 +962,7 @@ def create_app(
             "tokens": tokens,
             "token_source": token_source,
             "max_tokens": _context_limit(models.active()),
+            "usage": SessionUsage.from_dict(meta.usage).to_dict(),
         }
 
     @app.post("/api/sessions/{session_id}/compact")
@@ -887,15 +978,34 @@ def create_app(
             messages, meta = sessions.load(session_id)
             if not messages:
                 raise HTTPException(400, "当前会话还没有可压缩的历史")
+            # 摘要器必须和真实请求共享系统提示词与工具声明，才能复用前缀缓存；
+            # 因此这里走与对话相同的运行时装配，只丢弃随后不用的 agent。
             try:
-                model = create_chat_model(model_cfg)
+                _workspace_id, workspace = resolve_workspace(meta.workspace_id, None)
+            except HTTPException:
+                workspace = str(Path(settings.default_workspace))
+            prefs = preferences.get()
+            try:
+                _agent, summarizer = app.state.runtime_factory(
+                    model_cfg,
+                    tools.enabled_tools(),
+                    workspace,
+                    tool_configs=tools.configs(),
+                    session_id=session_id,
+                    terminal=str(prefs.get("terminal") or "powershell"),
+                    activation=app.state.session_activations.setdefault(
+                        session_id, ToolActivation()
+                    ),
+                    sandbox=app.state.sandbox,
+                    sandbox_config=sandbox_config.get(),
+                )
             except Exception as exc:
                 raise HTTPException(400, str(exc)) from exc
             session = ChatSession(
                 None,
                 session_id,
                 store=sessions,
-                summarizer=model,
+                summarizer=summarizer,
                 workspace_id=meta.workspace_id,
                 model_context_window=model_cfg.context_length or None,
                 hydrate=True,
@@ -909,6 +1019,7 @@ def create_app(
                 "max_tokens": stats["max_tokens"],
                 "messages": len(session.messages),
                 "turns": stats["turns"],
+                "usage": stats["usage"],
             }
         finally:
             lock.release()
@@ -1115,6 +1226,9 @@ def create_app(
                                         "max_tokens": stats["max_tokens"],
                                         "messages": len(session.messages),
                                         "turns": session.meta.turns,
+                                        # 本轮 + 会话累计用量，含提供方的缓存读/写桶
+                                        "usage": data.usage_dict(),
+                                        "session_usage": stats["usage"],
                                     },
                                 )
                             )

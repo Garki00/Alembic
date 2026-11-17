@@ -125,7 +125,7 @@ tools/
   time.py weather.py mock.py
 web/
   __main__.py            自己 bind socket（支持 port=0）、写端口文件、ensure_storage、跑 uvicorn
-  server.py              只提供 /api：路由、SSE 对话、审批、工作区、供应商、进程视图
+  server.py              只提供 /api：路由、SSE 对话、审批、工作区 / 会话元数据、供应商、进程视图
   runtime.py             build_runtime：按当前设置装配 agent
   process_events.py      后台任务事件 hub：启动 / 完成事件分发给 SSE 客户端
   auth.py                可选 token 中间件（Bearer / Cookie；放行 OPTIONS 与 /api/health）
@@ -142,16 +142,17 @@ frontend/
       client.ts          fetch 封装、鉴权头、错误信息
       chat.ts            POST /api/chat 的 SSE 解析
       types.ts           后端 snake_case 数据结构类型
-    components/          侧边栏、对话流、审批卡、问答卡、任务清单、工作步骤、代码工作视图、后台任务面板、通用设置、输入区、设置、初始化向导、供应商编辑器/图标/选择器、GlobalTooltip（全站悬停说明）、Toast
+    components/          侧边栏（AppSidebar / WorkspaceGroup / SessionRow）、对话流、审批卡、问答卡、任务清单、工作步骤、代码工作视图、后台任务面板、通用设置、工具网格/列表、输入区、设置、初始化向导、供应商编辑器/图标/选择器、GlobalTooltip、FloatingMenu、ConfirmDialog、PanelToggle、Toast
     lib/
       markdown.ts        轻量 Markdown 渲染（从旧 app.js 迁移，无第三方依赖）
       providers.ts       ★ 供应商模板唯一事实来源：名称 / Base URL / 图标
       preferences.ts     工作步骤展示与收起时机的选项（通用设置 + 初始化向导共用）
+      time.ts            对话列表的相对时间（刚刚 / 分钟 / 小时 / 天）
     stores/
       workspace.ts       Pinia：模型 / 工具 / 工作区 / 会话列表 / 通用设置与 CRUD
       chat.ts            当前会话、流式消息、审批/提问回执、任务清单、附件、压缩、续跑
       processes.ts       后台任务列表、详情轮询与完成事件
-      ui.ts              弹窗、搜索、折叠状态、Toast、推荐问题草稿
+      ui.ts              弹窗、搜索、折叠状态、对话分组/排序、Toast、推荐问题草稿
     assets/main.css      设计系统（纸白 + 薄荷绿）
 scripts/
   dev.ps1 / dev.cmd      一键启动本地开发环境
@@ -344,6 +345,22 @@ App.vue onMounted
   `App.vue` 启动时建立 `/api/processes/events` 长连接，完成事件用于计数和自动续跑。
 - `tool_result` 事件让工作步骤在流式期间就能显示结果；历史会话通过
   `ToolMessage.tool_call_id` 与 `AIMessage.tool_calls[].id` 配对。
+- 会话元数据 `SessionMeta` 现包含 `title` / `pinned` / `archived`；首轮完成后
+  `ChatSession._finish_turn` 调用 `_generate_title`（使用摘要模型）生成短标题，
+  失败或没有摘要模型时回退 `title_from_text` 的首条内容前 40 字；标题随会话落盘，
+  `_session_title` 优先读 meta.title。对话列表的置顶 / 重命名 / 归档 / 分支通过
+  `PATCH /api/sessions/{id}` 与 `POST /api/sessions/{id}/branch` 持久化；分支标题
+  取 `原标题(n)`。
+- 左栏工具栏固定三个图标按钮（视图选项 / 搜索 / 添加工作区）；视图状态在
+  `stores/ui.ts`（`sessionGrouping` / `sessionSort` / `manualOrder` / `searchOpen`）。
+  `manualOrder` 只存在内存，切回最近更新即清空；拖动在列表内显示插入线。
+- 对话与工作区的「更多」菜单使用 `FloatingMenu`（Teleport 到 body、固定定位、
+  优先在按钮右侧展开），不再受 `workspace-list` 滚动裁剪，也不改变列表布局。
+- 删除对话 / 工作区统一使用 `ConfirmDialog`：居中确认、第一次点「删除」后需再点
+  「再次点击删除」；成功删除不再弹顶部 Toast。
+- `FileViewer` 支持 PNG / JPEG / GIF / WebP / SVG 图片预览（后端返回 data URL，
+  单张上限 8 MB）；其他二进制仍提示不支持。
+- 设置 → 工具支持网格 / 列表切换；网格卡片点击展开参数，条目名与包含工具分开显示。
 
 ### 4.6 命令沙盒
 
@@ -488,6 +505,11 @@ run_command / start_process
     不要新增组件级的 tooltip 实现或自定义气泡，也不要为 hover 改写模板结构；
     气泡样式只在 `main.css` 的 `.ui-tooltip` 里维护。自带悬停浮层的元素
     （如修改文件的 Diff 预览行）不要再挂 `title`，避免两个浮层叠在一起。
+48. **对话列表约定**：标题 / 置顶 / 归档存在 `SessionMeta`（会话 JSON），前端不要
+    另存 localStorage；分支必须复制会话文件（`SessionStore.duplicate`），不能只复制
+    列表项。对话与工作区菜单统一用 `FloatingMenu` 挂到 body，删除统一用
+    `ConfirmDialog` 两次点击确认。标题由首轮结束后的 `_finish_turn` 调摘要模型生成，
+    失败回退 `title_from_text`；要调整标题策略就改这两处，不能只改前端。
 
 ## 6. 环境坑（这台机器上真实踩过的）
 
@@ -608,7 +630,17 @@ run_command / start_process
 26. **设置文案与悬停说明统一：设置各面板的说明改为一句话功能描述，控件本身能说清的
     直接删除（模型列表）；设置分组标题字号加大到行标题之上；悬停说明由
     `GlobalTooltip` 统一接管原生 `title`，样式收敛到 `.ui-tooltip`；模型能力箭头与
-    新建标签页加号改用 SVG 居中；工具长文本域只允许横向拉伸；工具条目描述收短。**
+    新建标签页加号改用 SVG 居中；工具长文本域只允许竖向拉伸；工具条目描述收短。**
+27. **左侧栏与对话管理重构：顶部改为视图选项 / 搜索 / 添加工作区三个图标按钮；
+    支持按工作区 / 单列表分组、最近更新 / 手动排序、拖动排序插入线、置顶规则、
+    重命名、分支（原标题(n)）、归档与「已归档」区、相对时间、hover 操作图标；
+    对话与工作区菜单改为挂 body 的浮层；删除改为居中两次确认。`SessionMeta` 新增
+    title / pinned / archived，新增 `PATCH /api/sessions/{id}` 与分支接口；标题由模型
+    在首轮结束后生成，失败回退首条内容。**
+28. **工作区选择改为盘符起始、地址栏图标式上一级 / 前往 / 资源管理器选择、网格
+    九列与列表视图；新增图片文件预览（PNG/JPEG/GIF/WebP/SVG）；设置 → 工具加入
+    网格 / 列表视图；左右侧栏开关与布局过渡、搜索展开动画、空目录提示对齐、
+    图标 hover 与确认弹窗样式统一。**
 
 ## 10. 给接手者的建议顺序
 

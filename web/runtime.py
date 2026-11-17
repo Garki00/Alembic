@@ -12,6 +12,7 @@ from langchain_openai import ChatOpenAI
 
 from agents.agent import build_middleware
 from agents.approval import ApprovalGate
+from agents.compaction import PrefixSummarizer
 from agents.react import ReActAgent
 from config.settings import settings
 from config.store import ModelConfig
@@ -224,6 +225,12 @@ def build_runtime(
             model_max_retries=settings.model_max_retries,
             max_output_chars=settings.max_tool_output_chars,
         )
+        summarizer = PrefixSummarizer(
+            model=model,
+            system_prompt=system_prompt,
+            engine="react",
+            max_tokens=settings.compact_summary_max_tokens or None,
+        )
     else:
         from agents.tool_visibility import ToolVisibilityMiddleware
 
@@ -240,5 +247,13 @@ def build_runtime(
             system_prompt=system_prompt,
             middleware=build_middleware(approval, visibility=visibility),
         )
-    # 同一个模型实例也用于生成上下文摘要
-    return agent, model
+        # 压缩用的模型、系统提示词与工具声明必须和真实请求完全一致，否则回放
+        # 不再是同一段字节，提供方的前缀缓存也就无从复用。
+        summarizer = PrefixSummarizer(
+            model=model,
+            system_prompt=system_prompt,
+            tools=model_tools,
+            engine="tool_calling",
+            max_tokens=settings.compact_summary_max_tokens or None,
+        )
+    return agent, summarizer

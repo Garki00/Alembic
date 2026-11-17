@@ -1,5 +1,5 @@
 # agents/context.py
-"""Session context: multi-turn history, local persistence, and context compaction.
+"""Session context: multi-turn history, local persistence, and cache-aware compaction.
 
 - ``ChatSession`` holds every message of the current session and hands the whole list
   to the agent each turn, so a multi-turn conversation carries context naturally;
@@ -8,11 +8,15 @@
 - the context token count prefers the ``usage`` reported by the model API (the same
   basis as billing, including the system prompt and tool schemas) and falls back to a
   local character estimate only when it is unavailable;
+- every turn also folds the provider's cache buckets into a per-turn and a per-session
+  total (:mod:`agents.usage`), so the cache hit rate is measurable instead of guessed;
 - above the threshold (window × ratio − reserve, or a message count) earlier turns are
-  summarized by the model and only the most recent messages are kept, so the context
-  cannot grow without bound;
-- automatic compactions are at least a few turns apart, and a single tool output has a
-  token budget, so repeated compaction and oversized outputs cannot overflow the window;
+  replaced by one checkpoint message. The summary request replays the conversation's
+  own prefix (system prompt, tool declarations, the exact shadowed messages) so it is
+  served from the provider's warm cache, and the retained tail is never rewritten;
+- oversized tool results are pruned locally before a summary is requested, and only
+  newly produced messages are truncated, so a stable prefix stays byte-identical;
+- a provider-confirmed context overflow compacts the head and retries the request once;
 - when summarization fails (for example a failed summary request) it degrades to
   dropping older messages with an explicit note, keeping the conversation usable.
 """
@@ -40,6 +44,16 @@ from langchain_core.messages import (
     messages_to_dict,
 )
 
+from agents.compaction import (
+    COMPACTION_PREAMBLE,
+    TOOL_OUTPUT_TRUNCATED,
+    checkpoint_message,
+    is_checkpoint_text,
+    is_context_overflow_error,
+    prune_tool_messages,
+    select_shadow_start,
+)
+from agents.usage import SessionUsage, TurnUsage, fold_turn_usage
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -47,9 +61,10 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _SESSION_ID_UNSAFE = re.compile(r"[^0-9A-Za-z_.\-]+")
 
-#: 压缩摘要消息的固定前缀，方便提示词与调试时识别
-SUMMARY_PREFIX = "[Conversation summary]"
+#: 压缩检查点的固定前缀；用它识别摘要消息（旧会话里的旧标记也仍能识别）
+SUMMARY_PREFIX = COMPACTION_PREAMBLE
 
+#: 仅用于没有前缀回放能力的旧摘要器（例如测试替身或外部脚本）
 _SUMMARY_PROMPT = """Summarize this conversation for continuation.
 Keep only: user goals, confirmed facts and decisions, changed files, verification
 results, and unresolved next steps. Omit greetings, repetition, raw tool output,
@@ -58,6 +73,14 @@ and secrets. Output bullets only.
 Conversation:
 {messages}
 """
+
+_TITLE_PROMPT = """Write a short title for this conversation.
+Rules: at most 6 words or 24 characters; same language as the conversation; no quotes,
+no trailing punctuation, no explanations. Output the title only.
+
+User: {user}
+Assistant: {assistant}
+Title:"""
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +218,6 @@ def context_tokens(messages: Sequence[BaseMessage]) -> tuple[int, str]:
     return estimate_tokens(messages), "estimate"
 
 
-TOOL_OUTPUT_TRUNCATED = "…[tool output truncated, original about {tokens} tokens]"
-
-
 def cap_tool_outputs(
     messages: Sequence[BaseMessage],
     max_tokens: int,
@@ -248,6 +268,16 @@ def session_slug(session_id: str) -> str:
     return slug
 
 
+def title_from_text(text: str, limit: int = 40) -> str:
+    """Derive a short session title from the first user message."""
+    value = re.sub(r"```.*?```", " ", str(text or ""), flags=re.S)
+    value = re.sub(r"\[Attached files\].*?\[/Attached files\]", " ", value, flags=re.S)
+    value = re.sub(r"https?://\S+", " ", value)
+    value = re.sub(r"[\r\n\t]+", " ", value)
+    value = re.sub(r"\s+", " ", value).strip(" #>-")
+    return value[:limit]
+
+
 @dataclass
 class SessionMeta:
     """Session metadata (also written to the JSON file for the session list)."""
@@ -260,6 +290,11 @@ class SessionMeta:
     message_count: int = 0
     last_compaction_turn: int = 0
     workspace_id: str = ""
+    title: str = ""
+    pinned: bool = False
+    archived: bool = False
+    #: 累计用量（含缓存读/写桶），持久化以便刷新页面后仍能看到命中率
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 class SessionStore:
@@ -290,6 +325,10 @@ class SessionStore:
                 message_count=len(messages),
                 last_compaction_turn=int(payload.get("last_compaction_turn", 0)),
                 workspace_id=str(payload.get("workspace_id", "")),
+                title=str(payload.get("title", "")),
+                pinned=bool(payload.get("pinned", False)),
+                archived=bool(payload.get("archived", False)),
+                usage=payload.get("usage") if isinstance(payload.get("usage"), dict) else {},
             )
             return messages, meta
         except (OSError, ValueError, TypeError) as exc:
@@ -332,6 +371,10 @@ class SessionStore:
             "message_count": len(visible),
             "last_compaction_turn": meta.last_compaction_turn,
             "workspace_id": meta.workspace_id,
+            "title": meta.title,
+            "pinned": meta.pinned,
+            "archived": meta.archived,
+            "usage": meta.usage or {},
             "messages": messages_to_dict(list(messages)),
             # 用户可见的完整原文；模型上下文可以独立压缩，不能覆盖这一份。
             "display_messages": messages_to_dict(visible),
@@ -358,6 +401,37 @@ class SessionStore:
             logger.warning("删除会话 %s 失败：%s", session_id, exc)
             return False
 
+    def duplicate(self, session_id: str, new_id: str, title: str) -> SessionMeta | None:
+        """Copy one session (messages, display history, workspace) into a new id."""
+        source = self.path(session_id)
+        if not source.exists():
+            return None
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("复制会话 %s 失败：%s", session_id, exc)
+            return None
+        now = _now()
+        payload.update({
+            "session_id": new_id,
+            "title": title,
+            "pinned": False,
+            "archived": False,
+            "created_at": now,
+            "updated_at": now,
+        })
+        target = self.path(new_id)
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_name(target.name + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, target)
+        except OSError as exc:
+            logger.warning("复制会话 %s 失败：%s", new_id, exc)
+            return None
+        _messages, meta = self.load(new_id)
+        return meta
+
     def list_sessions(self) -> list[SessionMeta]:
         if not self.directory.exists():
             return []
@@ -376,6 +450,9 @@ class SessionStore:
                     compactions=int(payload.get("compactions", 0)),
                     message_count=int(payload.get("message_count", 0)),
                     workspace_id=str(payload.get("workspace_id", "")),
+                    title=str(payload.get("title", "")),
+                    pinned=bool(payload.get("pinned", False)),
+                    archived=bool(payload.get("archived", False)),
                 )
             )
         sessions.sort(key=lambda item: item.updated_at, reverse=True)
@@ -385,21 +462,55 @@ class SessionStore:
 # ---------------------------------------------------------------------------
 # 上下文压缩
 # ---------------------------------------------------------------------------
-def _summarize(model, messages: Sequence[BaseMessage]) -> str:
+def _summarize(summarizer, messages: Sequence[BaseMessage]) -> str:
+    """Ask the summarizer for a checkpoint body.
+
+    A :class:`~agents.compaction.PrefixSummarizer` replays the live prefix
+    (system prompt, tool declarations, the exact shadowed messages) so the
+    auxiliary request is served from the provider's warm cache. Anything else
+    keeps the legacy single-string prompt.
+    """
+    if getattr(summarizer, "replays_prefix", False):
+        return summarizer.summarize(list(messages))
     prompt = _SUMMARY_PROMPT.format(messages=get_buffer_string(list(messages)))
-    response = model.invoke(prompt)
+    response = summarizer.invoke(prompt)
     text = message_text(response).strip()
     if not text:
         raise ValueError("摘要模型返回了空内容")
     return text
 
 
+def _generate_title(model, messages: Sequence[BaseMessage]) -> str:
+    """Ask the model for a short title from the first user/assistant exchange."""
+    user = ""
+    assistant = ""
+    for message in messages:
+        kind = getattr(message, "type", "")
+        if kind == "human" and not user:
+            user = message_text(message).strip()
+        elif kind == "ai" and not assistant:
+            text = message_text(message).strip()
+            if text:
+                assistant = text
+        if user and assistant:
+            break
+    if not user:
+        return ""
+    prompt = _TITLE_PROMPT.format(user=user[:600], assistant=assistant[:600])
+    response = model.invoke(prompt)
+    text = message_text(response).strip()
+    if not text:
+        return ""
+    line = next((item.strip() for item in text.splitlines() if item.strip()), "")
+    line = re.sub(r"^(title|标题)\s*[:：]\s*", "", line, flags=re.I)
+    line = line.strip(" \"'`“”‘’")
+    line = re.sub(r"\s+", " ", line).strip(" .。!！?？")
+    return line[:30]
+
+
 def _keep_start_index(messages: Sequence[BaseMessage], keep_recent: int) -> int:
-    """Compute the start of the kept region so a tool result is never split from the AI message that triggered it."""
-    start = max(0, len(messages) - max(1, keep_recent))
-    while start > 0 and isinstance(messages[start], ToolMessage):
-        start -= 1
-    return start
+    """Start of the retained tail; a tool result is never split from its call."""
+    return select_shadow_start(messages, keep_recent)
 
 
 def compact_messages(
@@ -407,11 +518,15 @@ def compact_messages(
     summarizer,
     keep_recent: int = 8,
 ) -> tuple[list[BaseMessage], str | None]:
-    """Compact the message history.
+    """Replace the oldest span with one checkpoint message.
+
+    The retained tail is returned unchanged and in order, so the next request
+    reuses its cache from the checkpoint onwards; a summary that would not
+    shrink the span is rejected and the original history is kept.
 
     Returns:
-        ``(new message list, summary text)``. When there is nothing to compact or
-        summarization fails, returns ``(original list, None)`` or the degraded list.
+        ``(new message list, summary text)``. ``(original, None)`` when there is
+        nothing to compact, the summary is empty, or it does not shrink.
     """
     start = _keep_start_index(messages, keep_recent)
     if start <= 0:
@@ -428,7 +543,12 @@ def compact_messages(
         )
         return [note, *recent], None
 
-    return [HumanMessage(content=f"{SUMMARY_PREFIX}\n{summary}"), *recent], summary
+    checkpoint = checkpoint_message(summary)
+    if estimate_tokens([checkpoint]) >= estimate_tokens(older):
+        # 摘要没有缩小上下文：替换只会多花 token 并打断缓存，保持原样。
+        logger.warning("摘要未缩小上下文（%s 条消息），保留原历史", len(older))
+        return list(messages), None
+    return [checkpoint, *recent], summary
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +563,11 @@ class TurnResult:
     context_tokens: int
     compacted: bool = False
     token_source: str = "estimate"
+    #: 本轮所有模型请求折叠后的用量（含缓存读/写桶）
+    usage: TurnUsage = field(default_factory=TurnUsage)
+
+    def usage_dict(self) -> dict[str, Any]:
+        return self.usage.to_dict()
 
 
 #: 两次自动压缩之间至少间隔的轮数，避免压缩后立刻二次触发
@@ -499,6 +624,7 @@ class ChatSession:
             self.display_messages = self.store.load_display(self.session_id)
             if not self.display_messages:
                 self.display_messages = list(self.messages)
+        self.session_usage = SessionUsage.from_dict(self.meta.usage)
         # 工作区归属以调用方为准（会话文件里的旧值可能为空）
         if workspace_id:
             self.meta.workspace_id = workspace_id
@@ -532,6 +658,7 @@ class ChatSession:
             "model_context_window": self.model_context_window,
             "reserve_tokens": self.compact_reserve_tokens,
             "updated_at": self.meta.updated_at,
+            "usage": self.session_usage.to_dict(),
         }
 
     def recent(self, limit: int = 10) -> list[BaseMessage]:
@@ -544,15 +671,30 @@ class ChatSession:
         """Send one question and return the reply plus the messages added this turn."""
         compacted = self._begin_turn(question)
         history = list(self.messages)
-        try:
-            messages = self._invoke(history)
-        except BaseException:
-            # 本轮失败：撤销刚追加的提问，保持历史一致
-            self.messages = history[:-1]
-            if self.display_messages:
-                self.display_messages.pop()
-            raise
-        return self._finish_turn(history, messages, compacted)
+        messages: list[BaseMessage] | None = None
+        retried = False
+        while True:
+            try:
+                messages = self._invoke(history)
+                break
+            except BaseException as exc:
+                # 提供方确认溢出：压缩头部后重发一次（非流式路径同样适用）
+                if (
+                    isinstance(exc, Exception)
+                    and not retried
+                    and settings.overflow_recovery
+                    and is_context_overflow_error(exc)
+                    and self._recover_from_overflow()
+                ):
+                    retried = True
+                    history = list(self.messages)
+                    continue
+                # 本轮失败：撤销刚追加的提问，保持历史一致
+                self.messages = history[:-1]
+                if self.display_messages:
+                    self.display_messages.pop()
+                raise
+        return self._finish_turn(history, messages or history, compacted)
 
     def ask_stream(self, question: str, *, internal: bool = False):
         """Stream one question, yielding events in order:
@@ -573,7 +715,37 @@ class ChatSession:
         if compacted:
             yield ("compacted", None)
 
-        history = list(self.messages)
+        # 提供方确认上下文溢出时：压缩头部后重发同一个请求（只重试一次）。
+        # 仅当还没有向界面吐出任何内容时才重试，否则会重复输出。
+        max_attempts = 2 if settings.overflow_recovery else 1
+        attempt = 0
+        while True:
+            history = list(self.messages)
+            state: dict[str, Any] = {"emitted": False, "messages": None}
+            try:
+                yield from self._stream_attempt(history, state)
+                break
+            except BaseException as exc:
+                recovered = (
+                    isinstance(exc, Exception)
+                    and attempt + 1 < max_attempts
+                    and not state["emitted"]
+                    and is_context_overflow_error(exc)
+                    and self._recover_from_overflow()
+                )
+                if recovered:
+                    attempt += 1
+                    continue
+                self.messages = history[:-1]
+                if self.display_messages:
+                    self.display_messages.pop()
+                raise
+
+        result = self._finish_turn(history, state["messages"] or history, compacted)
+        yield ("done", result)
+
+    def _stream_attempt(self, history: list[BaseMessage], state: dict[str, Any]):
+        """Consume one streamed attempt, recording emitted output in ``state``."""
         emitted_tools: set[str] = set()
         emitted_results: set[str] = set()
         emitted_thoughts: set[str] = set()
@@ -588,126 +760,157 @@ class ChatSession:
         # is the model's reasoning for the action, not part of the final answer.
         derive_step_thoughts = not getattr(self.agent, "emits_thought_events", False)
         messages: list[BaseMessage] | None = None
-        try:
-            stream = getattr(self.agent, "stream", None)
-            if stream is None:  # 不支持流式的 Agent（例如测试替身）
-                messages = self._invoke(history)
-            else:
-                for mode, payload in stream(
-                    {"messages": history}, stream_mode=["messages", "values"]
-                ):
-                    if mode == "thought":
-                        if payload:
-                            yield (
-                                "thought",
-                                payload if isinstance(payload, dict) else str(payload),
-                            )
+        stream = getattr(self.agent, "stream", None)
+        if stream is None:  # 不支持流式的 Agent（例如测试替身）
+            messages = self._invoke(history)
+            state["messages"] = messages
+            return
+        for mode, payload in stream(
+            {"messages": history}, stream_mode=["messages", "values"]
+        ):
+            if mode == "thought":
+                if payload:
+                    state["emitted"] = True
+                    yield (
+                        "thought",
+                        payload if isinstance(payload, dict) else str(payload),
+                    )
+                continue
+            if mode == "messages":
+                chunk, _meta = payload
+                if isinstance(chunk, AIMessageChunk):
+                    native_reasoning_delta = reasoning_text(chunk)
+                    if native_reasoning_delta:
+                        reasoning_id = (
+                            str(getattr(chunk, "id", "") or fallback_reasoning_id)
+                            or f"reasoning-{uuid4().hex[:12]}"
+                        )
+                        fallback_reasoning_id = reasoning_id
+                        streamed_reasoning += native_reasoning_delta
+                        state["emitted"] = True
+                        yield (
+                            "thought",
+                            {
+                                "id": reasoning_id,
+                                "text": native_reasoning_delta,
+                                "append": True,
+                            },
+                        )
+                    delta = message_text(chunk)
+                    if delta:
+                        state["emitted"] = True
+                        yield ("delta", delta)
+                continue
+            if mode != "values" or not isinstance(payload, dict):
+                continue
+            current = list(payload.get("messages") or [])
+            messages = current
+            state["messages"] = current
+            for message in current[len(history):]:
+                if isinstance(message, ToolMessage):
+                    result_id = str(
+                        getattr(message, "tool_call_id", "")
+                        or f"{getattr(message, 'name', '')}:{len(emitted_results)}"
+                    )
+                    if result_id in emitted_results:
                         continue
-                    if mode == "messages":
-                        chunk, _meta = payload
-                        if isinstance(chunk, AIMessageChunk):
-                            native_reasoning_delta = reasoning_text(chunk)
-                            if native_reasoning_delta:
-                                reasoning_id = (
-                                    str(getattr(chunk, "id", "") or fallback_reasoning_id)
-                                    or f"reasoning-{uuid4().hex[:12]}"
-                                )
-                                fallback_reasoning_id = reasoning_id
-                                streamed_reasoning += native_reasoning_delta
-                                yield (
-                                    "thought",
-                                    {
-                                        "id": reasoning_id,
-                                        "text": native_reasoning_delta,
-                                        "append": True,
-                                    },
-                                )
-                            delta = message_text(chunk)
-                            if delta:
-                                yield ("delta", delta)
+                    emitted_results.add(result_id)
+                    state["emitted"] = True
+                    yield (
+                        "tool_result",
+                        {
+                            "id": result_id,
+                            "name": getattr(message, "name", "") or "",
+                            "content": message_text(message),
+                        },
+                    )
+                    continue
+                if not isinstance(message, AIMessage):
+                    continue
+                calls = list(message.tool_calls or [])
+                native_reasoning = reasoning_text(message).strip()
+                if native_reasoning:
+                    # The same reasoning often arrives twice: once as
+                    # streamed chunks and once on the final AIMessage.
+                    # Providers may normalize spaces/newlines between
+                    # the two, so compare whitespace-insensitive keys.
+                    native_key = thought_key(native_reasoning)
+                    already_streamed = thought_key(streamed_reasoning).endswith(native_key)
+                    if already_streamed:
+                        emitted_thoughts.add(native_key)
+                    elif native_key not in emitted_thoughts:
+                        emitted_thoughts.add(native_key)
+                        state["emitted"] = True
+                        yield ("thought", native_reasoning)
+                if derive_step_thoughts and calls:
+                    thought_text = message_text(message).strip()
+                    thought_text_key = thought_key(thought_text)
+                    if thought_text_key and thought_text_key not in emitted_thoughts:
+                        emitted_thoughts.add(thought_text_key)
+                        state["emitted"] = True
+                        yield ("thought", thought_text)
+                for call in calls:
+                    key = str(call.get("id") or call.get("name"))
+                    if key in emitted_tools:
                         continue
-                    if mode != "values" or not isinstance(payload, dict):
-                        continue
-                    current = list(payload.get("messages") or [])
-                    messages = current
-                    for message in current[len(history):]:
-                        if isinstance(message, ToolMessage):
-                            result_id = str(
-                                getattr(message, "tool_call_id", "")
-                                or f"{getattr(message, 'name', '')}:{len(emitted_results)}"
-                            )
-                            if result_id in emitted_results:
-                                continue
-                            emitted_results.add(result_id)
-                            yield (
-                                "tool_result",
-                                {
-                                    "id": result_id,
-                                    "name": getattr(message, "name", "") or "",
-                                    "content": message_text(message),
-                                },
-                            )
-                            continue
-                        if not isinstance(message, AIMessage):
-                            continue
-                        calls = list(message.tool_calls or [])
-                        native_reasoning = reasoning_text(message).strip()
-                        if native_reasoning:
-                            # The same reasoning often arrives twice: once as
-                            # streamed chunks and once on the final AIMessage.
-                            # Providers may normalize spaces/newlines between
-                            # the two, so compare whitespace-insensitive keys.
-                            native_key = thought_key(native_reasoning)
-                            already_streamed = thought_key(streamed_reasoning).endswith(native_key)
-                            if already_streamed:
-                                emitted_thoughts.add(native_key)
-                            elif native_key not in emitted_thoughts:
-                                emitted_thoughts.add(native_key)
-                                yield ("thought", native_reasoning)
-                        if derive_step_thoughts and calls:
-                            thought_text = message_text(message).strip()
-                            thought_text_key = thought_key(thought_text)
-                            if thought_text_key and thought_text_key not in emitted_thoughts:
-                                emitted_thoughts.add(thought_text_key)
-                                yield ("thought", thought_text)
-                        for call in calls:
-                            key = str(call.get("id") or call.get("name"))
-                            if key in emitted_tools:
-                                continue
-                            emitted_tools.add(key)
-                            yield (
-                                "tool",
-                                {
-                                    "id": call.get("id"),
-                                    "name": call.get("name"),
-                                    "args": call.get("args") or {},
-                                },
-                            )
-        except BaseException:
-            self.messages = history[:-1]
-            if self.display_messages:
-                self.display_messages.pop()
-            raise
+                    emitted_tools.add(key)
+                    state["emitted"] = True
+                    yield (
+                        "tool",
+                        {
+                            "id": call.get("id"),
+                            "name": call.get("name"),
+                            "args": call.get("args") or {},
+                        },
+                    )
 
-        result = self._finish_turn(history, messages or history, compacted)
-        yield ("done", result)
+    def compact(self, keep_recent: int | None = None, *, force: bool = False) -> bool:
+        """缩掉最旧的一段历史；返回是否真的发生了变化。
 
-    def compact(self, keep_recent: int | None = None) -> bool:
-        """Compact the context immediately; returns whether a compaction happened."""
+        每一步都为前缀缓存考虑：
+
+        1. 选出「被遮蔽的头部 + 逐字保留的尾部」，尾部从用户消息开始，绝不拆开
+           工具调用与它的结果；
+        2. 头部里超大的工具结果先本地修剪（不花模型调用）。修剪后已回到阈值
+           以内就到此为止，保留原有历史结构；
+        3. 否则用回放前缀的摘要器生成检查点替换头部，尾部逐字不变 —— 下一次
+           请求可以从检查点之后继续复用缓存；
+        4. 摘要没能缩小上下文就保持原样：替换只会多花 token 并白白打断缓存。
+        """
         if self.summarizer is None:
             raise RuntimeError("当前会话没有配置摘要模型，无法压缩。")
-        messages, _summary = compact_messages(
-            self.messages,
-            self.summarizer,
-            keep_recent or self.keep_recent,
-        )
-        if messages == self.messages:
+        keep = keep_recent if keep_recent is not None else self.keep_recent
+        start = select_shadow_start(self.messages, keep)
+        if start <= 0:
+            return False
+
+        shadow = list(self.messages[:start])
+        tail = list(self.messages[start:])
+
+        # 头部只剩一条检查点时，再摘要一次不会带来新信息：跳过，省下一次调用，
+        # 也避免把同一个检查点在每次触发时都重写一遍。
+        if len(shadow) == 1 and is_checkpoint_text(message_text(shadow[0])):
+            return False
+
+        pruned, pruned_count = prune_tool_messages(shadow, self.max_tool_output_tokens)
+        if pruned_count and not force:
+            candidate = [*pruned, *tail]
+            if not self._over_threshold(candidate):
+                self.messages = candidate
+                self._record_compaction()
+                logger.info("压缩：修剪了 %s 条超长工具输出，无需摘要调用", pruned_count)
+                return True
+
+        messages, summary = compact_messages(self.messages, self.summarizer, keep)
+        if summary is None:
+            # 摘要失败或未缩小：至少把已经完成的修剪落地，避免白跑一趟。
+            if pruned_count:
+                self.messages = [*pruned, *tail]
+                self._record_compaction()
+                return True
             return False
         self.messages = messages
-        self.meta.compactions += 1
-        self.meta.last_compaction_turn = self.meta.turns
-        self.meta.updated_at = _now()
-        self._persist()
+        self._record_compaction()
         return True
 
     def reset(self) -> None:
@@ -715,6 +918,7 @@ class ChatSession:
         self.messages = []
         self.display_messages = []
         self.meta = SessionMeta(session_id=self.session_id)
+        self.session_usage = SessionUsage()
         self.store.delete(self.session_id)
 
     # ---- 内部实现 ----
@@ -740,16 +944,24 @@ class ChatSession:
         messages: list[BaseMessage],
         compacted: bool,
     ) -> TurnResult:
-        # 工具输出超预算的部分截断后再进历史，避免单次大输出撑爆窗口
-        messages = cap_tool_outputs(messages, self.max_tool_output_tokens)
-        self.messages = messages
+        # 只截断本轮新增的工具输出：改写已经发出去的历史消息，会让提供方的
+        # 前缀缓存从被改写的位置起全部失效，还会在每轮重复截断同一条消息。
         new_messages = messages[len(history):] if len(messages) >= len(history) else []
+        new_messages = cap_tool_outputs(new_messages, self.max_tool_output_tokens)
+        self.messages = [*history, *new_messages]
         if new_messages:
             # 模型上下文可能刚被压缩，但用户可见的原文始终按增量追加。
             self.display_messages.extend(new_messages)
 
+        turn_usage = fold_turn_usage(new_messages)
+        if turn_usage.known:
+            self.session_usage.add_turn(turn_usage)
+            self.meta.usage = self.session_usage.to_dict()
+
         self.meta.turns += 1
         self.meta.updated_at = _now()
+        if self.meta.turns == 1 and not self.meta.title:
+            self.meta.title = self._first_turn_title()
         self._persist()
         tokens, source = self.usage()
         return TurnResult(
@@ -758,7 +970,31 @@ class ChatSession:
             context_tokens=tokens,
             compacted=compacted,
             token_source=source,
+            usage=turn_usage,
         )
+
+    def _first_turn_title(self) -> str:
+        question = next(
+            (
+                message_text(message)
+                for message in self.messages
+                if getattr(message, "type", "") == "human"
+            ),
+            "",
+        )
+        fallback = title_from_text(question)
+        if self.summarizer is None:
+            return fallback
+        # 标题是一次冷启动的小请求，用摘要器背后的原始模型；前缀回放摘要器
+        # 本身没有 invoke()，不该为了标题重建一遍会话前缀。
+        model = getattr(self.summarizer, "model", self.summarizer)
+        if not hasattr(model, "invoke"):
+            return fallback
+        try:
+            return _generate_title(model, self.messages) or fallback
+        except Exception as exc:  # 标题失败不影响本轮对话
+            logger.warning("生成对话标题失败，回退首条内容：%s", exc)
+            return fallback
 
     def _maybe_compact(self) -> bool:
         if self.summarizer is None or not self.needs_compaction():
@@ -766,11 +1002,47 @@ class ChatSession:
         # 刚压缩过就再压一次通常是徒劳的：摘要本身也会占上下文
         if self.meta.turns - self.meta.last_compaction_turn < MIN_TURNS_BETWEEN_COMPACTIONS:
             return False
-        try:
-            return self.compact()
-        except Exception as exc:  # 压缩失败不影响本轮对话
-            logger.warning("自动压缩失败，本轮继续使用完整历史：%s", exc)
+        compacted = False
+        keep = self.keep_recent
+        for index in range(1 + max(0, settings.compaction_retries)):
+            try:
+                changed = self.compact(keep_recent=keep, force=index > 0)
+            except Exception as exc:  # 压缩失败不影响本轮对话
+                logger.warning("自动压缩失败，本轮继续使用完整历史：%s", exc)
+                return compacted
+            compacted = compacted or changed
+            if not changed or not self.needs_compaction():
+                break
+            # 仍然超阈值：下一轮保留更少，确保压力真的降下来
+            keep = max(1, keep // 2)
+        return compacted
+
+    def _recover_from_overflow(self) -> bool:
+        """Compact the head aggressively after a provider-confirmed overflow."""
+        if self.summarizer is None:
             return False
+        keep = max(1, min(self.keep_recent, settings.overflow_retain_messages))
+        try:
+            changed = self.compact(keep_recent=keep, force=True)
+        except Exception as exc:
+            logger.warning("上下文溢出后压缩失败：%s", exc)
+            return False
+        if changed:
+            logger.info("上下文溢出：已压缩头部，重发同一请求")
+        return changed
+
+    def _over_threshold(self, messages: Sequence[BaseMessage]) -> bool:
+        tokens, _source = context_tokens(messages)
+        return (
+            len(messages) > self.max_context_messages
+            or tokens > self.max_context_tokens
+        )
+
+    def _record_compaction(self) -> None:
+        self.meta.compactions += 1
+        self.meta.last_compaction_turn = self.meta.turns
+        self.meta.updated_at = _now()
+        self._persist()
 
     def _persist(self) -> None:
         self.store.save(

@@ -241,8 +241,13 @@ class ProcessViewApiTest(unittest.TestCase):
             def invoke(self, prompt):
                 return AIMessage(content="- summarized")
 
-        with patch("web.server.create_chat_model", return_value=SummaryModel()):
+        # 压缩端点现在通过运行时装配拿到「回放前缀」的摘要器；测试直接替换它。
+        original_factory = self.app.state.runtime_factory
+        self.app.state.runtime_factory = lambda *args, **kwargs: (None, SummaryModel())
+        try:
             response = self.client.post("/api/sessions/s3/compact")
+        finally:
+            self.app.state.runtime_factory = original_factory
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertTrue(body["compacted"])

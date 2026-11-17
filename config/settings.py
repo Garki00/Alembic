@@ -52,6 +52,18 @@ def _env_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _env_nonneg_int(name: str, default: int) -> int:
+    """Read a non-negative integer environment variable (0 disables a feature)."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
 def _env_float(name: str, default: float, *, upper: float) -> float:
     """Read a float environment variable in the range (0, upper]."""
     raw = os.getenv(name)
@@ -123,6 +135,12 @@ class Settings:
     max_context_messages = _env_int("MAX_CONTEXT_MESSAGES", 60)
     keep_recent_messages = _env_int("KEEP_RECENT_MESSAGES", 12)
     max_tool_output_tokens = _env_int("MAX_TOOL_OUTPUT_TOKENS", 12000)
+
+    # 压缩策略：摘要器回放当前前缀以复用提供方缓存（见 agents/compaction.py）
+    compact_summary_max_tokens = _env_int("COMPACT_SUMMARY_MAX_TOKENS", 0)
+    compaction_retries = _env_nonneg_int("COMPACTION_RETRIES", 1)
+    overflow_recovery = _env_bool("OVERFLOW_RECOVERY", True)
+    overflow_retain_messages = _env_int("OVERFLOW_RETAIN_MESSAGES", 4)
 
     # ============================================================================
     # 任务执行能力

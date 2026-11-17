@@ -12,6 +12,7 @@ import type {
   QuestionRequest,
   TodoItem,
   TodosData,
+  UsageInfo,
 } from '../api/types'
 import {
   createAssistantTurn,
@@ -188,15 +189,36 @@ export const useChatStore = defineStore('chat', {
     sessionId: null as string | null,
     messages: [] as ChatTurn[],
     streaming: false,
-    contextMeter: '',
     contextTokens: 0,
     contextMax: 0,
+    // 会话累计轮次与步数（步 = 模型请求次数，含工具循环的每一步）
+    turns: 0,
+    steps: 0,
+    // 缓存读取命中：会话累计 + 本轮（提供方上报，未上报时为 null）
+    cacheReadTokens: 0,
+    cachePromptTokens: 0,
+    cacheHitRate: null as number | null,
+    cacheRequests: 0,
+    turnCacheReadTokens: 0,
+    turnPromptTokens: 0,
+    turnHitRate: null as number | null,
+    turnAttempts: 0,
     streamTick: 0,
     todos: [] as TodoItem[],
     pendingContinuations: [] as ProcessInfo[],
   }),
 
   getters: {
+    /** 会话是否已经有可展示的缓存数据 */
+    cacheKnown(state): boolean {
+      return state.cacheHitRate !== null && state.cachePromptTokens > 0
+    },
+    cachePercent(state): number {
+      return state.cacheHitRate === null ? 0 : Math.round(state.cacheHitRate * 1000) / 10
+    },
+    turnCachePercent(state): number | null {
+      return state.turnHitRate === null ? null : Math.round(state.turnHitRate * 1000) / 10
+    },
     contextPercent(state): number {
       if (!state.contextMax || state.contextMax <= 0) return 0
       return Math.max(0, Math.min(100, Math.round((state.contextTokens / state.contextMax) * 100)))
@@ -229,9 +251,11 @@ export const useChatStore = defineStore('chat', {
 
     resetConversation(): void {
       this.messages = []
-      this.contextMeter = ''
+      this.turns = 0
+      this.steps = 0
       this.contextTokens = 0
       this.contextMax = 0
+      this.resetUsage()
       this.todos = []
       this.pendingContinuations = []
       this.bump()
@@ -240,6 +264,37 @@ export const useChatStore = defineStore('chat', {
     setContext(tokens?: number, maxTokens?: number): void {
       if (typeof tokens === 'number' && Number.isFinite(tokens)) this.contextTokens = tokens
       if (typeof maxTokens === 'number' && Number.isFinite(maxTokens)) this.contextMax = maxTokens
+    },
+
+    /** 会话累计用量（含提供方上报的缓存读/写桶）。 */
+    setUsage(usage?: UsageInfo): void {
+      if (!usage) return
+      this.cacheReadTokens = usage.cache_read_tokens ?? 0
+      this.cachePromptTokens = usage.prompt_tokens ?? 0
+      this.cacheHitRate = usage.hit_rate ?? null
+      this.cacheRequests = usage.requests ?? usage.attempts ?? 0
+      // 一次模型请求就是一步；没有步数数据时保留旧值，避免显示成 0 步
+      if (typeof usage.requests === 'number') this.steps = usage.requests
+    },
+
+    /** 本轮用量：用于悬停提示与「本轮命中」。 */
+    setTurnUsage(usage?: UsageInfo): void {
+      if (!usage) return
+      this.turnCacheReadTokens = usage.cache_read_tokens ?? 0
+      this.turnPromptTokens = usage.prompt_tokens ?? 0
+      this.turnHitRate = usage.hit_rate ?? null
+      this.turnAttempts = usage.attempts ?? 0
+    },
+
+    resetUsage(): void {
+      this.cacheReadTokens = 0
+      this.cachePromptTokens = 0
+      this.cacheHitRate = null
+      this.cacheRequests = 0
+      this.turnCacheReadTokens = 0
+      this.turnPromptTokens = 0
+      this.turnHitRate = null
+      this.turnAttempts = 0
     },
 
     stop(): void {
@@ -280,10 +335,9 @@ export const useChatStore = defineStore('chat', {
           `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
         )
         this.messages = mapHistory(data.messages || [])
-        this.contextMeter = data.turns
-          ? `${data.turns} 轮 · ${(data.messages || []).length} 条消息`
-          : ''
+        this.turns = data.turns || 0
         this.setContext(data.tokens, data.max_tokens)
+        this.setUsage(data.usage)
         this.pendingContinuations = []
         try {
           const todos = await api<TodosData>(
@@ -295,9 +349,11 @@ export const useChatStore = defineStore('chat', {
         }
       } catch (error) {
         this.messages = []
-        this.contextMeter = ''
+        this.turns = 0
+        this.steps = 0
         this.contextTokens = 0
         this.contextMax = 0
+        this.resetUsage()
         this.todos = []
         this.bump()
         throw error
@@ -313,9 +369,11 @@ export const useChatStore = defineStore('chat', {
       const session = await workspace.createSession(workspaceId)
       this.sessionId = session.id
       this.messages = []
-      this.contextMeter = ''
+      this.turns = 0
+      this.steps = 0
       this.contextTokens = 0
       this.contextMax = 0
+      this.resetUsage()
       this.todos = []
       this.pendingContinuations = []
       this.bump()
@@ -553,10 +611,10 @@ export const useChatStore = defineStore('chat', {
                 const done = data as unknown as ChatDoneEvent
                 if (done.text !== undefined) finalText = done.text
                 if (done.session_id) this.sessionId = done.session_id
-                const tokens = done.tokens ?? '?'
-                const source = done.token_source === 'provider' ? 'API 用量' : '本地估算'
-                this.contextMeter = `约 ${tokens} tokens · ${source} · ${done.turns ?? 0} 轮`
+                this.turns = done.turns ?? this.turns
                 this.setContext(done.tokens, done.max_tokens)
+                this.setUsage(done.session_usage)
+                this.setTurnUsage(done.usage)
                 const livePrefs = workspace.preferences
                 if (
                   livePrefs.transcript_view !== 'verbose'
@@ -652,8 +710,8 @@ export const useChatStore = defineStore('chat', {
           { method: 'POST' },
         )
         this.setContext(data.tokens, data.max_tokens)
-        const source = data.token_source === 'provider' ? 'API 用量' : '本地估算'
-        this.contextMeter = `约 ${data.tokens} tokens · ${source} · ${data.turns ?? 0} 轮`
+        this.setUsage(data.usage)
+        this.turns = data.turns ?? this.turns
         this.messages.push({
           kind: 'note',
           id: newId('note'),

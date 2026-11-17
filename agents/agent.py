@@ -42,6 +42,7 @@ from agents.approval import (
     permission_tools,
     tool_risks,
 )
+from agents.compaction import PrefixSummarizer
 from agents.react import ReActAgent
 
 
@@ -161,6 +162,32 @@ def build_agent(
     single-step parsing, an optional compatibility mode). Passing ``middleware``
     is treated as tool_calling.
     """
+    agent, _summarizer = assemble_agent(
+        model=model,
+        tools=tools,
+        middleware=middleware,
+        approval=approval,
+        ctx=ctx,
+        engine=engine,
+    )
+    return agent
+
+
+def assemble_agent(
+    *,
+    model=None,
+    tools=None,
+    middleware=None,
+    approval: ApprovalGate | None = None,
+    ctx: ToolContext | None = None,
+    engine: str | None = None,
+):
+    """Return ``(agent, summarizer)`` so compaction can replay the live prefix.
+
+    The summarizer must see the same system prompt and the same tool declarations
+    as the agent itself; otherwise its auxiliary request stops matching the
+    conversation's cached prefix at the first differing byte.
+    """
     resolved_engine = (engine or settings.agent_engine).strip().lower()
     chat_model = model or build_model()
     tool_ctx = ctx or cli_tool_context()
@@ -196,7 +223,7 @@ def build_agent(
     )
 
     if resolved_engine == "react" and middleware is None:
-        return ReActAgent(
+        agent = ReActAgent(
             chat_model,
             tools,
             system_prompt,
@@ -210,6 +237,13 @@ def build_agent(
             model_max_retries=settings.model_max_retries,
             max_output_chars=settings.max_tool_output_chars,
         )
+        summarizer = PrefixSummarizer(
+            model=chat_model,
+            system_prompt=system_prompt,
+            engine="react",
+            max_tokens=settings.compact_summary_max_tokens or None,
+        )
+        return agent, summarizer
 
     visibility = None
     if managed:
@@ -224,9 +258,17 @@ def build_agent(
     if middleware is None:
         middleware = build_middleware(approval, visibility=visibility)
     model_tools = with_compact_descriptions(tools)
-    return create_agent(
+    agent = create_agent(
         chat_model,
         tools=model_tools,
         system_prompt=system_prompt,
         middleware=middleware,
     )
+    summarizer = PrefixSummarizer(
+        model=chat_model,
+        system_prompt=system_prompt,
+        tools=model_tools,
+        engine="tool_calling",
+        max_tokens=settings.compact_summary_max_tokens or None,
+    )
+    return agent, summarizer

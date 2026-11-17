@@ -38,6 +38,7 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const attachments = ref<AttachmentInfo[]>([])
 const uploading = ref(false)
 const compacting = ref(false)
+const cacheOpen = ref(false)
 
 const activeProvider = computed(() => workspace.activeProvider)
 const activeModelName = computed(
@@ -51,11 +52,18 @@ const menuModels = computed(() => menuProvider.value?.models ?? [])
 const canSend = computed(
   () => !chat.streaming && Boolean(draft.value.trim() || attachments.value.length),
 )
-const contextTitle = computed(
-  () => chat.contextMax
-    ? `上下文约 ${chat.contextTokens} / ${chat.contextMax} tokens`
-    : '上下文用量',
-)
+const contextTitle = computed(() => {
+  if (!chat.contextMax) return '上下文用量'
+  const source = chat.contextTokens > 0 ? '' : '（尚无 API 用量，暂为 0）'
+  return `上下文 ${chat.contextTokens} / ${chat.contextMax} tokens${source}`
+})
+
+/** 1_234_567 -> "1.2M"：状态行与缓存面板里用的紧凑格式 */
+function compactTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
+  return String(value)
+}
 
 const thinkingState = computed(() => normalizeThinkingLevels(
   workspace.activeModel?.thinking_levels,
@@ -281,6 +289,7 @@ function onDocumentKeydown(event: KeyboardEvent): void {
     menuOpen.value = false
     thinkingOpen.value = false
     toolsOpen.value = false
+    cacheOpen.value = false
   }
 }
 
@@ -380,38 +389,230 @@ onBeforeUnmount(() => {
         </button>
       </span>
     </div>
-    <textarea
-      id="input"
-      ref="textarea"
-      v-model="draft"
-      rows="1"
-      placeholder="输入消息，Enter 发送"
-      autocomplete="off"
-      :disabled="chat.streaming || !workspace.activeWorkspace"
-      @input="resize"
-      @keydown="onKeydown"
-    ></textarea>
-    <div class="composer-row">
-      <div class="composer-tools">
+    <div class="composer-shell">
+      <textarea
+        id="input"
+        ref="textarea"
+        v-model="draft"
+        rows="1"
+        placeholder="输入消息，Enter 发送"
+        autocomplete="off"
+        :disabled="chat.streaming || !workspace.activeWorkspace"
+        @input="resize"
+        @keydown="onKeydown"
+      ></textarea>
+      <div class="composer-bar">
+        <div class="composer-bar-left">
+          <button
+            type="button"
+            class="composer-plus"
+            :class="{ active: toolsOpen }"
+            aria-label="添加文件或执行命令"
+            :aria-expanded="toolsOpen"
+            :disabled="uploading"
+            @click.stop="toggleTools"
+          >
+            <svg v-if="!uploading" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+              <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <span v-else aria-hidden="true">…</span>
+          </button>
+          <div ref="switcher" class="model-switcher">
+            <button
+              id="model-switch"
+              type="button"
+              class="model-switch"
+              aria-haspopup="listbox"
+              :aria-expanded="menuOpen"
+              :title="modelTitle"
+              @click.stop="toggleMenu"
+            >
+              <ProviderIcon
+                v-if="activeProvider"
+                :provider="activeProvider.provider"
+                :size="18"
+              />
+              <span v-else class="status-dot" aria-hidden="true"></span>
+              <span id="model-switch-name">{{ activeModelName }}</span>
+              <span class="caret" aria-hidden="true">▴</span>
+            </button>
+
+            <div v-if="menuOpen" class="model-menu" role="listbox">
+              <p v-if="!workspace.providers.length" class="model-option empty">
+                还没有供应商
+              </p>
+              <template v-else>
+                <div class="model-provider-tabs">
+                  <button
+                    v-for="provider in workspace.providers"
+                    :key="provider.id"
+                    type="button"
+                    class="model-provider-tab"
+                    :class="{ active: provider.id === menuProvider?.id }"
+                    :title="providerTitle(provider)"
+                    @click="switchProvider(provider)"
+                  >
+                    <ProviderIcon :provider="provider.provider" :size="18" />
+                    <span>{{ providerTitle(provider) }}</span>
+                  </button>
+                </div>
+
+                <div class="model-menu-list">
+                  <template v-if="menuProvider">
+                    <button
+                      v-for="model in menuModels"
+                      :key="model.id"
+                      type="button"
+                      class="model-option"
+                      :class="{
+                        active: menuProvider.id === workspace.activeProviderId
+                          && model.id === workspace.activeModelId,
+                      }"
+                      role="option"
+                      :aria-selected="menuProvider.id === workspace.activeProviderId
+                        && model.id === workspace.activeModelId"
+                      @click="switchModel(menuProvider, model)"
+                    >
+                      <span class="model-option-name">{{ model.name || model.model }}</span>
+                      <span class="model-option-meta">
+                        {{ model.model }} · 思考：{{ thinkingLabel(model.thinking) }}
+                      </span>
+                    </button>
+                    <p v-if="!menuModels.length" class="model-option empty">
+                      该供应商还没有模型
+                    </p>
+                  </template>
+                </div>
+              </template>
+
+              <button type="button" class="model-option manage" @click="openSettings">
+                管理供应商…
+              </button>
+            </div>
+          </div>
+          <div v-if="workspace.activeModel?.supports_reasoning !== false" ref="thinkingSwitcher" class="thinking-switcher">
+            <button
+              type="button"
+              class="thinking-switch"
+              :disabled="!workspace.activeModel"
+              :aria-expanded="thinkingOpen"
+              title="调整推理等级"
+              @click.stop="toggleThinking"
+            >
+              <span>推理</span>
+              <strong>{{ thinkingShort(currentThinking) }}</strong>
+            </button>
+            <div v-if="thinkingOpen" class="thinking-menu">
+              <input
+                class="thinking-range"
+                type="range"
+                min="0"
+                :max="Math.max(0, thinkingLevels.length - 1)"
+                step="1"
+                :value="thinkingIndex"
+                :disabled="thinkingLevels.length < 2"
+                @input="onThinkingSlide"
+              />
+              <div class="thinking-scale">
+                <span v-for="level in thinkingLevels" :key="level">{{ thinkingShort(level) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="composer-bar-right">
+          <button
+            v-if="chat.streaming"
+            type="button"
+            class="btn-ghost composer-stop"
+            @click="chat.stop()"
+          >
+            停止
+          </button>
+          <button
+            type="submit"
+            class="composer-send"
+            :disabled="!canSend || !workspace.activeWorkspace"
+            aria-label="发送"
+            :title="canSend ? '发送（Enter）' : '输入内容后可发送'"
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path
+                d="M8 12.4V3.9M4.2 7.6 8 3.8l3.8 3.8"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer-hint">Shift + Enter 换行</div>
+
+    <div class="composer-status">
+      <div
+        v-if="chat.cacheKnown"
+        class="cache-stat"
+        @mouseenter="cacheOpen = true"
+        @mouseleave="cacheOpen = false"
+      >
         <button
           type="button"
-          class="composer-plus"
-          :class="{ active: toolsOpen }"
-          aria-label="添加文件或执行命令"
-          :aria-expanded="toolsOpen"
-          :disabled="uploading"
-          @click.stop="toggleTools"
+          class="cache-meter"
+          :class="{ warm: chat.cachePercent >= 50 }"
+          :aria-expanded="cacheOpen"
+          aria-label="缓存命中详情"
+          @focus="cacheOpen = true"
+          @blur="cacheOpen = false"
         >
-          <svg v-if="!uploading" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-            <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-          </svg>
-          <span v-else aria-hidden="true">…</span>
+          <span class="cache-meter-dot" aria-hidden="true"></span>
+          <span>缓存命中 {{ chat.cachePercent }}%</span>
         </button>
-        <div class="hint">Shift + Enter 换行</div>
+        <div v-if="cacheOpen" class="cache-popover" role="status">
+          <div class="cache-popover-row">
+            <span class="cache-popover-label">会话命中率</span>
+            <span class="cache-popover-value">{{ chat.cachePercent }}%</span>
+          </div>
+          <div class="cache-popover-row">
+            <span class="cache-popover-label">缓存读取</span>
+            <span class="cache-popover-value">{{ compactTokens(chat.cacheReadTokens) }}</span>
+          </div>
+          <div class="cache-popover-row">
+            <span class="cache-popover-label">提示词</span>
+            <span class="cache-popover-value">{{ compactTokens(chat.cachePromptTokens) }}</span>
+          </div>
+          <div class="cache-popover-row">
+            <span class="cache-popover-label">模型请求</span>
+            <span class="cache-popover-value">{{ chat.cacheRequests }}</span>
+          </div>
+          <template v-if="chat.turnCachePercent !== null">
+            <div class="cache-popover-rule" aria-hidden="true"></div>
+            <div class="cache-popover-row">
+              <span class="cache-popover-label">本轮命中率</span>
+              <span class="cache-popover-value">{{ chat.turnCachePercent }}%</span>
+            </div>
+            <div class="cache-popover-row">
+              <span class="cache-popover-label">本轮读取</span>
+              <span class="cache-popover-value">{{ compactTokens(chat.turnCacheReadTokens) }}</span>
+            </div>
+            <div class="cache-popover-row">
+              <span class="cache-popover-label">本轮提示词</span>
+              <span class="cache-popover-value">{{ compactTokens(chat.turnPromptTokens) }}</span>
+            </div>
+          </template>
+        </div>
       </div>
-      <div class="composer-actions">
-        <span class="context-meter">{{ chat.contextMeter }}</span>
-        <div class="context-ring" :title="contextTitle">
+      <span v-if="chat.turns" class="composer-status-item turn-stat">
+        {{ chat.turns }} 轮<template v-if="chat.steps"> · {{ chat.steps }} 步</template>
+      </span>
+      <div class="composer-status-item context-stat" :title="contextTitle">
+        <span v-if="chat.contextMax" class="context-tokens">
+          {{ compactTokens(chat.contextTokens) }} / {{ compactTokens(chat.contextMax) }}
+        </span>
+        <span class="context-ring">
           <svg viewBox="0 0 36 36" aria-hidden="true">
             <circle class="context-ring-track" cx="18" cy="18" r="15" pathLength="100" />
             <circle
@@ -424,118 +625,7 @@ onBeforeUnmount(() => {
             />
           </svg>
           <span class="context-ring-label">{{ chat.contextPercent }}%</span>
-        </div>
-        <div ref="switcher" class="model-switcher">
-          <button
-            id="model-switch"
-            type="button"
-            class="model-switch"
-            aria-haspopup="listbox"
-            :aria-expanded="menuOpen"
-            :title="modelTitle"
-            @click.stop="toggleMenu"
-          >
-            <ProviderIcon
-              v-if="activeProvider"
-              :provider="activeProvider.provider"
-              :size="18"
-            />
-            <span v-else class="status-dot" aria-hidden="true"></span>
-            <span id="model-switch-name">{{ activeModelName }}</span>
-            <span class="caret" aria-hidden="true">▴</span>
-          </button>
-
-          <div v-if="menuOpen" class="model-menu" role="listbox">
-            <p v-if="!workspace.providers.length" class="model-option empty">
-              还没有供应商
-            </p>
-            <template v-else>
-              <div class="model-provider-tabs">
-                <button
-                  v-for="provider in workspace.providers"
-                  :key="provider.id"
-                  type="button"
-                  class="model-provider-tab"
-                  :class="{ active: provider.id === menuProvider?.id }"
-                  :title="providerTitle(provider)"
-                  @click="switchProvider(provider)"
-                >
-                  <ProviderIcon :provider="provider.provider" :size="18" />
-                  <span>{{ providerTitle(provider) }}</span>
-                </button>
-              </div>
-
-              <div class="model-menu-list">
-                <template v-if="menuProvider">
-                  <button
-                    v-for="model in menuModels"
-                    :key="model.id"
-                    type="button"
-                    class="model-option"
-                    :class="{
-                      active: menuProvider.id === workspace.activeProviderId
-                        && model.id === workspace.activeModelId,
-                    }"
-                    role="option"
-                    :aria-selected="menuProvider.id === workspace.activeProviderId
-                      && model.id === workspace.activeModelId"
-                    @click="switchModel(menuProvider, model)"
-                  >
-                    <span class="model-option-name">{{ model.name || model.model }}</span>
-                    <span class="model-option-meta">
-                      {{ model.model }} · 思考：{{ thinkingLabel(model.thinking) }}
-                    </span>
-                  </button>
-                  <p v-if="!menuModels.length" class="model-option empty">
-                    该供应商还没有模型
-                  </p>
-                </template>
-              </div>
-            </template>
-
-            <button type="button" class="model-option manage" @click="openSettings">
-              管理供应商…
-            </button>
-          </div>
-        </div>
-        <div v-if="workspace.activeModel?.supports_reasoning !== false" ref="thinkingSwitcher" class="thinking-switcher">
-          <button
-            type="button"
-            class="thinking-switch"
-            :disabled="!workspace.activeModel"
-            :aria-expanded="thinkingOpen"
-            title="调整推理等级"
-            @click.stop="toggleThinking"
-          >
-            <span>推理</span>
-            <strong>{{ thinkingShort(currentThinking) }}</strong>
-          </button>
-          <div v-if="thinkingOpen" class="thinking-menu">
-            <input
-              class="thinking-range"
-              type="range"
-              min="0"
-              :max="Math.max(0, thinkingLevels.length - 1)"
-              step="1"
-              :value="thinkingIndex"
-              :disabled="thinkingLevels.length < 2"
-              @input="onThinkingSlide"
-            />
-            <div class="thinking-scale">
-              <span v-for="level in thinkingLevels" :key="level">{{ thinkingShort(level) }}</span>
-            </div>
-          </div>
-        </div>
-        <button v-if="chat.streaming" type="button" class="btn-ghost" @click="chat.stop()">
-          停止
-        </button>
-        <button
-          type="submit"
-          class="btn-send"
-          :disabled="!canSend || !workspace.activeWorkspace"
-        >
-          发送 <span aria-hidden="true">↑</span>
-        </button>
+        </span>
       </div>
     </div>
   </form>

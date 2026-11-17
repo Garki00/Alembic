@@ -1034,7 +1034,11 @@ class WorkspaceStore:
             self.file.save(self._seed())
 
     def browse(self, path: str | None = None) -> dict[str, Any]:
-        """List the subdirectories of a directory so the frontend can add a workspace."""
+        """List subdirectories; no path means the drive roots on Windows."""
+        if not path:
+            drives = self._drives()
+            if drives:
+                return {"path": "", "parent": None, "dirs": drives}
         target = _resolve(path) if path else self._default_dir()
         if not target.is_dir():
             raise ValueError(f"目录不存在：{target}")
@@ -1056,6 +1060,17 @@ class WorkspaceStore:
         }
 
     # ---- 内部 ----
+    def _drives(self) -> list[dict[str, str]]:
+        drives: list[dict[str, str]] = []
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            root = Path(f"{letter}:\\")
+            try:
+                if root.is_dir():
+                    drives.append({"name": f"{letter}:", "path": str(root)})
+            except OSError:
+                continue
+        return drives
+
     def _default_dir(self) -> Path:
         active = self.active()
         return Path(active.path) if active else Path(self.default_path)

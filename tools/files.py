@@ -238,7 +238,7 @@ def build_file_read_tools(ctx: ToolContext) -> list:
         return truncate("\n".join(lines), ctx.max_output_chars)
 
     @tool
-    def read_file(path: str, offset: int = 1, limit: int = 200) -> str:
+    def read_file(path: str, offset: int = 1, limit: int = 2000) -> str:
         """Read the contents of a text file within the workspace, with line numbers.
 
         Args:
@@ -272,7 +272,7 @@ def build_file_read_tools(ctx: ToolContext) -> list:
             return f"File: {display_path(ctx.workspace, target)} (empty file, 0 lines)"
 
         start = max(1, int(offset or 1))
-        take = max(1, min(int(limit or 200), _MAX_READ_LIMIT))
+        take = max(1, min(int(limit or 2000), _MAX_READ_LIMIT))
         if start > total:
             return tool_error(
                 "offset_out_of_range",

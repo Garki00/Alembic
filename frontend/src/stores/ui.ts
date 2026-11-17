@@ -24,6 +24,11 @@ export const useUiStore = defineStore('ui', {
     sidebarCollapsed: false,
     sidebarWidth: storedWidth(SIDEBAR_WIDTH_KEY, 272, SIDEBAR_MIN, SIDEBAR_MAX),
     search: '',
+    searchOpen: false,
+    sessionGrouping: 'workspace' as 'workspace' | 'flat',
+    sessionSort: 'recent' as 'recent' | 'manual',
+    manualOrder: [] as string[],
+    archivedOpen: false,
     expanded: {} as Record<string, boolean>,
     settingsOpen: false,
     settingsTab: 'models' as SettingsTab,
@@ -48,6 +53,20 @@ export const useUiStore = defineStore('ui', {
 
     toggleSidebarCollapsed(): void {
       this.sidebarCollapsed = !this.sidebarCollapsed
+    },
+
+    setSessionGrouping(grouping: 'workspace' | 'flat'): void {
+      this.sessionGrouping = grouping
+    },
+
+    setSessionSort(sort: 'recent' | 'manual'): void {
+      this.sessionSort = sort
+      if (sort === 'recent') this.manualOrder = []
+    },
+
+    setManualOrder(ids: string[]): void {
+      this.manualOrder = [...new Set(ids)]
+      this.sessionSort = 'manual'
     },
 
     isExpanded(workspaceId: string): boolean {

@@ -179,11 +179,13 @@ class AskFlowTest(unittest.TestCase):
             summarizer = StubSummarizer()
             cli = make_cli(tmp, summarizer=summarizer)
             cli.session.keep_recent = 1
-            cli.session.ask("第一个问题")
-            cli.session.ask("第二个问题")
+            bulk = "这是一段用来撑大上下文的说明文字。" * 40
+            cli.session.ask(f"第一个问题 {bulk}")
+            cli.session.ask(f"第二个问题 {bulk}")
             output = run_command(cli, "/compact")
             self.assertIn("已压缩", output)
-            self.assertEqual(summarizer.calls, 1)
+            # 首轮标题一次 + 手动压缩一次
+            self.assertEqual(summarizer.calls, 2)
 
     def test_compact_without_history(self):
         with workspace_tempdir() as tmp:

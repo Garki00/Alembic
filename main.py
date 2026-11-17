@@ -17,7 +17,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from agents.agent import build_agent, build_cli_approval, build_model, cli_tool_context
+from agents.agent import (
+    assemble_agent,
+    build_cli_approval,
+    build_model,
+    cli_tool_context,
+)
 from agents.approval import ApprovalPolicy
 from agents.context import ChatSession, SessionStore, TurnResult, message_text
 from config.settings import settings
@@ -124,11 +129,21 @@ class ChatCLI:
     def _status_line(self) -> str:
         stats = self.session.stats()
         source = "API 用量" if stats["token_source"] == "provider" else "本地估算"
+        usage = stats.get("usage") or {}
+        hit = usage.get("hit_rate")
+        cache = (
+            f"；缓存命中 {hit * 100:.1f}%"
+            f"（读取 {usage.get('cache_read_tokens', 0)} / 提示 {usage.get('prompt_tokens', 0)} tokens，"
+            f"{usage.get('requests', 0)} 次请求）"
+            if isinstance(hit, (int, float))
+            else "；缓存命中 未知（提供方未上报）"
+        )
         return (
             f"[会话 {stats['session_id']}] 已完成 {stats['turns']} 轮，"
             f"历史 {stats['messages']} 条消息，约 {stats['tokens']} tokens（{source}）；"
             f"压缩阈值 {stats['max_tokens']} tokens / {stats['max_messages']} 条"
             f"（窗口 {stats['model_context_window']}，预留 {stats['reserve_tokens']}）"
+            f"{cache}"
         )
 
     def _print_trace(self, result: TurnResult) -> None:
@@ -136,7 +151,14 @@ class ChatCLI:
         for message in result.new_messages:
             role = _ROLE_NAMES.get(getattr(message, "type", ""), message.__class__.__name__)
             print(f"[{role}] {_truncate(message_text(message) or '<空>', 500)}")
-        print(f"--- 轨迹结束（上下文约 {result.context_tokens} tokens）---\n")
+        usage = result.usage
+        cache = (
+            f"，缓存读取 {usage.cache_read_tokens}/{usage.prompt_tokens} tokens"
+            f"（{usage.hit_rate * 100:.1f}%）"
+            if usage.hit_rate is not None
+            else "，缓存读取 未知"
+        )
+        print(f"--- 轨迹结束（上下文约 {result.context_tokens} tokens{cache}）---\n")
 
     def _handle_command(self, line: str) -> bool:
         """Handle a command starting with ``/``; return False to exit the program."""
@@ -324,14 +346,14 @@ def main() -> None:
     )
     try:
         model = build_model()
-        agent = build_agent(model=model, approval=gate, ctx=ctx)
+        agent, summarizer = assemble_agent(model=model, approval=gate, ctx=ctx)
     except RuntimeError as exc:  # 缺少 API Key 等配置问题
         print(f"[配置错误] {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
     cli = ChatCLI(
         agent,
-        model,
+        summarizer,
         session_id=args.session,
         debug=args.debug,
         approval=gate.policy if gate else None,

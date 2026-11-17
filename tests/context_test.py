@@ -7,7 +7,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 
 from agents.context import (
     MIN_TURNS_BETWEEN_COMPACTIONS,
@@ -70,6 +76,24 @@ class StubAgent:
         messages = list(payload["messages"])
         self.payloads.append(messages)
         return {"messages": [*messages, AIMessage(content=f"第 {len(self.payloads)} 轮回复")]}
+
+
+#: 足够长的正文，让「头部 → 检查点」真的能缩小上下文
+BULK = "这是一段用来撑大上下文的说明文字，包含细节与结论。" * 40
+
+
+class WordyAgent(StubAgent):
+    """Echo Agent whose replies are long enough for compaction to shrink a span."""
+
+    def invoke(self, payload):
+        messages = list(payload["messages"])
+        self.payloads.append(messages)
+        return {
+            "messages": [
+                *messages,
+                AIMessage(content=f"第 {len(self.payloads)} 轮回复：{BULK}"),
+            ]
+        }
 
 
 class FailingAgent:
@@ -189,7 +213,7 @@ class CompressionBoundaryTest(unittest.TestCase):
         with workspace_tempdir() as tmp:
             summarizer = StubSummarizer()
             session = ChatSession(
-                StubAgent(),
+                WordyAgent(),
                 "s1",
                 store=SessionStore(tmp),
                 summarizer=summarizer,
@@ -200,7 +224,8 @@ class CompressionBoundaryTest(unittest.TestCase):
             results = [session.ask(f"问题{i}") for i in range(1, 6)]
 
             self.assertEqual([r.compacted for r in results], [False, False, True, False, True])
-            self.assertEqual(summarizer.calls, 2)
+            # 首轮标题一次 + 两次压缩
+            self.assertEqual(summarizer.calls, 3)
             gap = results[4].compacted and (4 - 2) >= MIN_TURNS_BETWEEN_COMPACTIONS
             self.assertTrue(gap)
 
@@ -329,10 +354,10 @@ class SessionStoreTest(unittest.TestCase):
 class CompactMessagesTest(unittest.TestCase):
     def test_keeps_recent_messages_and_adds_summary(self):
         messages = [
-            HumanMessage(content="q1"),
-            AIMessage(content="a1"),
-            HumanMessage(content="q2"),
-            AIMessage(content="a2"),
+            HumanMessage(content=f"q1 {BULK}"),
+            AIMessage(content=f"a1 {BULK}"),
+            HumanMessage(content=f"q2 {BULK}"),
+            AIMessage(content=f"a2 {BULK}"),
             HumanMessage(content="q3"),
             AIMessage(content="a3"),
         ]
@@ -347,17 +372,33 @@ class CompactMessagesTest(unittest.TestCase):
 
     def test_does_not_split_tool_call_pair(self):
         messages = [
-            HumanMessage(content="查天气和时间"),
+            HumanMessage(content=f"查天气和时间 {BULK}"),
             _tool_call_ai("call-1"),
-            ToolMessage(content="晴", tool_call_id="call-1"),
-            ToolMessage(content="10 点", tool_call_id="call-2"),
+            ToolMessage(content=f"晴 {BULK}", tool_call_id="call-1"),
+            ToolMessage(content=f"10 点 {BULK}", tool_call_id="call-2"),
             HumanMessage(content="谢谢"),
             AIMessage(content="不客气"),
         ]
-        new_messages, _ = compact_messages(messages, StubSummarizer(), keep_recent=4)
-        self.assertEqual(new_messages[1].type, "ai")
-        self.assertEqual(new_messages[1].tool_calls[0]["id"], "call-1")
-        self.assertEqual(new_messages[2].type, "tool")
+        new_messages, summary = compact_messages(messages, StubSummarizer(), keep_recent=4)
+        self.assertIsNotNone(summary)
+        # 保留的尾部从用户消息开始，工具调用与其结果都落在被压缩的头部里
+        self.assertEqual(new_messages[1:], messages[4:])
+        self.assertTrue(all(message.type != "tool" for message in new_messages[1:]))
+
+    def test_non_shrinking_summary_is_rejected(self):
+        messages = [
+            HumanMessage(content="q1"),
+            AIMessage(content="a1"),
+            HumanMessage(content="q2"),
+            AIMessage(content="a2"),
+            HumanMessage(content="q3"),
+            AIMessage(content="a3"),
+        ]
+        original = list(messages)
+        summarizer = StubSummarizer(reply="很长的摘要 " * 400)
+        new_messages, summary = compact_messages(messages, summarizer, keep_recent=2)
+        self.assertIsNone(summary)
+        self.assertEqual(new_messages, original)
 
     def test_short_history_is_untouched(self):
         messages = [HumanMessage(content="q"), AIMessage(content="a")]
@@ -426,7 +467,7 @@ class ChatSessionTest(unittest.TestCase):
         with workspace_tempdir() as tmp:
             summarizer = StubSummarizer()
             session = ChatSession(
-                StubAgent(),
+                WordyAgent(),
                 "s1",
                 store=SessionStore(tmp),
                 summarizer=summarizer,
@@ -437,7 +478,8 @@ class ChatSessionTest(unittest.TestCase):
             results = [session.ask(f"问题 {i}") for i in range(1, 5)]
             self.assertFalse(any(result.compacted for result in results[:3]))
             self.assertTrue(results[-1].compacted)
-            self.assertEqual(summarizer.calls, 1)
+            # 首轮标题一次 + 压缩一次
+            self.assertEqual(summarizer.calls, 2)
             self.assertEqual(session.stats()["compactions"], 1)
             # 压缩后的历史以摘要开头，且仍保留最近的消息
             self.assertTrue(session.messages[0].content.startswith(SUMMARY_PREFIX))
@@ -461,7 +503,7 @@ class ChatSessionTest(unittest.TestCase):
         with workspace_tempdir() as tmp:
             summarizer = StubSummarizer()
             session = ChatSession(
-                StubAgent(),
+                WordyAgent(),
                 "s1",
                 store=SessionStore(tmp),
                 summarizer=summarizer,
@@ -473,7 +515,8 @@ class ChatSessionTest(unittest.TestCase):
             session.ask("二")
             session.ask("三")
             self.assertTrue(session.compact())
-            self.assertEqual(summarizer.calls, 1)
+            # 首轮标题一次 + 手动压缩一次
+            self.assertEqual(summarizer.calls, 2)
             self.assertEqual(session.stats()["compactions"], 1)
 
     def test_failed_turn_rolls_back_question(self):
@@ -682,6 +725,315 @@ class StepThoughtTest(unittest.TestCase):
             "summary": [{"type": "summary_text", "text": "检查配置。"}],
         }])
         self.assertEqual(reasoning_text(message), "检查配置。")
+
+
+class CacheUsageTest(unittest.TestCase):
+    """Provider usage is recorded per turn, aggregated per session, and persisted."""
+
+    class UsageAgent:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, payload):
+            self.calls += 1
+            messages = list(payload["messages"])
+            usage = {
+                "input_tokens": 1000 * self.calls,
+                "output_tokens": 20,
+                "total_tokens": 1000 * self.calls + 20,
+                "input_token_details": {"cache_read": 1000 * self.calls - 100},
+            }
+            return {"messages": [*messages, AIMessage(content="答", usage_metadata=usage)]}
+
+    def test_turn_and_session_usage_carry_cache_buckets(self):
+        with workspace_tempdir() as tmp:
+            store = SessionStore(tmp)
+            session = ChatSession(self.UsageAgent(), "s1", store=store, hydrate=False)
+            first = session.ask("一")
+            second = session.ask("二")
+
+            self.assertEqual(first.usage.attempts, 1)
+            self.assertEqual(first.usage.cache_read_tokens, 900)
+            self.assertEqual(first.usage.prompt_tokens, 1000)
+            self.assertAlmostEqual(first.usage.hit_rate or 0, 0.9)
+            self.assertEqual(second.usage.cache_read_tokens, 1900)
+
+            stats = session.stats()
+            self.assertEqual(stats["usage"]["cache_read_tokens"], 2800)
+            self.assertEqual(stats["usage"]["prompt_tokens"], 3000)
+            self.assertAlmostEqual(stats["usage"]["hit_rate"], 2800 / 3000, places=6)
+            self.assertEqual(stats["usage"]["requests"], 2)
+
+            reloaded = ChatSession(self.UsageAgent(), "s1", store=store, hydrate=True)
+            self.assertEqual(reloaded.stats()["usage"]["cache_read_tokens"], 2800)
+
+    def test_turn_without_provider_cache_reports_none(self):
+        class NoCacheAgent:
+            def invoke(self, payload):
+                messages = list(payload["messages"])
+                ai = AIMessage(
+                    content="答",
+                    usage_metadata={
+                        "input_tokens": 500,
+                        "output_tokens": 10,
+                        "total_tokens": 510,
+                    },
+                )
+                return {"messages": [*messages, ai]}
+
+        with workspace_tempdir() as tmp:
+            session = ChatSession(NoCacheAgent(), "s1", store=SessionStore(tmp), hydrate=False)
+            result = session.ask("一")
+        self.assertIsNone(result.usage.cache_read_tokens)
+        self.assertIsNone(result.usage.hit_rate)
+        self.assertIsNone(session.stats()["usage"]["hit_rate"])
+
+    def test_old_messages_are_not_rewritten_between_turns(self):
+        """A stable prefix is what makes the provider's cache reusable."""
+
+        class ToolAgent:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def invoke(self, payload):
+                self.calls += 1
+                messages = list(payload["messages"])
+                if self.calls == 1:
+                    ai = AIMessage(
+                        content="",
+                        tool_calls=[{"name": "run", "args": {}, "id": "c1"}],
+                    )
+                    tool = ToolMessage(
+                        content="y" * 40_000, tool_call_id="c1", name="run"
+                    )
+                    return {"messages": [*messages, ai, tool, AIMessage(content="完成")]}
+                return {"messages": [*messages, AIMessage(content="收到")]}
+
+        with workspace_tempdir() as tmp:
+            session = ChatSession(
+                ToolAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                max_tool_output_tokens=100,
+                hydrate=False,
+            )
+            session.ask("一")
+            before = [message.content for message in session.messages]
+            session.ask("二")
+            after = [message.content for message in session.messages]
+
+        # 已进入历史的消息一个字都不能变，否则前缀缓存从变化处起全部失效
+        self.assertEqual(after[: len(before)], before)
+
+
+class CachePreservingCompactionTest(unittest.TestCase):
+    """Compaction replays the live prefix instead of sending a cold prompt."""
+
+    class RecordingSummarizer:
+        replays_prefix = True
+
+        def __init__(self, reply: str = "## 摘要\n- 要点") -> None:
+            self.reply = reply
+            self.requests: list[list] = []
+
+        def summarize(self, shadow):
+            self.requests.append(list(shadow))
+            return self.reply
+
+    class SystemAwareSummarizer(RecordingSummarizer):
+        system_prompt = "SYS"
+
+    def test_summarizer_sees_the_exact_shadow(self):
+        from agents.compaction import PrefixSummarizer
+
+        class RecordingModel:
+            def __init__(self) -> None:
+                self.requests: list[list] = []
+
+            def bind_tools(self, tools):  # noqa: ARG002 - 只为接受绑定
+                return self
+
+            def bind(self, **kwargs):  # noqa: ARG002
+                return self
+
+            def invoke(self, messages):
+                self.requests.append(list(messages))
+                return AIMessage(content="## 摘要\n- 要点")
+
+        model = RecordingModel()
+        summarizer = PrefixSummarizer(
+            model=model, system_prompt="SYSTEM", engine="tool_calling"
+        )
+        with workspace_tempdir() as tmp:
+            session = ChatSession(
+                WordyAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                summarizer=summarizer,
+                max_context_messages=10**6,
+                max_context_tokens=10**9,
+                keep_recent=2,
+                hydrate=False,
+            )
+            session.ask("一")
+            session.ask("二")
+            shadow = list(session.messages[:-2])
+            self.assertTrue(session.compact())
+
+        self.assertEqual(len(model.requests), 2)  # 一次标题请求 + 一次摘要请求
+        replayed = [r for r in model.requests if isinstance(r[0], SystemMessage)]
+        self.assertEqual(len(replayed), 1)
+        sent = replayed[0]
+        self.assertEqual(sent[0].content, "SYSTEM")
+        self.assertEqual(sent[1:-1], shadow)  # 逐字回放被遮蔽的历史
+        self.assertIn("compaction engine", sent[-1].content)
+
+    def test_retained_tail_is_byte_identical(self):
+        with workspace_tempdir() as tmp:
+            session = ChatSession(
+                WordyAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                summarizer=self.RecordingSummarizer(),
+                max_context_messages=10**6,
+                max_context_tokens=10**9,
+                keep_recent=2,
+                hydrate=False,
+            )
+            session.ask("一")
+            session.ask("二")
+            tail = list(session.messages[-2:])
+            self.assertTrue(session.compact())
+            self.assertEqual(session.messages[-2:], tail)
+
+    def test_prune_only_path_skips_the_summary_call(self):
+        summarizer = self.RecordingSummarizer()
+        with workspace_tempdir() as tmp:
+            session = ChatSession(
+                StubAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                summarizer=summarizer,
+                max_context_tokens=1000,
+                max_context_messages=10**6,
+                keep_recent=2,
+                max_tool_output_tokens=100,
+                hydrate=False,
+            )
+            session.messages = [
+                HumanMessage(content="查日志"),
+                AIMessage(content="", tool_calls=[{"name": "run", "args": {}, "id": "c1"}]),
+                ToolMessage(content="z" * 40_000, tool_call_id="c1", name="run"),
+                HumanMessage(content="继续"),
+                AIMessage(content="好的"),
+            ]
+            self.assertTrue(session.compact())
+
+        self.assertEqual(summarizer.requests, [])  # 没有发起摘要请求
+        self.assertIn("tool output truncated", session.messages[2].content)
+
+
+class OverflowRecoveryTest(unittest.TestCase):
+    """A provider-confirmed overflow compacts the head and retries once."""
+
+    class OverflowOnceAgent:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stream(self, payload, stream_mode=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError(
+                    "Error code: 400 - This model's maximum context length is 8192 tokens."
+                )
+            messages = list(payload["messages"])
+            yield ("values", {"messages": [*messages, AIMessage(content="恢复后的回答")]})
+
+    def test_overflow_triggers_compaction_and_one_retry(self):
+        with workspace_tempdir() as tmp:
+            session = ChatSession(
+                self.OverflowOnceAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                summarizer=StubSummarizer(),
+                max_context_messages=10**6,
+                max_context_tokens=10**9,
+                keep_recent=2,
+                hydrate=False,
+            )
+            # 头部足够大，压缩才有内容可缩
+            session.messages = [
+                HumanMessage(content=f"旧问题 {BULK}"),
+                AIMessage(content=f"旧回答 {BULK}"),
+            ]
+            events = list(session.ask_stream("新问题"))
+
+        kinds = [kind for kind, _ in events]
+        self.assertIn("done", kinds)
+        done = next(payload for kind, payload in events if kind == "done")
+        self.assertEqual(done.text, "恢复后的回答")
+        self.assertEqual(session.agent.calls, 2)
+        self.assertEqual(session.stats()["compactions"], 1)
+
+    class OverflowOnceInvokeAgent:
+        """Non-streaming agent: fails once with a context-overflow error, then answers."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, payload):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError(
+                    "This model's maximum context length is 8192 tokens."
+                )
+            messages = list(payload["messages"])
+            return {"messages": [*messages, AIMessage(content="恢复后的回答")]}
+
+    def test_ask_path_recovers_too(self):
+        with workspace_tempdir() as tmp:
+            session = ChatSession(
+                self.OverflowOnceInvokeAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                summarizer=StubSummarizer(),
+                max_context_messages=10**6,
+                max_context_tokens=10**9,
+                keep_recent=2,
+                hydrate=False,
+            )
+            session.messages = [
+                HumanMessage(content=f"旧问题 {BULK}"),
+                AIMessage(content=f"旧回答 {BULK}"),
+            ]
+            result = session.ask("新问题")
+
+        self.assertEqual(result.text, "恢复后的回答")
+        self.assertEqual(session.agent.calls, 2)
+        self.assertEqual(session.stats()["compactions"], 1)
+
+    def test_unrelated_failure_is_not_retried(self):
+        class BrokenAgent:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def stream(self, payload, stream_mode=None):  # noqa: ARG002
+                self.calls += 1
+                raise RuntimeError("rate limit exceeded")
+                yield  # pragma: no cover - 生成器形状
+
+        with workspace_tempdir() as tmp:
+            session = ChatSession(
+                BrokenAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                summarizer=StubSummarizer(),
+                hydrate=False,
+            )
+            with self.assertRaises(RuntimeError):
+                list(session.ask_stream("问题"))
+        self.assertEqual(session.agent.calls, 1)
+        self.assertEqual(len(session.messages), 0)
 
 
 if __name__ == "__main__":

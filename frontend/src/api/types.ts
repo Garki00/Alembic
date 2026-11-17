@@ -120,6 +120,8 @@ export interface SessionSummary {
   updated_at: string
   compactions: number
   workspace_id: string
+  pinned?: boolean
+  archived?: boolean
 }
 
 export interface WorkspaceEntry {
@@ -213,6 +215,25 @@ export interface HistoryMessage {
   internal?: boolean
 }
 
+/** 提供方上报的用量；缓存读/写单独成桶，未上报时为 null */
+export interface UsageInfo {
+  /** 本轮内的模型请求次数 */
+  attempts?: number
+  /** 会话累计请求次数 */
+  requests?: number
+  turns?: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number | null
+  cache_write_tokens: number | null
+  reasoning_tokens?: number | null
+  prompt_tokens: number
+  total_tokens: number
+  /** 0..1；提供方没有上报缓存桶时为 null */
+  hit_rate: number | null
+  cache_reported_requests?: number
+}
+
 export interface HistoryData {
   session_id: string
   messages: HistoryMessage[]
@@ -221,6 +242,7 @@ export interface HistoryData {
   tokens?: number
   token_source?: 'provider' | 'local' | string
   max_tokens?: number
+  usage?: UsageInfo
 }
 
 export interface ProcessInfo {
@@ -273,12 +295,18 @@ export interface CompactData {
   max_tokens: number
   messages: number
   turns: number
+  usage?: UsageInfo
 }
 
 export interface BrowseResult {
   path: string
   parent: string | null
   dirs: Array<{ name: string; path: string }>
+}
+
+export interface PickFolderResult {
+  path: string
+  cancelled: boolean
 }
 
 export interface UpstreamModelMeta {
@@ -338,4 +366,8 @@ export interface ChatDoneEvent {
   max_tokens?: number
   messages?: number
   turns?: number
+  /** 本轮的用量（含缓存桶） */
+  usage?: UsageInfo
+  /** 会话累计用量 */
+  session_usage?: UsageInfo
 }
