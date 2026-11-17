@@ -1,14 +1,15 @@
 # web/approvals.py
-"""网页端的审批中继。
+"""Approval relay for the web frontend.
 
-工具中间件在「某个工具线程」里同步等待人做决定，而决定来自另一个 HTTP 请求，
-所以这里用「注册表 + Event」把两边接起来：
+A tool middleware blocks synchronously in a tool thread waiting for a user
+decision, while the decision arrives through a separate HTTP request. A registry
+plus ``threading.Event`` connects the two sides:
 
-- 中间件调用 :meth:`ApprovalBroker.ask` → 登记一条待办、往 SSE 队列推一个
-  ``approval`` 事件，然后阻塞在 ``threading.Event`` 上；
-- 浏览器点按钮 → ``POST /api/approvals/{id}`` → :meth:`ApprovalRegistry.resolve`
-  写入决定并唤醒该线程；
-- 没人回答（超时）或流断了 → 按拒绝处理，工具不执行。
+- The middleware calls :meth:`ApprovalBroker.ask`, registers a pending entry,
+  emits an ``approval`` event to the SSE queue, and blocks on the event.
+- The browser submits ``POST /api/approvals/{id}``, which calls
+  :meth:`ApprovalRegistry.resolve`, stores the decision, and wakes the thread.
+- A timeout or a closed stream is treated as a denial, so the tool does not run.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from agents.approval import VALID_DECISIONS, ApprovalRequest, Decision
 
 @dataclass
 class PendingApproval:
-    """一条等待回执的审批。"""
+    """An approval awaiting a decision."""
 
     request: ApprovalRequest
     event: threading.Event = field(default_factory=threading.Event)
@@ -30,7 +31,7 @@ class PendingApproval:
 
 
 class ApprovalRegistry:
-    """全局待办表：``request_id`` → 等待者，供 HTTP 端点投递决策。"""
+    """Global pending table mapping ``request_id`` to its waiter so HTTP endpoints can deliver decisions."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -43,7 +44,7 @@ class ApprovalRegistry:
         return pending
 
     def resolve(self, request_id: str, decision: str) -> bool:
-        """投递决策；请求不存在或已过期时返回 False。"""
+        """Deliver a decision; return False when the request is unknown or expired."""
         if decision not in VALID_DECISIONS:
             return False
         with self._lock:
@@ -64,12 +65,12 @@ class ApprovalRegistry:
 
 
 class ApprovalBroker:
-    """单个对话流的审批通道。
+    """Approval channel for a single conversation stream.
 
     Args:
-        registry: 全局待办表，HTTP 端点据此找到等待者。
-        emit: 把 ``(事件名, 数据)`` 推给 SSE 队列的回调。
-        timeout: 等待人回答的秒数，超时按拒绝处理。
+        registry: Global pending table used by HTTP endpoints to find the waiter.
+        emit: Callback that pushes ``(event_name, data)`` to the SSE queue.
+        timeout: Seconds to wait for a decision; a timeout is treated as a denial.
     """
 
     def __init__(
@@ -87,7 +88,7 @@ class ApprovalBroker:
         self._closed = False
 
     def ask(self, request: ApprovalRequest) -> Decision:
-        """阻塞等待决策；异常路径一律返回 deny，绝不默认放行。"""
+        """Block until a decision arrives; all error paths return deny rather than allowing the tool."""
         with self._lock:
             if self._closed:
                 return "deny"
@@ -108,7 +109,7 @@ class ApprovalBroker:
         return pending.decision  # type: ignore[return-value]
 
     def close(self) -> None:
-        """流结束时清掉没被回答的请求，别把工具线程永远挂在那里。"""
+        """Resolve unanswered requests as denials when the stream ends so tool threads do not hang."""
         with self._lock:
             self._closed = True
             pending_ids = list(self._ids)

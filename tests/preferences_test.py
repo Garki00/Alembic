@@ -1,5 +1,5 @@
 # tests/preferences_test.py
-"""通用设置（工作步骤展示 / 收起时机 / 代码工作视图）的持久化与接口。"""
+"""Persistence and API for general preferences (work step display, collapse timing, and code work view)."""
 
 import json
 import shutil

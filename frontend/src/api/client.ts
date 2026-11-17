@@ -56,7 +56,7 @@ export class ApiError extends Error {
   }
 }
 
-/** 把 FastAPI 的 detail（字符串或校验错误数组）转成可读文本。 */
+/** Convert a FastAPI detail (string or validation-error array) into readable text. */
 export function errorDetail(data: unknown): string {
   if (!data || typeof data !== 'object') return ''
   const detail = (data as { detail?: unknown }).detail

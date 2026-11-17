@@ -1,5 +1,5 @@
 # tests/file_ops_test.py
-"""文件生命周期工具的测试：移动、复制、删除、建目录与元信息。"""
+"""File lifecycle tool tests: move, copy, delete, directory creation, and metadata."""
 
 import shutil
 import unittest
@@ -28,17 +28,17 @@ class FileOpsTest(unittest.TestCase):
 
     def test_make_dir_and_file_stat(self):
         text = self.write["make_dir"].invoke({"path": "a/b/c"})
-        self.assertIn("已创建目录", text)
+        self.assertIn("Created directory:", text)
         self.assertTrue((self.root / "a" / "b" / "c").is_dir())
 
         (self.root / "note.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
         stat = self.read["file_stat"].invoke({"path": "note.txt"})
-        self.assertIn("类型：文件", stat)
-        self.assertIn("行数：3", stat)
-        self.assertIn("字节", stat)
+        self.assertIn("Type: file", stat)
+        self.assertIn("Lines: 3", stat)
+        self.assertIn("bytes", stat)
 
         directory = self.read["file_stat"].invoke({"path": "a"})
-        self.assertIn("类型：目录", directory)
+        self.assertIn("Type: directory", directory)
 
     def test_make_dir_on_existing_file_fails(self):
         (self.root / "file.txt").write_text("x", encoding="utf-8")
@@ -48,7 +48,7 @@ class FileOpsTest(unittest.TestCase):
     def test_move_renames_file(self):
         (self.root / "old.txt").write_text("hello", encoding="utf-8")
         text = self.write["move_file"].invoke({"source": "old.txt", "destination": "new.txt"})
-        self.assertIn("已移动", text)
+        self.assertIn("Moved:", text)
         self.assertFalse((self.root / "old.txt").exists())
         self.assertEqual((self.root / "new.txt").read_text(encoding="utf-8"), "hello")
 
@@ -70,7 +70,7 @@ class FileOpsTest(unittest.TestCase):
         allowed = self.write["move_file"].invoke({
             "source": "a.txt", "destination": "b.txt", "overwrite": True,
         })
-        self.assertIn("已移动", allowed)
+        self.assertIn("Moved:", allowed)
         self.assertEqual((self.root / "b.txt").read_text(encoding="utf-8"), "a")
 
     def test_move_directory_into_itself_is_rejected(self):
@@ -83,19 +83,19 @@ class FileOpsTest(unittest.TestCase):
     def test_copy_file_and_directory(self):
         (self.root / "a.txt").write_text("hello", encoding="utf-8")
         text = self.write["copy_file"].invoke({"source": "a.txt", "destination": "b.txt"})
-        self.assertIn("已复制", text)
+        self.assertIn("Copied:", text)
         self.assertEqual((self.root / "b.txt").read_text(encoding="utf-8"), "hello")
 
         (self.root / "src").mkdir()
         (self.root / "src" / "x.txt").write_text("x", encoding="utf-8")
         copied = self.write["copy_file"].invoke({"source": "src", "destination": "dst"})
-        self.assertIn("已复制", copied)
+        self.assertIn("Copied:", copied)
         self.assertEqual((self.root / "dst" / "x.txt").read_text(encoding="utf-8"), "x")
 
     def test_delete_file_and_recursive_directory(self):
         (self.root / "a.txt").write_text("a", encoding="utf-8")
         text = self.write["delete_file"].invoke({"path": "a.txt"})
-        self.assertIn("已删除文件", text)
+        self.assertIn("Deleted file:", text)
         self.assertFalse((self.root / "a.txt").exists())
 
         (self.root / "dir").mkdir()

@@ -11,7 +11,7 @@ export interface ChatPayload {
 
 export type ChatEventHandler = (event: string, data: Record<string, unknown>) => void
 
-/** 发起一轮对话并逐条回调 SSE 事件。 */
+/** Start one chat turn and deliver SSE events one by one. */
 export async function streamChat(
   payload: ChatPayload,
   onEvent: ChatEventHandler,
@@ -49,7 +49,7 @@ export async function streamChat(
   await readSSE(response.body.getReader(), onEvent)
 }
 
-/** 订阅后台任务状态事件。 */
+/** Subscribe to background process status events. */
 export async function streamProcessEvents(
   onEvent: ChatEventHandler,
   signal: AbortSignal,

@@ -1,5 +1,5 @@
 # tests/auth_test.py
-"""桌面外壳用的访问令牌：只有对了 token 才能调 API。"""
+"""Access tokens for the desktop shell: the API requires the correct token."""
 
 import shutil
 import unittest
@@ -34,7 +34,7 @@ class AuthEnabledTest(unittest.TestCase):
         self.client = TestClient(self.app)
 
     def test_health_needs_no_token(self):
-        """外壳靠它探活，必须放行且不泄露配置。"""
+        """The shell uses this for liveness checks; it must be allowed and must not leak configuration."""
         response = self.client.get("/api/health")
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("tools", response.text)
@@ -44,12 +44,12 @@ class AuthEnabledTest(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_static_requires_token(self):
-        """页面与 API 都在令牌后面；静态资源已不再由后端提供。"""
+        """Pages and the API are both behind the token; static assets are no longer served by the backend."""
         self.assertEqual(self.client.get("/").status_code, 401)
         self.assertEqual(self.client.get("/static/app.js").status_code, 401)
 
     def test_cors_preflight_skips_token(self):
-        """浏览器预检不带 Authorization，必须放行，否则跨域请求根本发不出去。"""
+        """Browser preflight carries no Authorization header and must be allowed, or cross-origin requests cannot be sent at all."""
         response = self.client.options(
             "/api/chat",
             headers={
@@ -90,7 +90,7 @@ class AuthEnabledTest(unittest.TestCase):
 
 class AuthDisabledTest(unittest.TestCase):
     def test_no_token_means_open_access(self):
-        """手动 `python -m web` 不设 token，保持原来的直接可用。"""
+        """Manual `python -m web` sets no token and stays directly usable as before."""
         tmp = make_tempdir()
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         app = create_app(data_dir=tmp / "data", memory_dir=tmp / "memory")

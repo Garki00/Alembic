@@ -1,5 +1,5 @@
 # tests/search_test.py
-"""网页搜索工具的测试：多服务解析、配置缺失与错误契约。"""
+"""Web search tool tests: multi-provider parsing, missing configuration, and error contracts."""
 
 import unittest
 from unittest.mock import patch
@@ -44,7 +44,7 @@ class SearchToolTest(unittest.TestCase):
         self.assertIn("https://example.com/a", text)
         self.assertIn("A snippet here", text)
         self.assertIn("Example B", text)
-        self.assertIn("不可信", text)
+        self.assertIn("untrusted", text)
 
     def test_bing_parses_results(self):
         bing = """

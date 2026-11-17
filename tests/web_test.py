@@ -1,4 +1,4 @@
-"""网页工作区后端的接口测试（使用 FastAPI TestClient，不调用真实模型）。"""
+"""API tests for the web workspace backend (using FastAPI TestClient, no real model calls)."""
 
 import json
 import shutil
@@ -14,7 +14,7 @@ from web.server import create_app
 
 
 def make_tempdir(prefix: str = "web_") -> Path:
-    """项目内临时目录（沙箱下系统临时目录不可写）。"""
+    """Temporary directory inside the project (the system temp directory is unwritable in the sandbox)."""
     root = Path(__file__).resolve().parents[1] / ".tmp" / "tests"
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"{prefix}{uuid4().hex[:12]}"
@@ -73,7 +73,7 @@ class WebWorkspaceTest(unittest.TestCase):
 
     # ---- 基础 ----
     def test_root_returns_api_info(self):
-        """前后端分离后，/ 只说明 API 位置，不再返回 HTML 页面。"""
+        """After frontend/backend separation, / only reports the API location and no longer returns an HTML page."""
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -125,7 +125,7 @@ class WebWorkspaceTest(unittest.TestCase):
             self.assertTrue(states[name], name)
 
     def create_provider(self) -> dict:
-        """给需要模型的对话测试准备一个可用供应商。"""
+        """Prepares a usable provider for chat tests that need a model."""
         return self.client.post("/api/providers", json={
             "provider": "openai",
             "name": "测试供应商",
@@ -137,7 +137,7 @@ class WebWorkspaceTest(unittest.TestCase):
         }).json()["provider"]
 
     def create_workspace(self) -> dict:
-        """给需要工作区的对话测试准备一个目录。"""
+        """Prepares a directory for chat tests that need a workspace."""
         return self.client.post("/api/workspaces", json={"path": str(self.tmp)}).json()["workspace"]
 
     def test_needs_setup_turns_false_after_provider_is_saved(self):
@@ -149,7 +149,7 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertTrue(data["active_model_id"])
 
     def test_bootstrap_persists_new_tool_entries(self):
-        """升级到新版本后，data/tools.json 里应补齐新增条目且不丢旧配置。"""
+        """After upgrading to a new version, data/tools.json should gain new entries without losing old config."""
         self.client.put("/api/tools/get_weather", json={"config": {"QWEATHER_PROJECT_ID": "keep-me"}})
         self.client.get("/api/bootstrap")
 
@@ -244,7 +244,7 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertEqual(project["value"], "proj-123")
 
     def test_clear_secret_requires_explicit_request(self):
-        """留空表示“保持不变”，所以清空密钥只能用 clear 显式请求。"""
+        """Empty means "keep unchanged", so clearing a secret requires an explicit clear request."""
         self.client.put("/api/tools/get_weather", json={"config": {"QWEATHER_KEY_ID": "test-key-id"}})
         self.client.put("/api/tools/get_weather", json={"clear": ["QWEATHER_KEY_ID"]})
 
@@ -397,7 +397,7 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertEqual(history["messages"][1]["content"], "你好")
 
     def test_chat_stream_exposes_thought_as_sse_event(self):
-        """工作步骤所需的思考内容必须作为独立 SSE 事件送达前端。"""
+        """Thought content needed for work steps must arrive at the frontend as a standalone SSE event."""
         app = create_app(
             data_dir=self.tmp / "thought-data",
             memory_dir=self.tmp / "thought-memory",
@@ -434,7 +434,7 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertIn("event: done", body)
 
     def test_chat_accepts_null_session_id(self):
-        """工作区里直接发送消息应自动创建会话，而不是要求先点新建。"""
+        """Sending a message directly in a workspace should create a session automatically rather than requiring a new-session click first."""
         self.create_provider()
         workspace = self.create_workspace()
         events: list[tuple[str, dict]] = []

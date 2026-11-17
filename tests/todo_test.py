@@ -1,5 +1,5 @@
 # tests/todo_test.py
-"""任务清单工具的测试：校验、持久化、会话隔离与事件推送。"""
+"""Todo list tool tests: validation, persistence, session isolation, and event push."""
 
 import json
 import shutil
@@ -43,7 +43,7 @@ class TodoTest(unittest.TestCase):
                 {"content": "跑测试", "status": "pending"},
             ]
         })
-        self.assertIn("1/3 完成", text)
+        self.assertIn("Todo list: 1/3 completed", text)
         self.assertIn("[x] 1. 读取配置", text)
         self.assertIn("[~] 2. 修改代码", text)
         self.assertIn("[ ] 3. 跑测试", text)
@@ -58,7 +58,7 @@ class TodoTest(unittest.TestCase):
     def test_empty_list_clears(self):
         self.tool().invoke({"todos": [{"content": "a", "status": "pending"}]})
         text = self.tool().invoke({"todos": []})
-        self.assertIn("0/0 完成", text)
+        self.assertIn("Todo list: 0/0 completed", text)
         self.assertEqual(self.store.load("s1"), [])
 
     def test_sessions_are_isolated(self):

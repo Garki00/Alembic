@@ -1,5 +1,5 @@
 # tests/process_view_test.py
-"""后台任务视图、完成事件、附件与取消接口的测试。"""
+"""Tests for background task views, completion events, attachments, and the cancel API."""
 
 import json
 import shutil

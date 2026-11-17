@@ -1,14 +1,18 @@
 # web/auth.py
-"""可选的本地访问令牌。
+"""Optional local access-token protection.
 
-桌面外壳（Electron）在启动后端时生成随机 token 并通过 ``ALEMBIC_TOKEN``
-注入（旧的 ``SMART_AGENT_TOKEN`` 仍兼容）。窗口首次用 ``/?token=<token>`` 打开，服务端校验后换成 HttpOnly Cookie 并
-重定向回 ``/``，地址栏里不会留下 token。
+The desktop shell (Electron) generates a random token at backend startup and
+injects it through ``ALEMBIC_TOKEN`` (the legacy ``SMART_AGENT_TOKEN`` is still
+supported). On first launch the window opens ``/?token=<token>``; the server
+validates it, sets an HttpOnly cookie, and redirects to ``/`` so the token does
+not remain in the address bar.
 
-这样即使本机别的进程扫到了端口，也调不动 ``/api/chat``（那个接口能让 agent 改文件、
-执行命令，审批也能被它自己批准）。
+The token prevents other local processes from calling ``/api/chat`` even if they
+discover the port. That endpoint can modify files and run commands, and an
+attacker able to call it could also approve its own approval requests.
 
-``python -m web`` 手动启动时通常不设这个变量，保持原来「打开就能用」的方式。
+``python -m web`` usually starts without this variable set, keeping the
+"open and use" behavior.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ HEADER_PREFIX = "bearer "
 
 
 def install_auth(app: FastAPI, token: str) -> None:
-    """给应用装上令牌校验中间件。"""
+    """Install token-validation middleware on the application."""
 
     @app.middleware("http")
     async def require_token(request: Request, call_next):

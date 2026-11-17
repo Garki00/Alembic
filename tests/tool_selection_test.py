@@ -128,7 +128,7 @@ class ToolsSearchToolTest(unittest.TestCase):
             for item in build_tools({"tools_search"}, {}, ctx)
         }["tools_search"]
         text = tool.invoke({"query": "PDF 文档"})
-        self.assertIn("没有找到", text)
+        self.assertIn("No extended tool can be activated for:", text)
         self.assertEqual(activation.snapshot(), frozenset())
 
 

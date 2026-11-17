@@ -1,5 +1,5 @@
 # tests/approval_targets_test.py
-"""新增文件/进程工具接入审批时的目标与记忆键。"""
+"""Targets and memory keys when new file/process tools go through approval."""
 
 import unittest
 

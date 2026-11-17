@@ -1,9 +1,5 @@
 # tests/context_test.py
-"""会话上下文、持久化与压缩的单元测试。
-
-运行方式（在项目根目录）:
-    .venv\\Scripts\\python.exe -m unittest discover -s tests -p "*_test.py" -v
-"""
+"""Unit tests for session context, persistence, and compression."""
 
 import shutil
 import unittest
@@ -31,10 +27,11 @@ from agents.context import (
 
 @contextmanager
 def workspace_tempdir():
-    """在项目内建临时目录。
+    """Creates a temporary directory inside the project.
 
-    沙箱/只读环境会限制系统临时目录，这里统一放到项目根的 .tmp/tests 下，
-    并且不用 tempfile.mkdtemp（Windows 上遇到权限错误会反复重试）。
+    Sandboxed or read-only environments restrict the system temp directory, so
+    everything goes under .tmp/tests at the project root; tempfile.mkdtemp is
+    avoided because it retries repeatedly on Windows permission errors.
     """
     root = Path(__file__).resolve().parents[1] / ".tmp" / "tests"
     root.mkdir(parents=True, exist_ok=True)
@@ -47,7 +44,7 @@ def workspace_tempdir():
 
 
 class StubSummarizer:
-    """假的摘要模型，记录调用次数。"""
+    """Fake summarizer model that records how often it is called."""
 
     def __init__(self, reply: str = "这是对话摘要") -> None:
         self.reply = reply
@@ -64,7 +61,7 @@ class BoomSummarizer:
 
 
 class StubAgent:
-    """假的 Agent：把收到的历史原样回显，并追加一条 AI 回复。"""
+    """Fake Agent: echoes the received history unchanged and appends an AI reply."""
 
     def __init__(self) -> None:
         self.payloads: list[list] = []
@@ -119,7 +116,7 @@ class EstimateTokensTest(unittest.TestCase):
 
 
 class ContextTokensTest(unittest.TestCase):
-    """上下文 token 统计：优先 provider 用量，缺失时本地估算。"""
+    """Context token accounting: prefer provider usage, fall back to local estimation when missing."""
 
     def test_provider_usage_is_authoritative(self):
         ai = AIMessage(
@@ -161,7 +158,7 @@ class ContextTokensTest(unittest.TestCase):
 
 
 class CompressionBoundaryTest(unittest.TestCase):
-    """压缩边界：由窗口比例推导，且两次压缩之间留出间隔。"""
+    """Compression boundaries: derived from the window ratio, with spacing between consecutive compressions."""
 
     def test_threshold_derived_from_window_ratio_and_reserve(self):
         with workspace_tempdir() as tmp:
@@ -229,7 +226,7 @@ class CompressionBoundaryTest(unittest.TestCase):
 
 
 class ToolOutputCapTest(unittest.TestCase):
-    """单条工具输出超出预算时截断后再写入历史。"""
+    """Single tool outputs over budget are truncated before being written to history."""
 
     def test_large_tool_output_is_truncated(self):
         with workspace_tempdir() as tmp:
@@ -253,7 +250,7 @@ class ToolOutputCapTest(unittest.TestCase):
             session.ask("查一下")
             tool_messages = [m for m in session.messages if isinstance(m, ToolMessage)]
             self.assertEqual(len(tool_messages), 1)
-            self.assertIn("已截断", tool_messages[0].content)
+            self.assertIn("truncated", tool_messages[0].content)
             self.assertLess(len(tool_messages[0].content), 1000)
 
     def test_small_tool_output_untouched(self):
@@ -378,7 +375,7 @@ class CompactMessagesTest(unittest.TestCase):
         ]
         new_messages, summary = compact_messages(messages, BoomSummarizer(), keep_recent=2)
         self.assertIsNone(summary)
-        self.assertIn("压缩失败", new_messages[0].content)
+        self.assertIn("summarization failed", new_messages[0].content)
         self.assertEqual(len(new_messages), 3)
 
 
@@ -510,7 +507,7 @@ class ChatSessionTest(unittest.TestCase):
 
 
 class StepThoughtTest(unittest.TestCase):
-    """tool_calling 没有独立的 thought 通道，由带 tool_calls 的 AI 正文派生。"""
+    """tool_calling has no separate thought channel, so thoughts are derived from AI text carrying tool_calls."""
 
     class ThoughtStreamAgent:
         emits_thought_events = False

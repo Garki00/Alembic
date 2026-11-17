@@ -1,27 +1,30 @@
 # agents/approval.py
-"""工具审批：危险工具执行前先让人确认。
+"""Tool approval: ask a human before a dangerous tool runs.
 
-与主流 agent 一致的两级决策：
+- **Allow once**: let only this call through;
+- **Always allow**: remember the pair (tool + target: raw command / file path) for
+  the session, so later calls of the same kind are approved automatically;
+- **Deny**: do not run the tool; report the failure back to the model so it picks
+  another approach instead of retrying.
 
-- **允许本次**：只放行这一次调用；
-- **始终允许**：本会话内记住「工具 + 对象」（命令原文 / 文件路径），
-  之后同类调用自动放行，不再打扰；
-- **拒绝**：工具不执行，把失败写回给模型，让它换方案而不是重试。
+Whether a tool needs approval depends on the permission mode and the risk level
+(see :func:`permission_tools`):
 
-哪些工具需要审批由权限模式与风险等级共同决定（见 :func:`permission_tools`）：
+- ``read_only``: truly read-only. File writes and command execution are rejected
+  before approval;
+- ``approval_all``: every tool call needs approval;
+- ``workspace_write``: file writes inside the workspace need none, command
+  execution still does;
+- ``full_access``: no approval (irreversible high-risk commands are still rejected
+  by the command policy).
 
-- ``read_only``：真正只读。写文件与执行命令在审批之前就被拒绝；
-- ``approval_all``：所有工具调用都要审批；
-- ``workspace_write``：工作区内写文件免审批，执行命令仍需审批；
-- ``full_access``：不审批（但不可恢复的高危命令仍会被命令策略拒绝）。
+A command policy layer (:mod:`tools.command_policy`) sits outside approval:
+irreversible operations are rejected outright, while recoverable but dangerous
+ones carry their reason into the approval card.
 
-审批之外还有一层命令策略（:mod:`tools.command_policy`）：不可恢复的操作
-直接拒绝，可恢复但危险的操作会把原因带进审批卡片。
-
-这里没有用 LangChain 自带的 ``HumanInTheLoopMiddleware``：它基于 LangGraph 的
-``interrupt()``，需要有 checkpointer 并把一次对话拆成「暂停 + Command(resume)」，
-与当前「一次 SSE 流跑完一轮」的结构不兼容。改用 ``wrap_tool_call`` 拦截，
-审批结果同步返回，调用方可自由决定怎么问人（终端 / 浏览器）。
+Approval is enforced through ``wrap_tool_call`` instead of LangChain's
+``HumanInTheLoopMiddleware``, so a decision is returned synchronously and the
+caller decides how to ask a human (terminal / browser).
 """
 
 from __future__ import annotations
@@ -71,11 +74,12 @@ _FILE_VERBS = {
 
 @dataclass(frozen=True)
 class ApprovalRequest:
-    """一次待确认的工具调用，直接对应前端审批卡片要显示的内容。
+    """One tool call awaiting confirmation; mirrors what the frontend approval card shows.
 
-    ``summary`` 是给人看的一句话说明（能看懂「要做什么」），``preview`` 才是
-    原始命令 / 内容，二者分开：卡片先讲意图，原文按需展开。``steps`` 是命令
-    被拆成的若干步说明，逐步确认时更容易判断。
+    ``summary`` is a one-line human-readable statement of what will happen and
+    ``preview`` is the raw command / content; the card states the intent first and
+    expands the raw text on demand. ``steps`` splits a command into steps so a
+    step-by-step confirmation is easier to judge.
     """
 
     id: str
@@ -113,11 +117,10 @@ def _clip(text: str, limit: int = PREVIEW_LIMIT) -> str:
 
 
 def _readable_hint(args: Mapping) -> str:
-    """模型自带的「一句话说明」；没有或不合理时返回空串。
+    """The model's own one-line description; returns an empty string when missing or unusable.
 
-    让模型在调用 ``run_command`` 时填 ``description``，审批卡片就能显示
-    「扫描当前目录所有 .html 文件并检查链接是否存在」这种目标级说明，
-    而不是让用户去读原始命令。
+    Having the model fill ``description`` on a ``run_command`` call lets the approval
+    card show a goal-level statement instead of making the user read the raw command.
     """
     command = " ".join(str(args.get("command") or "").split()).lower()
     for key in ("description", "purpose", "intent"):
@@ -132,7 +135,7 @@ def _readable_hint(args: Mapping) -> str:
 
 
 def describe_call(tool: str, args: Mapping) -> tuple[str, str, str]:
-    """把工具调用翻译成 (记忆用的 target, 一句话说明, 内容预览)。"""
+    """Translate a tool call into (memory target, one-line summary, content preview)."""
     args = dict(args or {})
 
     command = args.get("command")
@@ -217,9 +220,10 @@ def describe_call(tool: str, args: Mapping) -> tuple[str, str, str]:
 
 
 def describe_steps(tool: str, args: Mapping) -> tuple[str, ...]:
-    """命令类工具的逐步说明；非命令工具返回空元组。
+    """Per-step description for command tools; non-command tools return an empty tuple.
 
-    只做展示用途：即使规则没识别出来，审批仍然照常进行，不会因此放行或拒绝。
+    Display only: when the rules do not recognize a command, approval still proceeds
+    normally instead of being allowed or denied because of it.
     """
     command = (args or {}).get("command")
     if command is None:
@@ -228,7 +232,7 @@ def describe_steps(tool: str, args: Mapping) -> tuple[str, ...]:
 
 
 def gated_tools(enabled: set[str] | None = None) -> dict[str, str]:
-    """按条目启用状态算出需要审批的具体工具名 → 风险等级。"""
+    """Map enabled entries to the concrete tool names needing approval → risk level."""
     names = set(TOOL_SPECS) if enabled is None else set(enabled)
     gated: dict[str, str] = {}
     for name, spec in TOOL_SPECS.items():
@@ -242,7 +246,7 @@ def gated_tools(enabled: set[str] | None = None) -> dict[str, str]:
 
 
 def tool_risks(enabled: set[str] | None = None) -> dict[str, str]:
-    """所有已启用工具的具体工具名 → 风险等级（只读模式也用它判断读写）。"""
+    """Map every enabled tool name → risk level (read-only mode uses it to tell reads from writes)."""
     names = set(TOOL_SPECS) if enabled is None else set(enabled)
     risks: dict[str, str] = {}
     for name, spec in TOOL_SPECS.items():
@@ -254,12 +258,14 @@ def tool_risks(enabled: set[str] | None = None) -> dict[str, str]:
 
 
 def permission_tools(enabled: set[str] | None, mode: str) -> dict[str, str]:
-    """权限模式 → 需要审批的工具。
+    """Permission mode → tools that need approval.
 
-    - ``read_only``：不审批，因为写/执行会在审批之前直接拒绝；只读工具放行；
-    - ``approval_all``：所有已启用工具都审批；
-    - ``workspace_write``：只对执行命令类工具审批，工作区内写文件免审批；
-    - ``full_access``：完全不审批。
+    - ``read_only``: no approval, because writes/execution are rejected before
+      approval; read-only tools pass;
+    - ``approval_all``: every enabled tool is approved;
+    - ``workspace_write``: only command-execution tools are approved; file writes
+      inside the workspace need none;
+    - ``full_access``: no approval at all.
     """
     mode = (mode or "workspace_write").strip().lower()
     if mode in {"full_access", "read_only"}:
@@ -279,10 +285,10 @@ def permission_tools(enabled: set[str] | None, mode: str) -> dict[str, str]:
 
 
 class ApprovalPolicy:
-    """判断是否需要审批、是否被硬性拒绝，并保存「始终允许」的记忆。
+    """Decide whether approval is needed or the call must be hard-rejected, and keep the always-allow memo.
 
-    ``memo`` 由调用方持有（网页端按会话存、命令行存在进程内），
-    这样跨轮次、跨 SSE 请求都能复用同一份授权。
+    ``memo`` is owned by the caller (per session on the web side, in-process for the
+    CLI), so the same grants are reused across turns and SSE requests.
     """
 
     def __init__(
@@ -305,12 +311,12 @@ class ApprovalPolicy:
         return self.risks.get(tool) or self.gated.get(tool) or "read"
 
     def precheck(self, tool: str, args: Mapping) -> tuple[str, str, str] | None:
-        """审批前的硬性检查；返回 ``(错误码, 说明, 建议)`` 表示必须拦截。"""
+        """Hard check before approval; a returned ``(code, message, hint)`` means the call must be blocked."""
         if self.mode == "read_only" and self.risk_of(tool) in {RISK_WRITE, RISK_EXEC}:
             return (
                 "read_only",
-                f"当前是只读模式，「{tool}」会修改文件或执行命令，已拒绝。",
-                "切换到「全部审批」或更高权限后再操作，或改用只读工具查看现状。",
+                f"The session is in read-only mode, so `{tool}` is rejected: it would modify files or run commands.",
+                "Switch to full approval or a broader permission mode first, or use read-only tools to inspect the current state.",
             )
 
         command = args.get("command") if isinstance(args, Mapping) else None
@@ -321,16 +327,16 @@ class ApprovalPolicy:
             return None
         return (
             "blocked_by_policy",
-            f"命令被安全策略拒绝：{risk.reason}",
-            f"规则：{risk.rule}。该操作不可恢复，无法通过审批放行。",
+            f"Command rejected by the security policy: {risk.reason_en}",
+            f"Rule: {risk.rule}. This operation is irreversible and cannot be released by approval.",
         )
 
     def key(self, tool: str, args: Mapping) -> str:
-        """授权记忆的唯一键。
+        """Unique key of an approval grant.
 
-        写文件的两种工具共用 ``file:<路径>``：用户「始终允许修改 a.py」这个
-        意图与用 write_file 还是 edit_file 无关，拆成两条只会重复打扰。
-        删除 / 移动 / 复制各自独立，避免「允许改」被扩大成「允许删」。
+        Both file-writing tools share ``file:<path>``: "always allow editing a.py" does
+        not depend on write_file vs edit_file, and splitting it would ask twice. Delete /
+        move / copy stay separate so "allow editing" never widens into "allow deleting".
         """
         target, _, _ = describe_call(tool, args)
         prefix = _KEY_PREFIX.get(tool, tool)
@@ -362,7 +368,7 @@ class ApprovalPolicy:
 
 @dataclass(frozen=True)
 class ApprovalGate:
-    """把策略与「怎么问人」绑在一起，交给运行时装进中间件。"""
+    """Bind a policy to the way a human is asked; the runtime installs it as middleware."""
 
     policy: ApprovalPolicy
     ask: Callable[[ApprovalRequest], Decision]
@@ -373,8 +379,8 @@ def denied_tool_message(call: Mapping) -> ToolMessage:
     return ToolMessage(
         content=tool_error(
             "approval_denied",
-            f"用户拒绝了这次「{name}」调用，工具没有执行。",
-            hint="不要原样重试。若确有必要，先解释理由再尝试；也可以改用只读方式确认现状。",
+            f"The user denied this `{name}` call, so the tool did not run.",
+            hint="Do not retry the same call verbatim. If it is truly necessary, explain why first and try again; you may also confirm the current state with read-only tools.",
         ),
         tool_call_id=call.get("id"),
         name=name,
@@ -393,7 +399,7 @@ def policy_blocked_message(call: Mapping, code: str, message: str, hint: str = "
 
 
 class ApprovalMiddleware(AgentMiddleware):
-    """在工具真正执行前插入策略检查与人工确认。"""
+    """Insert policy checks and human confirmation before a tool actually runs."""
 
     def __init__(self, gate: ApprovalGate) -> None:
         super().__init__()
@@ -401,7 +407,7 @@ class ApprovalMiddleware(AgentMiddleware):
 
     # ---- 决策逻辑（同步 / 异步共用） ----
     def _decide(self, call: Mapping) -> ToolMessage | None:
-        """返回 None 表示放行，返回 ToolMessage 表示拦截。"""
+        """Return None to let the call through, or a ToolMessage to block it."""
         name = str(call.get("name") or "")
         args = call.get("args") or {}
 
@@ -476,7 +482,7 @@ _COMMAND_TOOLS = {"run_command", "start_process"}
 
 
 def _console_details(request: ApprovalRequest) -> str:
-    """终端里补充「逐步说明」与原始内容；网页端由卡片自己排版。"""
+    """Add the step list and the raw content for the terminal; the web card does its own layout."""
     lines: list[str] = []
     if len(request.steps) > 1:
         lines.extend(f"  · {step}" for step in request.steps)
@@ -487,10 +493,10 @@ def _console_details(request: ApprovalRequest) -> str:
 
 
 def console_asker(request: ApprovalRequest) -> Decision:
-    """终端里提问。
+    """Ask on the terminal.
 
-    非交互场景（stdin 被管道接管 / Ctrl-C）一律按拒绝处理，
-    避免脚本里悄悄放行危险操作。
+    Non-interactive situations (stdin piped, Ctrl-C) are always treated as a denial so
+    a script never silently approves a dangerous operation.
     """
     try:
         answer = input(
@@ -508,7 +514,7 @@ def gate_from(
     *,
     mode: str = "workspace_write",
 ) -> ApprovalGate:
-    """按启用条目构造命令行用的审批开关。"""
+    """Build the CLI approval gate from the enabled entries."""
     return ApprovalGate(
         policy=ApprovalPolicy(
             permission_tools(enabled, mode),

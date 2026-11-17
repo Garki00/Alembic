@@ -1,17 +1,19 @@
 # tools/atomic_edit.py
-"""原子化批量编辑工具：``batch_edit``。
+"""Atomic batch editing tool: ``batch_edit``.
 
-一次调用可以提交多个文件、多个精确替换。所有编辑先在内存中校验并生成
-最终内容，全部成功后才开始落盘；任何一个替换失败（找不到、匹配不唯一、
-路径非法、文件被外部修改），磁盘上不会留下任何修改。落盘阶段如果某个
-文件提交失败，会回滚已经写入的文件。
+A single call can submit several files and several exact replacements. Every edit is
+validated in memory and the final content is built first; only when all of them
+succeed does anything reach the disk. If any replacement fails (not found, not
+unique, invalid path, file modified externally), the disk is left untouched. If a
+file commit fails during the write phase, files already written are rolled back.
 
-它和 ``apply_patch`` 的区别：
+Differences from ``apply_patch``:
 
-- ``apply_patch`` 处理 unified diff，适合有上下文的补丁；
-- ``batch_edit`` 处理精确字符串替换，适合模型已经知道原文、但不想为每一处
-  修改单独发一次 ``edit_file`` 的场景；
-- ``batch_edit`` 的多次替换是一个整体，不能只成功一半。
+- ``apply_patch`` consumes unified diffs and suits patches with context;
+- ``batch_edit`` consumes exact string replacements, for cases where the model
+  already knows the original text but does not want one ``edit_file`` call per
+  change;
+- all replacements in ``batch_edit`` are one unit and cannot half-succeed.
 """
 
 from __future__ import annotations
@@ -44,18 +46,18 @@ _MAX_FILES = 50
 
 
 class BatchEditItem(BaseModel):
-    path: str = Field(description="工作区内的文件路径。")
-    old_string: str = Field(description="要替换的原文；不要包含 read_file 的行号。")
-    new_string: str = Field(description="替换后的文本。")
-    replace_all: bool = Field(default=False, description="是否替换全部匹配；默认只替换唯一一处。")
+    path: str = Field(description="File path inside the workspace.")
+    old_string: str = Field(description="Exact original text to replace; do not include the line numbers returned by read_file.")
+    new_string: str = Field(description="Replacement text.")
+    replace_all: bool = Field(default=False, description="Whether to replace every match; by default only the single unique occurrence is replaced.")
 
 
 class BatchEditInput(BaseModel):
-    edits: list[BatchEditItem] = Field(description="按顺序应用的多处精确替换。")
+    edits: list[BatchEditItem] = Field(description="Exact replacements applied in order.")
 
 
 class BatchEditError(ValueError):
-    """批量编辑的校验错误；带机读错误码。"""
+    """Validation error for batch edits; carries a machine-readable error code."""
 
     def __init__(self, code: str, message: str, *, hint: str = "") -> None:
         super().__init__(message)
@@ -91,22 +93,22 @@ def _normalize_edits(raw: Any) -> list[_Edit]:
         except ValueError as exc:
             raise BatchEditError(
                 "bad_edits",
-                "edits 不是合法的 JSON 数组。",
-                hint='请传数组，例如 [{"path":"a.html","old_string":"旧","new_string":"新"}]。',
+                "edits is not a valid JSON array.",
+                hint='Pass an array, for example [{"path":"a.html","old_string":"old","new_string":"new"}].',
             ) from exc
     if not isinstance(raw, list):
         raise BatchEditError(
             "bad_edits",
-            "edits 必须是数组。",
-            hint='请传 [{"path": "...", "old_string": "...", "new_string": "..."}]。',
+            "edits must be an array.",
+            hint='Pass [{"path": "...", "old_string": "...", "new_string": "..."}].',
         )
     if not raw:
-        raise BatchEditError("empty_edits", "edits 不能为空。")
+        raise BatchEditError("empty_edits", "edits must not be empty.")
     if len(raw) > _MAX_EDITS:
         raise BatchEditError(
             "too_many_edits",
-            f"一次最多提交 {_MAX_EDITS} 处编辑，当前为 {len(raw)} 处。",
-            hint="请拆成多次 batch_edit，或先合并相邻修改。",
+            f"At most {_MAX_EDITS} edits can be submitted per call; got {len(raw)}.",
+            hint="Split the work across several batch_edit calls, or merge adjacent changes first.",
         )
     edits: list[_Edit] = []
     for index, item in enumerate(raw, 1):
@@ -115,22 +117,22 @@ def _normalize_edits(raw: Any) -> list[_Edit]:
         if not isinstance(item, Mapping):
             raise BatchEditError(
                 "bad_edit",
-                f"第 {index} 项不是对象。",
-                hint='每一项必须包含 path、old_string、new_string。',
+                f"Item {index} is not an object.",
+                hint='Each item must contain path, old_string, and new_string.',
             )
         path = str(item.get("path") or "").strip()
         old_string = item.get("old_string")
         new_string = item.get("new_string")
         if not path:
-            raise BatchEditError("bad_edit", f"第 {index} 项缺少 path。")
+            raise BatchEditError("bad_edit", f"Item {index} is missing path.")
         if not isinstance(old_string, str) or not old_string:
-            raise BatchEditError("bad_edit", f"第 {index} 项的 old_string 不能为空。")
+            raise BatchEditError("bad_edit", f"Item {index} has an empty old_string.")
         if not isinstance(new_string, str):
-            raise BatchEditError("bad_edit", f"第 {index} 项的 new_string 必须是字符串。")
+            raise BatchEditError("bad_edit", f"Item {index} new_string must be a string.")
         if old_string == new_string:
             raise BatchEditError(
                 "no_change",
-                f"第 {index} 项的 old_string 与 new_string 相同。",
+                f"Item {index} has identical old_string and new_string.",
             )
         edits.append(
             _Edit(
@@ -164,18 +166,18 @@ def _apply_one(plan: _Plan, edit: _Edit) -> None:
     if count == 0:
         raise BatchEditError(
             "not_found",
-            f"在 {plan.name} 中没有找到第 {plan.edits + 1} 个替换的 old_string。",
+            f"old_string for replacement {plan.edits + 1} was not found in {plan.name}.",
             hint=(
-                "请确认 old_string 与文件原文完全一致；"
-                "read_file 返回的行号只是定位标注，不能复制进 old_string。"
+                "Make sure old_string matches the original text exactly; "
+                "the line numbers returned by read_file are locator annotations and must not be copied into old_string."
             ),
         )
     if count > 1 and not edit.replace_all:
         lines = ", ".join(str(item) for item in _line_positions(plan.text, edit.old_string))
         raise BatchEditError(
             "ambiguous_match",
-            f"old_string 在 {plan.name} 中出现了 {count} 次（行 {lines}），无法确定改哪一处。",
-            hint="补足上下文使其唯一，或设置 replace_all=true。",
+            f"old_string occurs {count} times in {plan.name} (lines {lines}); the target occurrence is ambiguous.",
+            hint="Add surrounding context to make it unique, or set replace_all=true.",
         )
     replaced = count if edit.replace_all else 1
     plan.text = (
@@ -225,7 +227,7 @@ def _cleanup_staged(plans: list[_Plan]) -> None:
 
 
 def apply_batch_edits(ctx: ToolContext, raw: Any) -> str:
-    """校验并原子提交一批精确替换；拆出来方便测试。"""
+    """Validate and atomically commit a batch of exact replacements; split out for testing."""
     try:
         edits = _normalize_edits(raw)
     except BatchEditError as exc:
@@ -239,15 +241,15 @@ def apply_batch_edits(ctx: ToolContext, raw: Any) -> str:
             return tool_error(exc.code, exc.message, hint=exc.hint)
         name = display_path(ctx.workspace, target)
         if _protected_reason(target, ctx.workspace):
-            return tool_error("protected_path", f"不能修改{_protected_reason(target, ctx.workspace)}：{name}。")
+            return tool_error("protected_path", f"Cannot modify {_protected_reason(target, ctx.workspace)}: {name}.")
         if not target.exists():
             return tool_error(
                 "not_found",
-                f"文件不存在：{name}。",
-                hint="batch_edit 只修改已有文件；新建文件请使用 write_file。",
+                f"File not found: {name}.",
+                hint="batch_edit only modifies existing files; use write_file to create a new file.",
             )
         if target.is_dir():
-            return tool_error("is_directory", f"{name} 是目录，不能编辑。")
+            return tool_error("is_directory", f"{name} is a directory and cannot be edited.")
 
         key = str(target)
         plan = plans.get(key)
@@ -255,8 +257,8 @@ def apply_batch_edits(ctx: ToolContext, raw: Any) -> str:
             if len(plans) >= _MAX_FILES:
                 return tool_error(
                     "too_many_files",
-                    f"一次最多修改 {_MAX_FILES} 个文件。",
-                    hint="请拆成多次 batch_edit。",
+                    f"At most {_MAX_FILES} files can be modified per call.",
+                    hint="Split the work across several batch_edit calls.",
                 )
             error, _partial = _check_read(target)
             if error:
@@ -266,7 +268,7 @@ def apply_batch_edits(ctx: ToolContext, raw: Any) -> str:
                 original_text = _read_text(target)
                 original_mtime = target.stat().st_mtime_ns
             except OSError as exc:
-                return tool_error("read_failed", f"读取 {name} 失败：{exc}。")
+                return tool_error("read_failed", f"Failed to read {name}: {exc}")
             plan = _Plan(
                 target=target,
                 name=name,
@@ -283,19 +285,20 @@ def apply_batch_edits(ctx: ToolContext, raw: Any) -> str:
 
     changed = [plan for plan in plans.values() if plan.text != plan.original_text]
     if not changed:
-        return tool_error("no_change", "这批编辑没有产生任何实际变化。")
+        return tool_error("no_change", "These edits produced no actual change.")
 
-    # 提交前再次确认文件没有被外部改动，避免覆盖别处的写入。
+    # Re-check before committing that no file was modified externally, so writes
+    # made elsewhere are not overwritten.
     for plan in changed:
         try:
             current_mtime = plan.target.stat().st_mtime_ns
         except OSError as exc:
-            return tool_error("read_failed", f"读取 {plan.name} 失败：{exc}。")
+            return tool_error("read_failed", f"Failed to read {plan.name}: {exc}")
         if current_mtime != plan.original_mtime:
             return tool_error(
                 "stale_read",
-                f"{plan.name} 在读取之后已被修改，本批编辑没有提交。",
-                hint="请重新 read_file 获取最新内容，再生成整批编辑。",
+                f"{plan.name} was modified after it was read; this batch was not committed.",
+                hint="Call read_file again for the current content, then rebuild the whole batch.",
             )
 
     try:
@@ -303,7 +306,7 @@ def apply_batch_edits(ctx: ToolContext, raw: Any) -> str:
             plan.staged_path = _stage(plan)
     except OSError as exc:
         _cleanup_staged(changed)
-        return tool_error("stage_failed", f"无法准备临时文件，本批编辑没有提交：{exc}。")
+        return tool_error("stage_failed", f"Cannot prepare a temporary file; this batch was not committed: {exc}")
 
     committed: list[_Plan] = []
     try:
@@ -322,14 +325,14 @@ def apply_batch_edits(ctx: ToolContext, raw: Any) -> str:
                 rollback_errors.append(f"{plan.name}: {rollback_exc}")
         _cleanup_staged(changed)
         detail = (
-            f"提交 {len(committed)} 个文件后失败：{exc}。"
+            f"Failed after committing {len(committed)} files: {exc}"
             if committed
-            else f"提交失败：{exc}。"
+            else f"Commit failed: {exc}"
         )
         if rollback_errors:
-            detail += " 回滚也失败：" + "；".join(rollback_errors)
+            detail += " Rollback also failed: " + "; ".join(rollback_errors)
         else:
-            detail += " 已回滚已提交的文件，没有留下部分修改。"
+            detail += " Rolled back the committed files; no partial changes remain."
         return tool_error("commit_failed", detail)
 
     lines: list[str] = []
@@ -340,18 +343,18 @@ def apply_batch_edits(ctx: ToolContext, raw: Any) -> str:
         total_added += added
         total_removed += removed
         total_edits += plan.edits
-        lines.append(f"- {plan.name}：{plan.edits} 处，+{added} -{removed}")
+        lines.append(f"- {plan.name}: {plan.edits} edits, +{added} -{removed}")
 
     return (
-        f"已原子编辑：{len(changed)} 个文件，{total_edits} 处替换\n"
+        f"Atomically edited {len(changed)} file(s) with {total_edits} replacement(s)\n"
         + "\n".join(lines)
-        + f"\n变更：+{total_added} -{total_removed}\n"
-        + "校验：所有替换一次性提交；任一处失败时不会留下部分修改。"
+        + f"\nChanges: +{total_added} -{total_removed}\n"
+        + "Verified: every replacement was committed at once; a failure leaves no partial changes."
     )
 
 
 def build_atomic_edit_tools(ctx: ToolContext) -> list:
-    """构造 ``batch_edit``。"""
+    """Build the ``batch_edit`` tool."""
 
     @tool(args_schema=BatchEditInput)
     def batch_edit(edits: list[dict]) -> str:

@@ -1,5 +1,5 @@
 # tests/terminals_test.py
-"""终端适配测试：别名、可用性、参数构造与 WSL 路径映射。"""
+"""Terminal adapter tests: aliases, availability, argument construction, and WSL path mapping."""
 
 import os
 import unittest

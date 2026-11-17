@@ -1,5 +1,5 @@
 # tests/env_test.py
-"""子进程环境白名单：系统变量放行，密钥变量剥离。"""
+"""Subprocess environment allowlist: system variables pass through, secret variables are stripped."""
 
 import unittest
 

@@ -1,42 +1,38 @@
 # tools/command_brief.py
-"""把一条 shell 命令翻译成人能一眼看懂的中文说明。
+"""Translate a shell command into a plain-language Chinese explanation for approval cards.
 
-审批卡片要回答的是「它到底要做什么」，而不是把命令原文再贴一遍。命令原文
-可能是一条十几段的 PowerShell 管道，用户很难在几秒内判断该不该点「允许」。
+The explanation answers "what does it actually do" instead of repeating a raw
+command that may be a long PowerShell pipeline. Rules are offline, with no model
+call:
 
-这里的做法是**离线规则**，不额外调用模型：
+- Split into statements on ``;`` / newline / ``&&`` / ``||``, then into pipe stages on ``|``;
+- Recognize common PowerShell / CMD / bash / build-tool verbs and translate each into a short phrase;
+- Chain pipe stages in order and separate statements with "；";
+- Fall back to "run the xxx command" when nothing is recognized; never invent intent.
 
-- 按 ``;`` / 换行 / ``&&`` / ``||`` 拆成语句，再按 ``|`` 拆成管道段；
-- 识别常见的 PowerShell / CMD / bash / 构建工具动词（列目录、搜索、写文件、
-  删除、跑测试、Git 操作等），翻译成一句短语；
-- 管道段按顺序串起来（「列出 *.html 文件，然后只保留 Name、Length 两列」），
-  语句之间用「；」分隔；
-- 看不懂的命令退回「运行 xxx 命令」，绝不编造意图。
-
-输出只用于审批展示与「始终允许」的说明文字，不参与命令执行，因此规则
-失效时最坏结果只是描述变粗，不会改变真实执行内容。
+The output is display-only and never affects execution.
 """
 
 from __future__ import annotations
 
 import re
 
-#: 说明最多保留几条语句；太多只说明用户也不会读。
+#: Maximum number of statements kept in the explanation; a longer one would not be read.
 MAX_STEPS = 6
-#: 单句说明的字符上限。
+#: Character limit for one summary sentence.
 MAX_SUMMARY = 180
 
-#: 正则里的元字符：把 pattern 还原成「关键字」时去掉。
+#: Regex metacharacters to strip when reducing a pattern back to a keyword.
 _REGEX_NOISE = re.compile(r"[\\()\[\]{}+*?^$|]")
-#: 只有装饰符号的文本（如 ``----``）不值得写进说明。
+#: Text made only of decoration characters (such as ``----``) is not worth explaining.
 _SEPARATOR_TEXT = re.compile(r"^[\s\-=#*_~·—─]+$")
-#: 变量赋值：``$f = ...`` / ``Exists=(...)``。
+#: Variable assignment: ``$f = ...`` / ``Exists=(...)``.
 _ASSIGNMENT = re.compile(r"^(?P<name>\$?[\w.\[\]:]+)\s*=(?!=)\s*(?P<rhs>.+)$", re.S)
 
 _QUOTES = "\"'`"
 _BRACKETS = {"(": ")", "[": "]", "{": "}"}
 
-#: 表达式里出现这些调用时，按短语描述（只取第一个就能读懂整体意图）。
+#: When these calls appear in an expression, describe them with a phrase (the first one conveys the intent).
 _EXPRESSION_PHRASES = (
     (re.compile(r"(?i)\btest-path\b"), "检查路径是否存在"),
     (re.compile(r"(?i)\bget-content\b"), "读取文件内容"),
@@ -46,7 +42,7 @@ _EXPRESSION_PHRASES = (
     (re.compile(r"(?i)\b(invoke-webrequest|iwr|curl|wget)\b"), "请求网络地址"),
 )
 
-#: Git 子命令 → 短语。
+#: Git subcommand → phrase.
 _GIT_VERBS = {
     "status": "查看 Git 状态",
     "diff": "查看改动差异",
@@ -71,7 +67,7 @@ _GIT_VERBS = {
     "tag": "查看或打标签",
 }
 
-#: npm / pnpm / yarn 子命令 → 短语。
+#: npm / pnpm / yarn subcommand → phrase.
 _PACKAGE_SCRIPTS = {
     "install": "安装依赖",
     "i": "安装依赖",
@@ -96,7 +92,7 @@ def _clip(text: str, limit: int = MAX_SUMMARY) -> str:
 
 
 def _split_top_level(text: str, separators: tuple[str, ...]) -> list[str]:
-    """按顶层分隔符切分，忽略引号、括号、脚本块内部的符号。"""
+    """Split on top-level separators, ignoring separators inside quotes, brackets, or script blocks."""
     parts: list[str] = []
     buf: list[str] = []
     stack: list[str] = []
@@ -107,7 +103,7 @@ def _split_top_level(text: str, separators: tuple[str, ...]) -> list[str]:
         if quote:
             buf.append(char)
             if char == quote:
-                # PowerShell 用两个单引号转义单引号。
+                # PowerShell escapes a single quote by doubling it.
                 if quote == "'" and index + 1 < len(text) and text[index + 1] == "'":
                     buf.append(text[index + 1])
                     index += 2
@@ -138,7 +134,7 @@ def _split_top_level(text: str, separators: tuple[str, ...]) -> list[str]:
 
 
 def _balanced(text: str) -> bool:
-    """括号/引号是否配对（用于剥掉一层 ``( ... )``）。"""
+    """Whether brackets and quotes are balanced (used to peel one ``( ... )`` layer)."""
     stack: list[str] = []
     quote = ""
     for char in text:
@@ -165,7 +161,7 @@ def _unquote(text: str) -> str:
 
 
 def _first_token(text: str) -> tuple[str, str]:
-    """返回 ``(命令名, 其余参数)``；命令名去掉引号与常见前缀。"""
+    """Return ``(command name, remaining arguments)``; the name is stripped of quotes and common prefixes."""
     stripped = text.strip()
     stripped = re.sub(r"^(?:&\s*|call\s+|sudo\s+)", "", stripped)
     match = re.match(r"(\"[^\"]+\"|'[^']+'|\S+)", stripped)
@@ -176,7 +172,7 @@ def _first_token(text: str) -> tuple[str, str]:
 
 
 def _program_key(token: str) -> str:
-    """命令名 → 便于比对的小写短名（去掉路径与 .exe/.cmd 等后缀）。"""
+    """Command name → lowercase short name for comparison (path and .exe/.cmd suffixes removed)."""
     name = re.split(r"[\\/]", token.strip())[-1]
     name = name.strip().lower()
     for suffix in (".exe", ".cmd", ".bat", ".ps1", ".sh", ".com"):
@@ -186,7 +182,7 @@ def _program_key(token: str) -> str:
 
 
 def _option(rest: str, name: str) -> str:
-    """取出 ``-Name value`` 形式参数的值。"""
+    """Extract the value of a ``-Name value`` parameter."""
     match = re.search(
         rf"(?i)(?:^|\s)-{re.escape(name)}\s+(\"[^\"]*\"|'[^']*'|\S+)",
         rest,
@@ -195,7 +191,7 @@ def _option(rest: str, name: str) -> str:
 
 
 def _positionals(rest: str) -> list[str]:
-    """取出位置参数；跳过 ``-Flag`` 与其取值。"""
+    """Extract positional arguments; skip ``-Flag`` and the value it takes."""
     values: list[str] = []
     tokens = re.findall(r"\"[^\"]*\"|'[^']*'|\S+", rest)
     skip_next = False
@@ -204,7 +200,7 @@ def _positionals(rest: str) -> list[str]:
             skip_next = False
             continue
         if token.startswith("-") and not token.isdigit():
-            # 像 -Path 后面通常跟一个值；短开关（-Force 等）不吞下一个词。
+            # Options like -Path are usually followed by a value; short switches (-Force etc.) do not consume the next word.
             if token.lower().lstrip("-") in {
                 "path", "pattern", "filter", "include", "exclude", "literalpath",
                 "destination", "source", "value", "name", "encoding", "cwd",
@@ -216,9 +212,9 @@ def _positionals(rest: str) -> list[str]:
 
 
 def _pattern_label(pattern: str) -> str:
-    """把正则 pattern 还原成可读关键字：``href="([^"]+)"`` → ``href``。"""
+    """Reduce a regex pattern to a readable keyword: ``href="([^"]+)"`` → ``href``."""
     text = str(pattern or "")
-    # 先去掉字符类与分组这类纯正则结构，剩下的才是人想看的关键字。
+    # Strip pure regex structures such as character classes and groups first; what remains is the keyword people want to see.
     text = re.sub(r"\[[^\]]*\]", " ", text)
     for _ in range(3):
         text = re.sub(r"\([^()]*\)", " ", text)
@@ -233,7 +229,7 @@ def _is_separator(text: str) -> bool:
 
 
 def _expression_phrase(text: str) -> str:
-    """从赋值右侧 / 嵌套表达式里提炼一句说明。"""
+    """Extract a short explanation from the right side of an assignment or a nested expression."""
     lowered = text.lower()
     if re.search(r"(?i)\[regex\]::matches\b|\.matches\s*\(", text):
         return "统计匹配次数" if ".count" in lowered else "查找匹配内容"
@@ -244,7 +240,7 @@ def _expression_phrase(text: str) -> str:
 
 
 def _join_phrases(phrases: list[str], separator: str = "，然后") -> str:
-    """拼接说明片段，顺手去掉连续重复（嵌套循环里很常见）。"""
+    """Join explanation fragments, dropping consecutive duplicates (common inside nested loops)."""
     merged: list[str] = []
     for phrase in phrases:
         phrase = phrase.strip()
@@ -254,7 +250,7 @@ def _join_phrases(phrases: list[str], separator: str = "，然后") -> str:
 
 
 def _looks_like_value(text: str) -> bool:
-    """赋值右侧是不是纯值（成员访问、字面量、简单拼接）。"""
+    """Whether the right side of an assignment is a pure value (member access, literal, simple concatenation)."""
     if _expression_phrase(text):
         return False
     if re.search(r"(?i)\b(test-path|join-path|get-|select-|invoke-|remove-|copy-|move-|new-)\b", text):
@@ -284,7 +280,7 @@ def _statement_phrase(statement: str) -> str:
 
 
 def _split_block(text: str) -> tuple[str, str | None]:
-    """把 ``ForEach-Object { ... }`` 拆成 ``("ForEach-Object ", "...")``。"""
+    """Split ``ForEach-Object { ... }`` into ``("ForEach-Object ", "...")``."""
     depth = 0
     quote = ""
     start = -1
@@ -332,7 +328,7 @@ _CONDITION = re.compile(
 
 
 def _condition_phrase(block: str) -> str:
-    """把 ``$_.Length -gt 1000`` 这类筛选条件翻成「长度 > 1000」。"""
+    """Translate a filter condition such as ``$_.Length -gt 1000`` into "length > 1000"."""
     match = _CONDITION.search(block.strip())
     if not match:
         return ""
@@ -350,7 +346,7 @@ _QUOTED_ITEMS = re.compile(r"'([^']*)'|\"([^\"]*)\"")
 
 
 def _foreach_source(head_text: str) -> str:
-    """``foreach ($f in Get-ChildItem *.html)`` → 「逐个处理 *.html 文件」。"""
+    """``foreach ($f in Get-ChildItem *.html)`` → "process each *.html file"."""
     match = _FOREACH.search(head_text.strip())
     if not match:
         return ""
@@ -375,7 +371,7 @@ def _foreach_source(head_text: str) -> str:
 
 
 def _block_phrase(head_text: str, block: str) -> str:
-    """脚本块：循环/筛选沿用内部的说明，其余按「命令 + 内部动作」拼。"""
+    """Script block: loops/filters reuse the inner explanation; others combine "command + inner action"."""
     head, _rest = _first_token(head_text)
     key = _program_key(head)
     inner = command_steps(block)
@@ -410,25 +406,25 @@ def _stage_phrase(stage: str) -> str:
     if block is not None:
         return _block_phrase(head_text, block)
 
-    # 纯字符串表达式（常见于打印差异/结果）：不必强行猜出具体内容。
+    # Pure string expressions (common when printing diffs/results): do not force a guess at the content.
     if text[:1] in _QUOTES:
         return "输出一行结果" if "$" in text else ""
 
     head, rest = _first_token(text)
     if not head:
         return _expression_phrase(text)
-    # 纯取值段（``$_.Matches``、``"文本"``、``123``）不承担动作，跳过。
+    # Pure value stages (``$_.Matches``, ``"text"``, ``123``) perform no action; skip them.
     if head.startswith(("$", "[", "@")) or head[0] in _QUOTES or head[0].isdigit():
         return _expression_phrase(text)
     return _simple_phrase(_program_key(head), rest, head)
 
 
 def _simple_phrase(key: str, rest: str, raw_head: str = "") -> str:
-    """单个管道段的说明。"""
+    """Explanation for a single pipe stage."""
     if not key:
         return ""
 
-    # ---- 列目录 / 查找文件 ----
+    # ---- List directory / find files ----
     if key in {"get-childitem", "gci", "ls", "dir", "find"}:
         path = _option(rest, "path") or _option(rest, "literalpath")
         pattern = _option(rest, "filter") or _option(rest, "include")
@@ -449,7 +445,7 @@ def _simple_phrase(key: str, rest: str, raw_head: str = "") -> str:
             return f"查找并列出 {path} 文件"
         return f"列出 {path} 目录内容"
 
-    # ---- 内容搜索 ----
+    # ---- Content search ----
     if key in {"select-string", "sls", "findstr", "grep", "rg"}:
         path = _option(rest, "path") or _option(rest, "literalpath")
         pattern = _option(rest, "pattern")
@@ -461,7 +457,7 @@ def _simple_phrase(key: str, rest: str, raw_head: str = "") -> str:
         where = f"在 {path} 中" if path else "在文件中"
         return f"{where}搜索包含 {label} 的内容" if label else f"{where}搜索指定内容"
 
-    # ---- 选取 / 排序 / 格式化 ----
+    # ---- Select / sort / format ----
     if key in {"select-object", "select"}:
         expanded = _option(rest, "expandproperty")
         if expanded:
@@ -490,7 +486,7 @@ def _simple_phrase(key: str, rest: str, raw_head: str = "") -> str:
     if key in {"unique", "get-unique"}:
         return "去除重复项"
 
-    # ---- 输出 ----
+    # ---- Output ----
     if key in {"write-output", "write-host", "echo", "print"}:
         text = _unquote(rest)
         if _is_separator(text):
@@ -499,7 +495,7 @@ def _simple_phrase(key: str, rest: str, raw_head: str = "") -> str:
     if key in {"out-string", "out-host", "tee-object", "out-null"}:
         return ""
 
-    # ---- 内容读写 ----
+    # ---- Content read/write ----
     if key in {"get-content", "gc", "cat", "type", "head", "tail"}:
         target = _option(rest, "path") or (_positionals(rest) or [""])[0]
         return f"读取 {target} 的内容" if target else "读取文件内容"
@@ -513,7 +509,7 @@ def _simple_phrase(key: str, rest: str, raw_head: str = "") -> str:
         target = _option(rest, "path") or (_positionals(rest) or [""])[0]
         return f"新建 {target}" if target else "新建文件或目录"
 
-    # ---- 删除 / 复制 / 移动 ----
+    # ---- Delete / copy / move ----
     if key in {"remove-item", "ri", "rm", "del", "erase", "rd", "rmdir"}:
         target = _option(rest, "path") or (_positionals(rest) or [""])[0]
         recursive = bool(re.search(r"(?i)(-recurse|-r\b|/s\b|/f\b)", rest))
@@ -530,7 +526,7 @@ def _simple_phrase(key: str, rest: str, raw_head: str = "") -> str:
             return f"把 {values[0]} 移动到 {values[1]}"
         return "移动或重命名文件"
 
-    # ---- 路径 / 环境 ----
+    # ---- Paths / environment ----
     if key in {"test-path"}:
         return "检查路径是否存在"
     if key in {"join-path", "resolve-path", "convert-path"}:
@@ -552,7 +548,7 @@ def _simple_phrase(key: str, rest: str, raw_head: str = "") -> str:
         target = (_positionals(rest) or [""])[0]
         return f"启动程序 {target}" if target else "启动程序"
 
-    # ---- 网络 ----
+    # ---- Network ----
     if key in {"invoke-webrequest", "iwr", "wget"}:
         return "从网络下载内容"
     if key in {"invoke-restmethod", "irm"}:
@@ -565,7 +561,7 @@ def _simple_phrase(key: str, rest: str, raw_head: str = "") -> str:
         sub = (_positionals(rest) or [""])[0].lower()
         return _GIT_VERBS.get(sub, f"执行 Git 操作 {sub}".strip())
 
-    # ---- 包管理器 / 构建 / 运行 ----
+    # ---- Package managers / build / run ----
     if key in {"npm", "pnpm", "yarn"}:
         values = _positionals(rest)
         sub = values[0].lower() if values else ""
@@ -607,12 +603,12 @@ def _python_phrase(rest: str) -> str:
 
 
 _OUTPUT_KEYS = {"write-output", "write-host", "echo", "print"}
-#: ``--- href check ---`` 这类用作分段标题的输出。
+#: Outputs such as ``--- href check ---`` used as section headings.
 _SECTION = re.compile(r"^[-=*#_~]{2,}\s*(?P<core>.+?)\s*[-=*#_~]{2,}$")
 
 
 def _output_text(statement: str) -> str:
-    """语句是不是「输出一段文字」；是则返回去掉引号的文字。"""
+    """Whether the statement is "output some text"; if so, return the text without quotes."""
     head, rest = _first_token(statement)
     if _program_key(head) not in _OUTPUT_KEYS:
         return ""
@@ -620,7 +616,7 @@ def _output_text(statement: str) -> str:
 
 
 def _section_label(text: str) -> str:
-    """把 ``--- href check ---`` 这类标题翻成能看懂的小标题。"""
+    """Translate headings such as ``--- href check ---`` into a readable subtitle."""
     match = _SECTION.match(text.strip())
     if not match:
         return ""
@@ -638,7 +634,7 @@ def _section_label(text: str) -> str:
 
 
 def command_steps(command: str) -> list[str]:
-    """把命令拆成若干条可读的操作说明（最多 :data:`MAX_STEPS` 条）。"""
+    """Split the command into readable operation descriptions (at most :data:`MAX_STEPS`)."""
     text = str(command or "").strip()
     if not text:
         return []
@@ -649,7 +645,7 @@ def command_steps(command: str) -> list[str]:
         raw = statement.strip()
         if not raw:
             continue
-        # 命令里的分段标题（--- xxx ---）当成下一条说明的小标题。
+        # A section heading in the command (--- xxx ---) becomes the subtitle of the next explanation.
         label = _section_label(_output_text(raw))
         if label:
             pending = label
@@ -662,7 +658,7 @@ def command_steps(command: str) -> list[str]:
             phrase = f"{pending}：{phrase}"
             pending = ""
         if phrase.startswith("输出"):
-            # 多步命令里的 echo 多为分隔/进度提示，不占审批卡片的位置。
+            # In multi-step commands an echo is usually a separator/progress hint and does not deserve space on the approval card.
             outputs.append(phrase)
             continue
         if steps and steps[-1] == phrase:
@@ -676,7 +672,7 @@ def command_steps(command: str) -> list[str]:
 
 
 def describe_command(command: str) -> str:
-    """返回一句人话说明；完全无法识别时返回空串，由调用方回落到原文。"""
+    """Return a one-sentence human explanation; an empty string when nothing is recognized, so the caller falls back to the raw text."""
     steps = command_steps(command)
     if not steps:
         return ""

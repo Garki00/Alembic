@@ -1,9 +1,10 @@
 # tools/mock.py
-"""模拟工具：把设置里填写的文本原样交给 agent。
+"""Mock tool: returns the text configured in settings unchanged.
 
-存在的意义是验证「工具参数链路」本身：注册表里声明一个字段 → 设置面板出现输入框
-→ 保存后下一轮对话里工具就能读到。新增同类工具只需要写 Python，
-前端不需要任何改动。
+Its purpose is to verify the tool-parameter pipeline itself: a field declared in the
+registry produces an input box in the settings panel, and after saving, the tool can read
+the value in the next conversation turn. Adding similar tools requires only Python; the
+frontend needs no changes.
 """
 
 from __future__ import annotations
@@ -14,29 +15,29 @@ from tools.errors import tool_error
 
 
 def build_mock_tools(config: dict) -> list:
-    """按注入的配置构造 ``mock_lookup``。"""
+    """Build ``mock_lookup`` from the injected configuration."""
     text = str((config or {}).get("MOCK_TEXT") or "")
 
     @tool
     def mock_lookup(query: str = "") -> str:
-        """读取「模拟数据」工具里配置的文本内容。
+        """Return the text content configured in the "Test data" tool.
 
         Args:
-            query: 可选的说明或关键词，只用于回显，不影响返回内容。
+            query: Optional note or keyword; only echoed back and does not affect the returned content.
 
         Returns:
-            配置的文本；尚未配置时返回以 "Error:" 开头的说明。
+            The configured text; returns a description starting with "Error:" when not configured yet.
         """
         if not text.strip():
             return tool_error(
                 "missing_config",
-                "「模拟数据」还没有填写内容。",
-                hint="在 设置 → 工具 → 模拟数据 的「内容」里填一段文字，保存后重试。",
+                'The "Test data" tool has no content configured yet.',
+                hint='Enter some text under Settings → Tools → Test data → Content, save it, and retry.',
             )
-        body = f"模拟数据：{text}"
+        body = f"Test data: {text}"
         keyword = (query or "").strip()
         if keyword:
-            body += f"\n请求参数：{keyword}"
+            body += f"\nRequest parameter: {keyword}"
         return body
 
     return [mock_lookup]

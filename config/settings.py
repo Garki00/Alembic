@@ -1,5 +1,6 @@
 # config/settings.py
-"""运行时配置：全部来自环境变量（可通过项目根目录的 .env 注入）。
+"""Runtime configuration: every value comes from environment variables (which the
+project root ``.env`` can supply).
 """
 
 import os
@@ -15,7 +16,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def resolve_app_home() -> Path:
-    """用户级数据目录"""
+    """User-level data directory."""
     env = (os.getenv("ALEMBIC_HOME", "").strip() or os.getenv("SMART_AGENT_HOME", "").strip())
     if env:
         return Path(env).expanduser().resolve()
@@ -30,7 +31,7 @@ def resolve_app_home() -> Path:
 
 
 def resolve_default_workspace() -> Path:
-    """首次运行时默认添加的工作区"""
+    """Workspace added by default on the first run."""
     env = os.getenv("WORKSPACE_DIR", "").strip()
     if env:
         return Path(env).expanduser().resolve()
@@ -40,7 +41,7 @@ def resolve_default_workspace() -> Path:
 
 
 def _env_int(name: str, default: int) -> int:
-    """读取正整数环境变量"""
+    """Read a positive integer environment variable."""
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
@@ -52,7 +53,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_float(name: str, default: float, *, upper: float) -> float:
-    """读取 (0, upper] 范围内的浮点环境变量"""
+    """Read a float environment variable in the range (0, upper]."""
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
@@ -64,7 +65,7 @@ def _env_float(name: str, default: float, *, upper: float) -> float:
 
 
 def _env_bool(name: str, default: bool) -> bool:
-    """读取布尔环境变量"""
+    """Read a boolean environment variable."""
     raw = os.getenv(name)
     if raw is None:
         return default

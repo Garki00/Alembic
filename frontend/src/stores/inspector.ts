@@ -6,7 +6,7 @@ export interface FilesTab {
   id: string
   kind: 'files'
   title: string
-  /** 是否由用户主动创建（点加号）vs 程序打开 */
+  /** Whether the user created this tab explicitly (via the plus button) rather than the app opening it. */
   userCreated?: boolean
 }
 
@@ -15,9 +15,9 @@ export interface FileTab {
   kind: 'file'
   title: string
   path: string
-  /** 从变更总结打开时携带的本轮 diff；普通浏览文件时为 undefined。 */
+  /** Diff for the current turn when opened from the change summary; undefined when browsing a file normally. */
   diff?: FileDiff
-  /** 是否由用户主动创建（点加号）vs 程序打开 */
+  /** Whether the user created this tab explicitly (via the plus button) rather than the app opening it. */
   userCreated?: boolean
 }
 
@@ -26,7 +26,7 @@ export interface BrowserTab {
   kind: 'browser'
   title: string
   url: string
-  /** 是否由用户主动创建（点加号）vs 程序打开 */
+  /** Whether the user created this tab explicitly (via the plus button) rather than the app opening it. */
   userCreated?: boolean
 }
 
@@ -191,7 +191,7 @@ export const useInspectorStore = defineStore('inspector', {
       )
     },
 
-    /** 从对话里的网页链接打开：复用同 URL 标签页，且不计入用户标签页配额。 */
+    /** Open a web link from the conversation: reuse an existing tab with the same URL and don't count it toward the user's tab quota. */
     openLink(url = ''): void {
       const target = normalizeBrowserUrl(url)
       if (!target) return

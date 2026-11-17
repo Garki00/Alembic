@@ -1,5 +1,5 @@
 # tests/store_test.py
-"""配置持久化的迁移与工作区 CRUD 测试（不经过 HTTP）。"""
+"""Config persistence migration and workspace CRUD tests (without HTTP)."""
 
 import json
 import os
@@ -30,7 +30,7 @@ class ToolsMigrationTest(unittest.TestCase):
         self.path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     def test_v1_migration_enables_run_command_and_keeps_config(self):
-        """老配置里 run_command=false 只是当时的默认值，迁移时打开它。"""
+        """run_command=false in the old config was only the default at the time; migration turns it on."""
         self.write({
             "tools": {
                 "run_command": {"enabled": False, "config": {}},
@@ -48,7 +48,7 @@ class ToolsMigrationTest(unittest.TestCase):
         self.assertIn("file_read", saved["tools"])
 
     def test_v2_respects_user_choice(self):
-        """已经迁移过之后，用户手动关掉 run_command 不会被强行打开。"""
+        """After migration, a user who manually disables run_command is not forcibly re-enabled."""
         self.write({
             "version": 2,
             "tools": {"run_command": {"enabled": False, "config": {}}},
@@ -201,14 +201,14 @@ class WorkspaceStoreTest(unittest.TestCase):
         self.b.mkdir()
 
     def test_seed_has_no_workspace(self):
-        """新安装不自动添加工作区，由用户自己选择目录。"""
+        """New installs do not add a workspace automatically; the user picks the directory."""
         store = WorkspaceStore(self.path, default=self.a)
         state = store.state()
         self.assertEqual(state["workspaces"], [])
         self.assertEqual(state["active_id"], "")
 
     def test_legacy_format_is_migrated(self):
-        """旧格式 current + recent 迁移成命名工作区列表。"""
+        """Legacy current + recent format migrates into a named workspace list."""
         self.path.write_text(json.dumps({
             "current": str(self.a),
             "recent": [str(self.a), str(self.b), "Z:/missing"],

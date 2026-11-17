@@ -1,5 +1,5 @@
 # tests/git_test.py
-"""Git 工具的测试：状态、diff 与提交（使用临时仓库，不碰项目仓库）。"""
+"""Git tool tests: status, diff, and commit (using a temporary repo, never the project repo)."""
 
 import shutil
 import subprocess
@@ -50,11 +50,11 @@ class GitToolsTest(unittest.TestCase):
 
     def test_status_clean_then_modified(self):
         text = self.tools["git_status"].invoke({})
-        self.assertIn("工作区干净", text)
+        self.assertIn("Working tree clean", text)
         (self.root / "a.txt").write_text("two\n", encoding="utf-8")
         text = self.tools["git_status"].invoke({})
         self.assertIn("a.txt", text)
-        self.assertIn("修改", text)
+        self.assertIn("Modified", text)
 
     def test_diff_and_staged(self):
         (self.root / "a.txt").write_text("two\n", encoding="utf-8")
@@ -67,7 +67,7 @@ class GitToolsTest(unittest.TestCase):
     def test_commit_with_files(self):
         (self.root / "a.txt").write_text("two\n", encoding="utf-8")
         text = self.tools["git_commit"].invoke({"message": "update a", "files": ["a.txt"]})
-        self.assertIn("已提交", text)
+        self.assertIn("Committed:", text)
         self.assertIn("update a", self.git("log", "-1", "--pretty=%s"))
 
     def test_commit_without_staged_changes(self):

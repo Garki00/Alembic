@@ -1,11 +1,12 @@
-"""便捷启动：python -m web
+"""Convenience launcher for ``python -m web``.
 
-两种用法：
+Two usage modes:
 
-- 手动：``python -m web``（默认 127.0.0.1:8000，浏览器直接打开）
-- 桌面外壳：设置 ``ALEMBIC_PORT=0`` 由系统分配端口，启动后向 stdout 打印
-  ``ALEMBIC_PORT=<port>`` 供 Electron 逐行解析；再配合 ``ALEMBIC_TOKEN``
-  启用访问令牌。旧的 ``SMART_AGENT_*`` 变量仍作为兼容别名。
+- Manual: ``python -m web`` (defaults to 127.0.0.1:8000; open it directly in a browser).
+- Desktop shell: set ``ALEMBIC_PORT=0`` to let the OS assign a port, then print
+  ``ALEMBIC_PORT=<port>`` to stdout for Electron to parse line by line. Set
+  ``ALEMBIC_TOKEN`` to enable access-token authentication. The legacy
+  ``SMART_AGENT_*`` variables remain supported as compatibility aliases.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from web.server import app
 
 
 def _bind(host: str, port: int) -> socket.socket:
-    """先自己 bind，再交给 uvicorn：这样才能拿到系统分配的临时端口。"""
+    """Bind the socket before handing it to uvicorn so an OS-assigned ephemeral port is available."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))

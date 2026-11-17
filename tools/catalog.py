@@ -15,16 +15,16 @@ from dataclasses import dataclass
 
 #: Always available (subject to the user's per-entry enable switches).
 BASIC_TOOLS: tuple[str, ...] = (
-    # 时间与环境
+    # Time and environment
     "get_current_time",
-    # 工作区探索
+    # Workspace exploration
     "list_dir",
     "find_files",
     "file_stat",
     "search_files",
-    # 读取
+    # Reading
     "read_file",
-    # 写入与编辑
+    # Writing and editing
     "write_file",
     "edit_file",
     "apply_patch",
@@ -33,34 +33,34 @@ BASIC_TOOLS: tuple[str, ...] = (
     "move_file",
     "copy_file",
     "delete_file",
-    # 执行（shell 兜底）
+    # Execution (shell fallback)
     "run_command",
-    # 联网
+    # Network
     "fetch_url",
     "web_search",
-    # 规划与交互
+    # Planning and interaction
     "todo_write",
     "ask_user_question",
 )
 
 #: Hidden until activated through ``tools_search``.
 EXTENDED_TOOLS: tuple[str, ...] = (
-    # 重型文档与多模态解析
+    # Heavy documents and multimodal parsing
     "read_document",
     "read_image",
-    # 网络下载
+    # Network downloads
     "download_file",
-    # 后台进程管理
+    # Background process management
     "start_process",
     "stop_process",
     "list_processes",
     "read_process_logs",
     "wait_process",
-    # Git 专用工作流
+    # Git workflows
     "git_status",
     "git_diff",
     "git_commit",
-    # 低频 / 示例
+    # Low frequency / examples
     "list_timezones",
     "get_weather",
     "mock_lookup",
@@ -69,7 +69,7 @@ EXTENDED_TOOLS: tuple[str, ...] = (
 #: Meta tools that are always visible and never part of BASIC/EXTENDED.
 META_TOOLS: tuple[str, ...] = ("tools_search",)
 
-#: Search keywords per extended tool, including Chinese terms.
+#: Search keywords per extended tool, including Chinese terms for Chinese queries.
 TOOL_KEYWORDS: dict[str, tuple[str, ...]] = {
     "read_document": (
         "pdf", "docx", "doc", "xlsx", "xls", "pptx", "ppt", "word", "excel",
@@ -264,12 +264,12 @@ def build_tools_search(config, ctx):
         current toolset, and load matched tools into this turn.
 
         Trigger this whenever the task needs an action you cannot perform
-        with the tools already loaded — before assuming the capability 
-        exists. The registry is the source of truth; this description 
-        is not a catalog and does not enumerate what is available.
+        with the tools already loaded — before assuming the capability
+        exists. The registry is the source of truth; this description is
+        not a catalog and does not enumerate what is available.
 
         Args:
-            query: Capability to look for, e.g. "PDF document", "图片 OCR",
+            query: Capability to look for, e.g. "PDF document", "image OCR",
                 "dev server logs", "git commit", "weather".
             limit: Maximum tools to activate this call (1-10); 0 uses the
                 configured default.
@@ -279,9 +279,9 @@ def build_tools_search(config, ctx):
         """
         text = (query or "").strip()
         if not text:
-            return tool_error("empty_query", "query 不能为空。", hint="描述你需要的能力，例如 PDF、图片、后台进程、Git。")
+            return tool_error("empty_query", "query must not be empty.", hint="Describe the capability you need, e.g. PDF, images, background processes, Git.")
         if ctx.activation is None:
-            return tool_error("activation_unavailable", "当前会话没有扩展工具激活状态。")
+            return tool_error("activation_unavailable", "This session has no extended-tool activation state.")
         enabled = set(ctx.enabled_tool_names)
         active = ctx.activation.snapshot()
         try:
@@ -292,17 +292,17 @@ def build_tools_search(config, ctx):
         matches = search_extended(text, enabled, active, wanted)
         if not matches:
             return (
-                f"没有找到可激活的扩展工具：{text}。\n"
-                "可以换更具体的能力词（文档 / 图片 / 下载 / 后台进程 / Git / 时区 / 天气），"
-                "或检查「设置 → 工具」里对应工具是否已启用。"
+                f"No extended tool can be activated for: {text}.\n"
+                "Try a more specific capability word (document / image / download / background process / Git / time zone / weather), "
+                "or check that the corresponding tool is enabled under Settings → Tools."
             )
         new, already = ctx.activation.activate({item.name for item in matches})
-        lines = [f"已加载 {len(new)} 个扩展工具，本轮可直接调用："]
+        lines = [f"Loaded {len(new)} extended tools for direct use this turn:"]
         for item in matches:
-            state = "已加载" if item.name in already else "新加载"
-            lines.append(f"- {item.name} ({item.label}，{state})：{item.description}")
+            state = "already loaded" if item.name in already else "newly loaded"
+            lines.append(f"- {item.name} ({state})")
         if already:
-            lines.append("其余匹配项此前已加载，无需重复激活。")
+            lines.append("The remaining matches were already loaded; no need to activate them again.")
         return "\n".join(lines)
 
     return [tools_search]

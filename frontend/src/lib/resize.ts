@@ -1,4 +1,4 @@
-/** 左右侧边栏拖拽缩放：只在拖拽期间挂全局监听。 */
+/** Drag-to-resize for the left/right sidebar: global listeners are attached only while dragging. */
 export function beginResize(
   edge: 'left' | 'right',
   event: PointerEvent,

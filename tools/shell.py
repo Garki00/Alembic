@@ -1,18 +1,22 @@
 # tools/shell.py
-"""命令执行工具：让 agent 能真正跑起来验证自己的工作（测试、构建、脚本）。
+"""Shell command execution tool that lets the agent run commands to verify its work.
 
-风险等级最高，因此：
+Constraints:
 
-- 在工具注册表里默认开启，但执行前必须经过审批；只读模式直接拒绝；
-- 工作目录被限制在工作区内（``cwd`` 同样走越界检查）；
-- 支持 PowerShell / CMD / Git Bash / WSL，默认跟随「设置 → 通用 → 终端偏好」；
-- 子进程只继承白名单环境变量，模型密钥不会被命令读到；
-- 强制超时，避免一条挂起的命令拖死整轮对话；
-- stdout / stderr 实时读取并推送 ``tool_output`` 事件，前端可以边跑边看；
-- 命令通过平台沙盒后端启动，停止生成时结束整个进程树。
+- Enabled by default in the tool registry, but every execution requires approval;
+  read-only mode rejects it outright.
+- The working directory must stay inside the workspace (``cwd`` is checked too).
+- Supports PowerShell / CMD / Git Bash / WSL and follows the configured terminal
+  preference by default.
+- Child processes inherit only whitelisted environment variables; model keys are
+  not exposed to commands.
+- Enforces a timeout to bound command runtime.
+- Streams stdout / stderr and emits ``tool_output`` events while the command runs.
+- Starts commands through the platform sandbox backend and terminates the whole
+  process tree when generation is stopped.
 
-注意：命令不再以后端进程的用户身份执行。没有可用沙盒时命令必须失败关闭，
-不能退化为宿主机直接执行。
+Commands are never run as the backend process user. When no sandbox is available
+the command must fail closed instead of falling back to direct host execution.
 """
 
 from __future__ import annotations
@@ -44,10 +48,10 @@ _EMIT_INTERVAL = 0.08
 
 
 def _decode(raw: bytes) -> str:
-    """按 UTF-8 → 系统编码 → GBK → 替换的顺序解码子进程输出。
+    """Decode child process output as UTF-8, then system encoding, then GBK, then replacement.
 
-    Windows 的 PowerShell / cmd 常按本地代码页（简中为 GBK）输出，
-    直接当 UTF-8 解码会得到一堆替换字符。
+    Windows PowerShell / cmd often writes in the local code page (GBK on Simplified
+    Chinese systems), which decodes to replacement characters as UTF-8.
     """
     if not raw:
         return ""
@@ -65,13 +69,13 @@ def _decode(raw: bytes) -> str:
 def _block(title: str, text: str, max_chars: int) -> list[str]:
     body = text.rstrip("\n")
     if not body:
-        body = "(空)"
+        body = "(empty)"
     body = truncate(body, max_chars, keep_tail=True)
     return [f"--- {title} ---", body]
 
 
 class _OutputPump:
-    """读取一路管道，累积输出并按节流推送实时事件。"""
+    """Read one pipe, accumulate output, and emit throttled live events."""
 
     def __init__(self, stream, name: str, ctx: ToolContext) -> None:
         self.stream = stream
@@ -138,11 +142,11 @@ def _run_process(
     limit: float,
     ctx: ToolContext,
 ) -> tuple[int | None, str, str, bool, bool, float]:
-    """启动命令并实时读取输出；命令只能通过沙盒后端启动。"""
+    """Start a command and read its output live; commands start only through the sandbox backend."""
     if ctx.sandbox is None or ctx.sandbox_policy is None:
         raise sandbox_unavailable(
-            "当前没有可用的命令沙盒，命令未执行。",
-            hint="以管理员身份运行 scripts/setup-sandbox.ps1。",
+            "No command sandbox is available; the command was not run.",
+            hint="Run scripts/setup-sandbox.ps1 as administrator.",
         )
 
     started = time.monotonic()
@@ -158,7 +162,7 @@ def _run_process(
     except SandboxError:
         raise
     except Exception as exc:
-        raise SandboxError("sandbox_spawn_failed", f"沙盒启动失败：{exc}") from exc
+        raise SandboxError("sandbox_spawn_failed", f"Sandbox failed to start: {exc}") from exc
 
     stdout = _OutputPump(process.stdout, "stdout", ctx)
     stderr = _OutputPump(process.stderr, "stderr", ctx)
@@ -188,7 +192,7 @@ def _run_process(
 
 
 def build_shell_tools(ctx: ToolContext) -> list:
-    """构造命令执行工具（终端偏好、环境白名单、实时输出、取消与超时）。"""
+    """Build command execution tools (terminal preference, env whitelist, live output, cancel, timeout)."""
 
     @tool
     def run_command(
@@ -219,18 +223,18 @@ def build_shell_tools(ctx: ToolContext) -> list:
         """
         text = (command or "").strip()
         if not text:
-            return tool_error("empty_command", "command 不能为空。")
+            return tool_error("empty_command", "command must not be empty.")
         if ctx.cancel_event is not None and ctx.cancel_event.is_set():
-            return tool_error("cancelled", "本轮已停止，命令没有执行。")
+            return tool_error("cancelled", "This turn has been stopped; the command was not run.")
 
         try:
             workdir = resolve_in_workspace(ctx.workspace, cwd) if cwd.strip() else ctx.workspace
         except WorkspacePathError as exc:
             return tool_error(exc.code, exc.message, hint=exc.hint)
         if workdir is None:
-            return tool_error("no_workspace", "当前没有可用工作区，无法执行命令。")
+            return tool_error("no_workspace", "No workspace is available; the command cannot run.")
         if not workdir.is_dir():
-            return tool_error("not_a_directory", f"执行目录不存在：{cwd}。")
+            return tool_error("not_a_directory", f"Working directory does not exist: {cwd}.")
 
         limit = int(timeout or 0)
         limit = ctx.command_timeout if limit <= 0 else max(1, min(limit, _MAX_TIMEOUT))
@@ -239,14 +243,14 @@ def build_shell_tools(ctx: ToolContext) -> list:
         if chosen not in TERMINAL_CHOICES:
             return tool_error(
                 "unknown_terminal",
-                f"不支持的终端：{terminal}。",
-                hint="可选 powershell / cmd / gitbash / wsl。",
+                f"Unsupported terminal: {terminal}.",
+                hint="Choose powershell / cmd / gitbash / wsl.",
             )
         if chosen == "wsl":
             return tool_error(
                 "sandbox_unsupported",
-                "Windows 沙盒下不能使用 WSL 终端：WSL 进程不继承沙盒令牌。",
-                hint="改用 powershell / cmd / gitbash；需要 WSL 时使用独立的 Linux 沙盒后端。",
+                "WSL terminals are not supported under the Windows sandbox: WSL processes do not inherit the sandbox token.",
+                hint="Use powershell / cmd / gitbash; use a separate Linux sandbox backend when WSL is required.",
             )
         try:
             invocation = build_invocation(chosen, text, workdir)
@@ -254,7 +258,7 @@ def build_shell_tools(ctx: ToolContext) -> list:
             return tool_error(
                 "terminal_unavailable",
                 str(exc),
-                hint="请在「设置 → 通用 → 终端偏好」里换一个可用终端，或安装对应工具。",
+                hint="Choose an available terminal under Settings → General → Terminal preference, or install the required tool.",
             )
 
         if invocation.shell:
@@ -275,44 +279,44 @@ def build_shell_tools(ctx: ToolContext) -> list:
         except OSError as exc:
             return tool_error(
                 "spawn_failed",
-                f"无法启动 {terminal_label(chosen)}：{exc}。",
-                hint="请确认该终端可用，或在设置里换一个终端。",
+                f"Could not start {terminal_label(chosen)}: {exc}.",
+                hint="Confirm the terminal is available, or choose another terminal in settings.",
             )
 
         if cancelled:
             partial = (stdout_text + stderr_text).strip()
             return tool_error(
                 "cancelled",
-                f"命令已随本轮停止而取消（终止进程树，耗时 {elapsed:.1f}s）。",
+                f"Command cancelled because the turn stopped (process tree terminated, {elapsed:.1f}s elapsed).",
                 hint=(
-                    "重新执行前先确认目标是否仍然需要。"
-                    + (f"\n已产生的输出：\n{truncate(partial, ctx.max_output_chars // 2, keep_tail=True)}" if partial else "")
+                    "Confirm the target is still needed before rerunning."
+                    + (f"\nOutput produced so far:\n{truncate(partial, ctx.max_output_chars // 2, keep_tail=True)}" if partial else "")
                 ),
             )
         if timed_out:
             partial = (stdout_text + stderr_text).strip()
             return tool_error(
                 "timeout",
-                f"命令在 {limit:g}s 内没有结束，已终止（耗时 {elapsed:.1f}s）。",
+                f"Command did not finish within {limit:g}s and was terminated ({elapsed:.1f}s elapsed).",
                 hint=(
-                    "可以换更快的命令、加超时参数，或先确认命令是否需要交互式输入。"
-                    + (f"\n已产生的输出：\n{truncate(partial, ctx.max_output_chars // 2, keep_tail=True)}" if partial else "")
+                    "Use a faster command, increase the timeout, or check whether the command waits for interactive input."
+                    + (f"\nOutput produced so far:\n{truncate(partial, ctx.max_output_chars // 2, keep_tail=True)}" if partial else "")
                 ),
             )
 
         code = int(code or 0)
-        status = "成功" if code == 0 else "失败"
+        status = "succeeded" if code == 0 else "failed"
         lines = [
-            f"退出码：{code}（{status}）",
-            f"终端：{terminal_label(chosen)}",
-            f"工作目录：{display_path(ctx.workspace, workdir)}",
-            f"耗时：{elapsed:.1f}s",
+            f"Exit code: {code} ({status})",
+            f"Terminal: {terminal_label(chosen)}",
+            f"Working directory: {display_path(ctx.workspace, workdir)}",
+            f"Duration: {elapsed:.1f}s",
         ]
         budget = max(200, (ctx.max_output_chars - 200) // 2)
         lines += _block("stdout", stdout_text, budget)
         lines += _block("stderr", stderr_text, budget)
         if code != 0:
-            lines.append("提示：命令以非零状态退出，请检查 stderr 或调整命令后重试。")
+            lines.append("Hint: the command exited with a non-zero status; check stderr or adjust the command and retry.")
         return truncate("\n".join(lines), ctx.max_output_chars, keep_tail=True)
 
     return [run_command]

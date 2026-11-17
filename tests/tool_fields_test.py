@@ -1,8 +1,8 @@
 # tests/tool_fields_test.py
-"""工具参数的通用契约：只要在注册表里声明 fields，接口与设置面板就自动适配。
+"""General contract for tool parameters: declaring fields in the registry is enough for the API and settings panel to adapt automatically.
 
-这些用例遍历 TOOL_SPECS，而不是针对某个具体工具，因此**新增工具会被自动覆盖**，
-不需要再补测试。
+These cases iterate over TOOL_SPECS rather than a specific tool, so
+**new tools are covered automatically** and need no extra tests.
 """
 
 import shutil
@@ -47,7 +47,7 @@ class ToolFieldContractTest(unittest.TestCase):
 
     @staticmethod
     def sample(field, index: int = 0) -> str:
-        """按字段类型生成一个能通过校验的值。"""
+        """Generates a value that passes validation for the given field type."""
         if field.kind == "number":
             return "12"
         if field.kind == "switch":
@@ -57,7 +57,7 @@ class ToolFieldContractTest(unittest.TestCase):
         return f"值-{index}"
 
     def test_every_declared_field_is_exposed_and_round_trips(self):
-        """注册表里每个字段：该露的露、该藏的藏、存进去能读回来。"""
+        """Every registry field: what should be exposed is exposed, what should be hidden is hidden, and stored values round-trip."""
         declared = 0
         for name, spec in TOOL_SPECS.items():
             if not spec.fields:
@@ -119,7 +119,7 @@ class ToolFieldContractTest(unittest.TestCase):
             self.assertFalse(exposed[field.key]["value_set"])
 
     def test_unknown_field_key_is_ignored(self):
-        """前端不会传别的键，但接口不该因此把无关内容写进配置。"""
+        """The frontend sends no other keys, but the API must not write unrelated content into config because of them."""
         for name, spec in TOOL_SPECS.items():
             if not spec.fields:
                 continue
@@ -129,7 +129,7 @@ class ToolFieldContractTest(unittest.TestCase):
 
 
 class NewToolAutoAdaptTest(unittest.TestCase):
-    """模拟「只往注册表加一个条目」：设置面板与接口应自动出现它。"""
+    """Simulates adding just one entry to the registry: it should automatically appear in the settings panel and API."""
 
     def setUp(self):
         self.tmp = make_tempdir()
@@ -177,7 +177,7 @@ class NewToolAutoAdaptTest(unittest.TestCase):
 
 
 class FieldKindTest(unittest.TestCase):
-    """select / number / switch 三种字段形态的序列化与校验。"""
+    """Serialization and validation for the select / number / switch field kinds."""
 
     def setUp(self):
         self.tmp = make_tempdir()
@@ -239,7 +239,7 @@ class FieldKindTest(unittest.TestCase):
 
 
 class MockToolTest(unittest.TestCase):
-    """模拟工具：配置的文本能原样交给 agent。"""
+    """Mock tool: configured text reaches the agent unchanged."""
 
     def setUp(self):
         self.tmp = make_tempdir()

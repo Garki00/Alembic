@@ -1,17 +1,18 @@
 # tools/documents.py
-"""非纯文本文档读取：``read_document``。
+"""Read non-plain-text documents: ``read_document``.
 
-支持的格式：
+Supported formats:
 
-- PDF（``pypdf``，可选依赖）
-- Word ``.docx``（``python-docx``）
-- Excel ``.xlsx``（``openpyxl``，只读 + 缓存值）
-- PowerPoint ``.pptx``（``python-pptx``）
-- 常见纯文本（``.txt`` / ``.md`` / ``.csv`` / ``.json`` / ``.log`` / ``.xml`` / ``.yaml``…）
+- PDF (``pypdf``, optional dependency)
+- Word ``.docx`` (``python-docx``)
+- Excel ``.xlsx`` (``openpyxl``, read-only with cached values)
+- PowerPoint ``.pptx`` (``python-pptx``)
+- Common plain text (``.txt`` / ``.md`` / ``.csv`` / ``.json`` / ``.log`` / ``.xml`` / ``.yaml`` ...)
 
-统一抽成文本后按字符偏移分段返回，避免一次把整本书塞进上下文。
-不支持旧版二进制 Office 格式（``.doc`` / ``.xls`` / ``.ppt``）与图片 OCR，
-会返回明确错误与替代建议。
+Every format is extracted to text and returned in segments by character offset, so an
+entire book is never placed into the context at once. Legacy binary Office formats
+(``.doc`` / ``.xls`` / ``.ppt``) and image OCR are not supported; they produce explicit
+errors with alternative suggestions.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ _MAX_PDF_PAGES = 300
 
 
 class DocumentError(ValueError):
-    """文档解析失败；带机读错误码。"""
+    """Document parsing failure; carries a machine-readable error code."""
 
     def __init__(self, code: str, message: str, *, hint: str = "") -> None:
         super().__init__(message)
@@ -73,11 +74,11 @@ def _cell_text(value: object) -> str:
 def _read_pdf(target: Path) -> str:
     try:
         from pypdf import PdfReader
-    except ImportError as exc:  # pragma: no cover - 依赖已写入 pyproject
+    except ImportError as exc:  # pragma: no cover - dependency is declared in pyproject
         raise DocumentError(
             "missing_dependency",
-            "读取 PDF 需要 pypdf，但当前环境没有安装。",
-            hint="在项目根目录运行：uv add pypdf",
+            "Reading PDF requires pypdf, which is not installed in this environment.",
+            hint="Run from the project root: uv add pypdf",
         ) from exc
 
     try:
@@ -86,20 +87,20 @@ def _read_pdf(target: Path) -> str:
             try:
                 reader.decrypt("")
             except Exception as exc:
-                raise DocumentError("encrypted_document", "PDF 已加密，无法读取。") from exc
+                raise DocumentError("encrypted_document", "The PDF is encrypted and cannot be read.") from exc
         parts: list[str] = []
         pages = list(reader.pages)
         for index, page in enumerate(pages[: _MAX_PDF_PAGES], 1):
             text = (page.extract_text() or "").strip()
             if text:
-                parts.append(f"--- 第 {index} 页 ---\n{text}")
+                parts.append(f"--- Page {index} ---\n{text}")
         if len(pages) > _MAX_PDF_PAGES:
-            parts.append(f"…[文档超过 {_MAX_PDF_PAGES} 页，后续页面未读取]")
+            parts.append(f"…[document exceeds {_MAX_PDF_PAGES} pages; remaining pages were not read]")
         return "\n\n".join(parts)
     except DocumentError:
         raise
     except Exception as exc:
-        raise DocumentError("document_error", f"PDF 解析失败：{exc}。") from exc
+        raise DocumentError("document_error", f"PDF parsing failed: {exc}.") from exc
 
 
 def _read_docx(target: Path) -> str:
@@ -108,11 +109,11 @@ def _read_docx(target: Path) -> str:
         from docx.oxml.ns import qn
         from docx.table import Table
         from docx.text.paragraph import Paragraph
-    except ImportError as exc:  # pragma: no cover - 依赖已写入 pyproject
+    except ImportError as exc:  # pragma: no cover - dependency is declared in pyproject
         raise DocumentError(
             "missing_dependency",
-            "读取 .docx 需要 python-docx，但当前环境没有安装。",
-            hint="在项目根目录运行：uv add python-docx",
+            "Reading .docx requires python-docx, which is not installed in this environment.",
+            hint="Run from the project root: uv add python-docx",
         ) from exc
 
     try:
@@ -138,20 +139,20 @@ def _read_docx(target: Path) -> str:
                     if any(cells):
                         rows.append(" | ".join(cells))
                 if rows:
-                    parts.append("[表格]\n" + "\n".join(rows))
+                    parts.append("[Table]\n" + "\n".join(rows))
         return "\n\n".join(parts)
     except Exception as exc:
-        raise DocumentError("document_error", f"Word 文档解析失败：{exc}。") from exc
+        raise DocumentError("document_error", f"Word document parsing failed: {exc}.") from exc
 
 
 def _read_xlsx(target: Path) -> str:
     try:
         from openpyxl import load_workbook
-    except ImportError as exc:  # pragma: no cover - 依赖已写入 pyproject
+    except ImportError as exc:  # pragma: no cover - dependency is declared in pyproject
         raise DocumentError(
             "missing_dependency",
-            "读取 .xlsx 需要 openpyxl，但当前环境没有安装。",
-            hint="在项目根目录运行：uv add openpyxl",
+            "Reading .xlsx requires openpyxl, which is not installed in this environment.",
+            hint="Run from the project root: uv add openpyxl",
         ) from exc
 
     workbook = None
@@ -159,23 +160,23 @@ def _read_xlsx(target: Path) -> str:
         workbook = load_workbook(str(target), read_only=True, data_only=True)
         parts: list[str] = []
         for sheet in workbook.worksheets:
-            parts.append(f"--- 工作表：{sheet.title} ---")
+            parts.append(f"--- Sheet: {sheet.title} ---")
             rows: list[str] = []
             for index, row in enumerate(sheet.iter_rows(values_only=True), 1):
                 if index > _MAX_ROWS_PER_SHEET:
-                    rows.append(f"…[本表超过 {_MAX_ROWS_PER_SHEET} 行，后续未读取]")
+                    rows.append(f"…[sheet exceeds {_MAX_ROWS_PER_SHEET} rows; remaining rows were not read]")
                     break
                 cells = [_cell_text(value) for value in row]
                 while cells and not cells[-1]:
                     cells.pop()
                 if any(str(cell).strip() for cell in cells):
                     rows.append("\t".join(cells))
-            parts.append("\n".join(rows) if rows else "(空表)")
+            parts.append("\n".join(rows) if rows else "(empty sheet)")
         if not parts:
             return ""
         return "\n\n".join(parts)
     except Exception as exc:
-        raise DocumentError("document_error", f"Excel 解析失败：{exc}。") from exc
+        raise DocumentError("document_error", f"Excel parsing failed: {exc}.") from exc
     finally:
         if workbook is not None:
             try:
@@ -187,11 +188,11 @@ def _read_xlsx(target: Path) -> str:
 def _read_pptx(target: Path) -> str:
     try:
         from pptx import Presentation
-    except ImportError as exc:  # pragma: no cover - 依赖已写入 pyproject
+    except ImportError as exc:  # pragma: no cover - dependency is declared in pyproject
         raise DocumentError(
             "missing_dependency",
-            "读取 .pptx 需要 python-pptx，但当前环境没有安装。",
-            hint="在项目根目录运行：uv add python-pptx",
+            "Reading .pptx requires python-pptx, which is not installed in this environment.",
+            hint="Run from the project root: uv add python-pptx",
         ) from exc
 
     try:
@@ -199,9 +200,9 @@ def _read_pptx(target: Path) -> str:
         parts: list[str] = []
         for index, slide in enumerate(presentation.slides, 1):
             if index > _MAX_SLIDES:
-                parts.append(f"…[演示文稿超过 {_MAX_SLIDES} 页，后续未读取]")
+                parts.append(f"…[presentation exceeds {_MAX_SLIDES} slides; remaining slides were not read]")
                 break
-            blocks: list[str] = [f"--- 第 {index} 页 ---"]
+            blocks: list[str] = [f"--- Page {index} ---"]
             for shape in slide.shapes:
                 if getattr(shape, "has_text_frame", False):
                     text = shape.text_frame.text.strip()
@@ -215,21 +216,21 @@ def _read_pptx(target: Path) -> str:
             if slide.has_notes_slide:
                 notes = slide.notes_slide.notes_text_frame.text.strip()
                 if notes:
-                    blocks.append(f"[备注] {notes}")
+                    blocks.append(f"[Notes] {notes}")
             parts.append("\n".join(blocks))
         return "\n\n".join(parts)
     except Exception as exc:
-        raise DocumentError("document_error", f"PowerPoint 解析失败：{exc}。") from exc
+        raise DocumentError("document_error", f"PowerPoint parsing failed: {exc}.") from exc
 
 
 def _extract(target: Path) -> tuple[str, str]:
-    """按后缀抽取全文，返回 ``(格式标签, 文本)``。"""
+    """Extract the full text by suffix and return ``(format label, text)``."""
     suffix = target.suffix.lower()
     if suffix in _TEXT_SUFFIXES:
         raw = target.read_bytes()[:_MAX_TEXT_BYTES]
         if b"\x00" in raw:
-            raise DocumentError("binary_file", f"{target.name} 看起来是二进制文件，无法按文本读取。")
-        return "文本", _decode_text(raw)
+            raise DocumentError("binary_file", f"{target.name} appears to be a binary file and cannot be read as text.")
+        return "Text", _decode_text(raw)
     if suffix == ".pdf":
         return "PDF", _read_pdf(target)
     if suffix == ".docx":
@@ -241,24 +242,24 @@ def _extract(target: Path) -> tuple[str, str]:
     if suffix in {".doc", ".xls", ".ppt"}:
         raise DocumentError(
             "legacy_format",
-            f"暂不支持旧版 Office 格式 {suffix}。",
-            hint="请用 Office / LibreOffice 另存为 .docx / .xlsx / .pptx 后再读。",
+            f"Legacy Office format {suffix} is not supported.",
+            hint="Save it as .docx / .xlsx / .pptx with Office / LibreOffice, then read it again.",
         )
     if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}:
         raise DocumentError(
             "unsupported_image",
-            "图片需要 OCR 或视觉模型，当前工具不能直接识别图片文字。",
-            hint="可以先让用户描述图片内容，或把图片转成文字后再放入工作区。",
+            "Images require OCR or a vision model; this tool cannot recognize text in images directly.",
+            hint="Ask the user to describe the image, or convert the image to text before placing it in the workspace.",
         )
     raise DocumentError(
         "unsupported_type",
-        f"不支持读取 {suffix or '(无后缀)'} 文件。",
-        hint="支持 PDF / DOCX / XLSX / PPTX 与常见纯文本格式。",
+        f"Reading {suffix or '(no suffix)'} files is not supported.",
+        hint="Supported: PDF / DOCX / XLSX / PPTX and common plain-text formats.",
     )
 
 
 def build_document_tools(ctx: ToolContext) -> list:
-    """构造 ``read_document``：抽取文本并按字符偏移分段返回。"""
+    """Build ``read_document``: extracts text and returns it in segments by character offset."""
 
     @tool
     def read_document(path: str, offset: int = 0, limit: int = 0) -> str:
@@ -282,31 +283,31 @@ def build_document_tools(ctx: ToolContext) -> list:
         except WorkspacePathError as exc:
             return tool_error(exc.code, exc.message, hint=exc.hint)
         if not target.exists():
-            return tool_error("not_found", f"文件不存在：{path}。", hint="可以先用 list_dir 查看目录内容。")
+            return tool_error("not_found", f"File does not exist: {path}.", hint="Use list_dir first to see the directory contents.")
         if target.is_dir():
-            return tool_error("is_directory", f"{path} 是目录。", hint="请给出具体的文件路径。")
+            return tool_error("is_directory", f"{path} is a directory.", hint="Provide a concrete file path.")
         try:
             if target.stat().st_size > _MAX_DOC_BYTES:
                 return tool_error(
                     "file_too_large",
-                    f"{path} 超过 {_MAX_DOC_BYTES // 1_000_000} MB，已拒绝解析。",
-                    hint="请先拆分文件或只提取需要的部分。",
+                    f"{path} exceeds {_MAX_DOC_BYTES // 1_000_000} MB and was not parsed.",
+                    hint="Split the file first or extract only the needed parts.",
                 )
         except OSError as exc:
-            return tool_error("read_failed", f"读取 {path} 失败：{exc}。")
+            return tool_error("read_failed", f"Failed to read {path}: {exc}.")
 
         try:
             label, full_text = _extract(target)
         except DocumentError as exc:
             return tool_error(exc.code, exc.message, hint=exc.hint)
         except OSError as exc:
-            return tool_error("read_failed", f"读取 {path} 失败：{exc}。")
+            return tool_error("read_failed", f"Failed to read {path}: {exc}.")
 
         if not full_text.strip():
             return tool_error(
                 "empty_document",
-                f"{path} 没有可提取的文字。",
-                hint="如果这是扫描版 PDF 或图片，需要 OCR / 视觉模型才能识别。",
+                f"{path} contains no extractable text.",
+                hint="Scanned PDFs or images need OCR / a vision model to recognize text.",
             )
 
         total = len(full_text)
@@ -314,8 +315,8 @@ def build_document_tools(ctx: ToolContext) -> list:
         if start >= total:
             return tool_error(
                 "offset_out_of_range",
-                f"offset={start} 超过文档总长度 {total} 字符。",
-                hint=f"请把 offset 设在 0..{max(0, total - 1)} 之间。",
+                f"offset={start} exceeds the document length of {total} characters.",
+                hint=f"Set offset within 0..{max(0, total - 1)}.",
             )
         budget = int(limit or 0)
         if budget <= 0:
@@ -324,10 +325,10 @@ def build_document_tools(ctx: ToolContext) -> list:
         end = min(total, start + budget)
         chunk = full_text[start:end]
 
-        header = f"文档：{display_path(ctx.workspace, target)}（{label}；共 {total} 字符）"
+        header = f"Document: {display_path(ctx.workspace, target)} ({label}; {total} characters total)"
         body = [header, chunk]
         if end < total:
-            body.append(f"…还有 {total - end} 字符，用 offset={end} 继续。")
+            body.append(f"…{total - end} characters remain; continue with offset={end}.")
         return truncate("\n".join(body), ctx.max_output_chars)
 
     return [read_document]

@@ -1,5 +1,5 @@
 # tests/sandbox_test.py
-"""沙盒策略、域名匹配与配置存储的离线测试。"""
+"""Offline tests for sandbox policy, domain matching, and config storage."""
 
 import shutil
 import unittest

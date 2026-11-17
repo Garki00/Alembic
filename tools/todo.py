@@ -1,11 +1,10 @@
 # tools/todo.py
-"""任务清单工具：让多步任务的过程可见、可恢复。
+"""Todo-list tool: track multi-step task progress across the session.
 
-状态存放在会话级目录（``<memory>/todos/<session>.json``），与对话历史分开：
-``SessionStore.list_sessions`` 会扫描 memory 根目录下的 ``*.json``，
-放进子目录可以避免把 todo 文件误认成会话。
-
-工具本身是只读风险：它不改工作区文件，只改本应用自己的会话状态。
+State is stored per session in ``<memory>/todos/<session>.json``, separate from the
+conversation history so ``SessionStore.list_sessions`` does not mistake todo files
+for sessions. The tool is read-only risk: it changes only this application's own
+session state, never workspace files.
 """
 
 from __future__ import annotations
@@ -56,34 +55,34 @@ def _slug(session_id: str) -> str:
 
 
 def normalize_todos(raw: list[dict]) -> list[dict]:
-    """校验并规范化模型传来的任务数组。
+    """Validate and normalize the todo array sent by the model.
 
     Raises:
-        ValueError: 结构不合法；调用方转成 ``Error: [bad_todos]``。
+        ValueError: The structure is invalid; the caller converts it to ``Error: [bad_todos]``.
     """
     if not isinstance(raw, list):
-        raise ValueError("todos 必须是数组，每项包含 content 与 status。")
+        raise ValueError("todos must be an array; each item needs content and status.")
     if len(raw) > MAX_TODOS:
-        raise ValueError(f"任务最多 {MAX_TODOS} 条，请合并或删减。")
+        raise ValueError(f"At most {MAX_TODOS} todos are allowed; merge or remove some.")
 
     items: list[dict] = []
     in_progress = 0
     for index, item in enumerate(raw, 1):
         if not isinstance(item, dict):
-            raise ValueError(f"第 {index} 项不是对象，应形如 {{\"content\": \"...\", \"status\": \"pending\"}}。")
+            raise ValueError(f"Item {index} is not an object; expected something like {{\"content\": \"...\", \"status\": \"pending\"}}.")
         content = str(item.get("content") or item.get("text") or "").strip()
         if not content:
-            raise ValueError(f"第 {index} 项缺少 content。")
+            raise ValueError(f"Item {index} is missing content.")
         status_raw = str(item.get("status") or "pending").strip().lower()
         status = _STATUS_ALIASES.get(status_raw)
         if status is None:
             raise ValueError(
-                f"第 {index} 项的 status={status_raw!r} 不合法，只能是 pending / in_progress / completed。"
+                f"Item {index} has invalid status={status_raw!r}; only pending / in_progress / completed are allowed."
             )
         if status == "in_progress":
             in_progress += 1
             if in_progress > 1:
-                raise ValueError("同一时间只能有一条 in_progress，请把其他任务标回 pending。")
+                raise ValueError("Only one todo may be in_progress at a time; mark the others back to pending.")
         items.append({"content": content, "status": status})
     return items
 
@@ -91,9 +90,9 @@ def normalize_todos(raw: list[dict]) -> list[dict]:
 def render_todos(items: list[dict]) -> str:
     total = len(items)
     done = sum(1 for item in items if item.get("status") == "completed")
-    lines = [f"任务清单：{done}/{total} 完成"]
+    lines = [f"Todo list: {done}/{total} completed"]
     if not total:
-        lines.append("(空) 当前没有待办任务。")
+        lines.append("(empty) No todo items currently.")
     for index, item in enumerate(items, 1):
         mark = _STATUS_MARK.get(str(item.get("status")), "[ ]")
         lines.append(f"{mark} {index}. {item.get('content', '')}")
@@ -101,7 +100,7 @@ def render_todos(items: list[dict]) -> str:
 
 
 class TodoStore:
-    """按会话读写任务清单；``directory=None`` 时只在进程内保存。"""
+    """Read and write the todo list per session; with ``directory=None`` it is kept in-process only."""
 
     def __init__(self, directory: str | Path | None = None) -> None:
         self.directory = Path(directory).expanduser() if directory else None
@@ -155,7 +154,7 @@ class TodoStore:
             )
             os.replace(tmp, path)
             return True
-        except OSError as exc:  # 磁盘只读不应影响本轮对话
+        except OSError as exc:  # a read-only disk must not break the current conversation
             logger.warning("保存任务清单 %s 失败：%s", sid, exc)
             return False
 
@@ -178,27 +177,28 @@ _FALLBACK = TodoStore()
 
 
 def build_todo_tools(ctx: ToolContext) -> list:
-    """构造任务清单工具。"""
+    """Build the todo-list tool."""
 
     @tool
     def todo_write(todos: list[dict]) -> str:
-        """整体更新本会话的任务清单（传空数组表示清空）。
+        """Replace this session's todo list as a whole (pass an empty array to clear it).
 
-        多步任务开始时先列计划；每完成一步就更新状态，让用户看到进度。
-        同一时间最多一条 in_progress，完成的任务标 completed 而不是删除。
+        List the plan when a multi-step task starts; update statuses as each step
+        completes so the user can see progress. At most one todo may be
+        in_progress; mark finished todos as completed instead of deleting them.
 
         Args:
-            todos: 任务数组，每项形如
-                ``{"content": "读取配置", "status": "pending"}``；
-                status 只能是 pending / in_progress / completed。
+            todos: Array of todos, each shaped like
+                ``{"content": "Read the config", "status": "pending"}``;
+                status must be pending / in_progress / completed.
 
         Returns:
-            更新后的清单与完成计数。
+            The updated list and the completed count.
         """
         try:
             items = normalize_todos(todos)
         except ValueError as exc:
-            return tool_error("bad_todos", str(exc), hint="请修正后整体重传，不要只传变化的那一条。")
+            return tool_error("bad_todos", str(exc), hint="Fix the issues and resend the whole list, not just the changed item.")
 
         store = ctx.todo_store or _FALLBACK
         store.save(ctx.session_id, items)

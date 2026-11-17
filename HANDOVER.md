@@ -452,6 +452,30 @@ run_command / start_process
     形式保存到 `data/sandbox-users.json`，文件 ACL 仅当前用户可读。
 40. **网络默认最严**：`SandboxPolicy.network` 默认 `offline`；只有 `allowlist` 才启动
     本机代理并注入 `HTTP_PROXY` / `HTTPS_PROXY`。WSL 终端在 Windows 沙盒下必须拒绝。
+41. **Docstring / JSDoc 统一英文**：所有 Python 模块、类、函数、方法 docstring，以及
+    前端 `/** ... */` JSDoc 都必须用英文。写法以“是什么、怎么用、有什么约束”为主，
+    保留 `Args` / `Returns` / `Raises` 等结构化段落；不要写历史原因、第一人称解释或
+    与代码无关的背景。标识符、路径、命令和示例输入保持原样；普通 `//` / `#` 注释
+    不在此约束内，可以继续用中文。不要借翻译 docstring 的机会改 UI 文案。
+42. **提示词统一英文**：`prompts/system.py`、`prompts/react.py`、`agents/context.py`
+    的摘要提示词、工具描述与参数描述都用英文。面向模型的指令可以要求“用用户的语言
+    回复”，但不能把指令本身写成中文；用户问题、项目上下文、文件内容仍可以是中文。
+    工具规则必须根据当前实际可用工具动态生成，不能写死未启用的工具名；项目上下文
+    按 `ALEMBIC.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` 注入，且不能覆盖
+    安全、审批和沙盒规则。
+43. **面向 AI 的返回值统一英文**：`@tool` 的返回值、`tool_error(...)` 的 `message`
+    和 `hint`、沙盒错误、命令策略对模型的拒绝说明、内部续跑提示，都使用英文。
+    失败仍保持 `Error: [code] message`，可选第二行提示；`code` 继续用稳定的
+    lowercase snake_case，不要因为翻译改错误码。数据本身不翻译：文件内容、文件名、
+    用户查询、中文城市名、搜索结果标题、文档正文保持原文。
+44. **界面语言与模型语言分开**：前端 UI、CLI 帮助、审批卡片展示文案、日志可以继续
+    用中文；但审批硬拒绝进入模型时，中文 `CommandRisk.reason` 不能直接拼进
+    `blocked_by_policy`，必须走 `CommandRisk.reason_en`（见
+    `tools/command_policy.py` / `agents/approval.py`）。`tools_search` 不得把中文
+    工具目录的 `label` / `description` 注入模型返回；只返回工具名和加载状态，
+    具体说明来自英文工具 schema。
+45. **改动返回值语言必须同步测试**：工具输出语言变化时，更新对应测试断言，并优先
+    断言稳定的错误码、英文关键字段或结构；不要在运行时按语言切换返回值。
 
 ## 6. 环境坑（这台机器上真实踩过的）
 
@@ -566,6 +590,9 @@ run_command / start_process
     和 `max_tokens` 按模型生效。`/api/providers/fetch` 会解析 OpenRouter 风格的
     context_length / max_completion_tokens / input_modalities / supported_parameters，
     没有元数据时回退 `default_model_limits()`。测试 467。**
+25. **面向模型的英文输出：所有 `@tool` 返回值、`tool_error` 消息/提示、工具参数说明和
+    Python docstring 已改为英文；前端 JSDoc 同步为英文。UI 标签、CLI 提示、审批卡片
+    和日志仍保留中文。`tools_search` 不再把中文目录标签混进模型返回值。测试 467。**
 
 ## 10. 给接手者的建议顺序
 

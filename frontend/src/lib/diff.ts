@@ -5,9 +5,9 @@ export type DiffRowType = 'context' | 'add' | 'remove' | 'gap'
 
 export interface DiffRow {
   type: DiffRowType
-  /** 旧文件行号；新增行为 null。 */
+  /** Line number in the old file; null for added rows. */
   oldLine: number | null
-  /** 新文件行号；删除行为 null。 */
+  /** Line number in the new file; null for removed rows. */
   newLine: number | null
   text: string
 }
@@ -16,11 +16,11 @@ export interface FileDiff {
   path: string
   before?: string
   after?: string
-  /** 直接给出 unified diff 时优先解析它（apply_patch 场景）。 */
+  /** When a unified diff is provided directly, parse it first (apply_patch case). */
   patch?: string
-  /** before/after 只是局部片段，查看器会尝试从当前文件重建完整 diff。 */
+  /** before/after are only partial snippets; the viewer tries to rebuild the full diff from the current file. */
   snippet?: boolean
-  /** 整文件写入，旧内容不可用。 */
+  /** Full-file write; the previous content is unavailable. */
   whole?: boolean
   note?: string
 }
@@ -50,7 +50,7 @@ function pushRow(
   rows.push({ type, oldLine, newLine, text })
 }
 
-/** 大文件退化：公共前缀/后缀保持上下文，中间整体视为删除 + 新增。 */
+/** Fallback for large files: keep the common prefix/suffix as context and treat the middle as removals plus additions. */
 function coarseDiff(oldLines: string[], newLines: string[]): DiffRow[] {
   let prefix = 0
   while (
@@ -88,7 +88,7 @@ function coarseDiff(oldLines: string[], newLines: string[]): DiffRow[] {
   return rows
 }
 
-/** 行级 LCS diff；超过规模上限时退化为前后缀比较，避免卡死页面。 */
+/** Line-level LCS diff; falls back to prefix/suffix comparison past the size limit to keep the page responsive. */
 export function diffLines(before: unknown, after: unknown): DiffRow[] {
   const oldLines = toLines(before)
   const newLines = toLines(after)
@@ -202,7 +202,7 @@ function cleanPatchPath(raw: string): string {
 
 const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 
-/** 解析 unified diff；用于把 apply_patch 的参数直接渲染成 Diff View。 */
+/** Parse a unified diff; used to render apply_patch arguments directly as a Diff View. */
 export function parsePatch(patch: string): PatchFile[] {
   const lines = String(patch ?? '').replace(/\r\n?/g, '\n').split('\n')
   const files: PatchFile[] = []

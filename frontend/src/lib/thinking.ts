@@ -1,9 +1,9 @@
 import type { ThinkingLevel } from '../api/types'
 
-/** 从左到右依次升高；也是滑块的吸附顺序。 */
+/** Ascending from left to right; also the slider's snap order. */
 export const THINKING_ORDER: ThinkingLevel[] = ['none', 'low', 'high', 'max']
 
-/** 新模型的默认可选等级：除了 none 全选。 */
+/** Default selectable levels for new models: all except none. */
 export const DEFAULT_THINKING_LEVELS: ThinkingLevel[] = ['low', 'high', 'max']
 
 export const THINKING_OPTIONS: Array<{ value: ThinkingLevel; label: string; short: string }> = [
@@ -21,7 +21,7 @@ export function thinkingShort(level: ThinkingLevel | string): string {
   return THINKING_OPTIONS.find((item) => item.value === level)?.short || '关'
 }
 
-/** 规范化可选等级并保证当前等级在可选集合里。 */
+/** Normalize the selectable levels and ensure the current level is among them. */
 export function normalizeThinkingLevels(
   rawLevels: unknown,
   rawCurrent: unknown,

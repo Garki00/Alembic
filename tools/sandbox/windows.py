@@ -132,7 +132,7 @@ if _IS_WINDOWS:
 
 def _dpapi_unprotect(value: str) -> str:
     if not _IS_WINDOWS:
-        raise sandbox_unavailable("DPAPI 只在 Windows 上可用。")
+        raise sandbox_unavailable("DPAPI is only available on Windows.")
     raw = base64.b64decode(value)
     buffer = ctypes.create_string_buffer(raw, len(raw))
     blob_in = _DATA_BLOB(len(raw), ctypes.cast(buffer, ctypes.c_void_p))
@@ -140,7 +140,7 @@ def _dpapi_unprotect(value: str) -> str:
     if not _crypt32.CryptUnprotectData(
         ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
     ):
-        raise sandbox_unavailable("无法解密沙盒账号密码；请重新运行 setup-sandbox.ps1。")
+        raise sandbox_unavailable("Could not decrypt the sandbox account password; rerun setup-sandbox.ps1.")
     try:
         data = ctypes.string_at(blob_out.pbData, blob_out.cbData)
         return data.decode("utf-8")
@@ -182,7 +182,7 @@ def _fd(handle) -> int:
     function.restype = ctypes.c_int
     fd = function(ctypes.c_void_p(_handle_value(handle)), os.O_RDONLY | os.O_BINARY)
     if fd == -1:
-        raise OSError(ctypes.get_errno(), "无法把沙盒管道转换成文件描述符")
+        raise OSError(ctypes.get_errno(), "Could not convert sandbox pipe to a file descriptor")
     return fd
 
 
@@ -332,14 +332,14 @@ class WindowsSandbox:
     def prepare_workspace(self, policy: SandboxPolicy) -> None:
         if not self.status().ready:
             raise sandbox_unavailable(
-                "沙盒未初始化。请以管理员身份运行 scripts/setup-sandbox.ps1。",
+                "Sandbox is not initialized. Run scripts/setup-sandbox.ps1 as administrator.",
                 hint="setup-sandbox.ps1 -Verify",
             )
         root = policy.workspace.resolve()
         if not root.is_dir():
-            raise sandbox_unavailable(f"工作区不存在：{root}")
+            raise sandbox_unavailable(f"Workspace does not exist: {root}")
         if not self._is_local_fixed(root):
-            raise sandbox_unavailable("沙盒只支持本地固定磁盘上的 NTFS 工作区。")
+            raise sandbox_unavailable("The sandbox supports only NTFS workspaces on local fixed disks.")
         key = str(root)
         mtime = 0
         try:
@@ -361,7 +361,7 @@ class WindowsSandbox:
         except SandboxError:
             raise
         except Exception as exc:
-            raise sandbox_unavailable(f"无法设置工作区 ACL：{exc}") from exc
+            raise sandbox_unavailable(f"Could not set workspace ACLs: {exc}") from exc
         with self._lock:
             self._prepared[key] = mtime
 
@@ -393,9 +393,9 @@ class WindowsSandbox:
         except (OSError, subprocess.SubprocessError) as exc:
             if ignore_errors:
                 return
-            raise SandboxError("sandbox_acl_failed", f"icacls 失败：{exc}") from exc
+            raise SandboxError("sandbox_acl_failed", f"icacls failed: {exc}") from exc
         if result.returncode != 0 and not ignore_errors:
-            # ACL 已存在时 icacls 仍可能返回非零；只在输出明确是错误时失败。
+            # icacls may return non-zero when the ACL already exists; fail only when the output clearly indicates an error.
             text = (result.stdout + result.stderr).strip()
             if "已成功处理" not in text and "Successfully processed" not in text and text:
                 raise SandboxError("sandbox_acl_failed", text[:300])
@@ -447,7 +447,7 @@ class WindowsSandbox:
                 try:
                     self._icacls(path, "/deny", f"{user}:(OI)(CI)(RX)")
                 except SandboxError:
-                    # 凭据目录不存在或已被其他策略保护时继续；不把失败扩大成写入泄漏。
+                    # Continue when the credential directory is missing or protected by another policy; do not turn the failure into a write leak.
                     continue
 
     def _scan_workspace_denies(self, root: Path, users: list[str]) -> None:
@@ -483,18 +483,18 @@ class WindowsSandbox:
         shell: bool = False,
     ) -> SandboxProcess:
         if not _IS_WINDOWS:
-            raise sandbox_unavailable("当前平台没有 Windows 沙盒后端。")
+            raise sandbox_unavailable("The Windows sandbox backend is not available on this platform.")
         status = self.status()
         if not status.ready:
             raise sandbox_unavailable(
-                "沙盒不可用：" + "、".join(status.reasons),
-                hint="以管理员身份运行 scripts/setup-sandbox.ps1。",
+                "Sandbox unavailable: " + ", ".join(status.reasons),
+                hint="Run scripts/setup-sandbox.ps1 as administrator.",
             )
         self.prepare_workspace(policy)
         mode = "online" if policy.normalized_network() == "allowlist" else "offline"
         account = self._users.get(mode)
         if not account:
-            raise sandbox_unavailable(f"缺少 {mode} 沙盒账号；请重新运行 setup-sandbox.ps1。")
+            raise sandbox_unavailable(f"Missing {mode} sandbox account; rerun setup-sandbox.ps1.")
         if shell:
             comspec = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
             command = f'"{comspec}" /d /s /c "{command}"'
@@ -557,7 +557,7 @@ class WindowsSandbox:
                 if job is not None:
                     job.close()
                 _kernel32.TerminateProcess(pi.hProcess, 1)
-                raise SandboxError("sandbox_job_failed", "无法把进程加入 Job Object。")
+                raise SandboxError("sandbox_job_failed", "Could not add the process to a Job Object.")
             stdout_stream = os.fdopen(_fd(stdout_handle), "rb", buffering=0)
             stderr_stream = os.fdopen(_fd(stderr_handle), "rb", buffering=0)
             if stdin_handle:

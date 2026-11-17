@@ -1,8 +1,9 @@
 # tools/weather.py
-"""和风天气实时查询工具。
+"""QWeather real-time weather lookup tool.
 
-凭据不再从进程环境全局读取，而是由注册表按配置注入（见 :func:`build_weather_tools`）；
-只有配置为空时才回落到 ``.env`` 的同名变量，保证命令行与测试能直接跑。
+Credentials come from the tool configuration injected by the registry (see
+:func:`build_weather_tools`); when a configuration value is empty, the same-named
+``.env`` variable is used as a fallback.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def _setting(config: dict, key: str, default: str = "") -> str:
-    """读取一项配置：工具配置 → 环境变量 → 默认值。"""
+    """Read one setting: tool configuration → environment variable → default."""
     for value in ((config or {}).get(key), os.getenv(key), default):
         if value is not None and str(value).strip():
             return str(value).strip()
@@ -33,7 +34,7 @@ def _setting(config: dict, key: str, default: str = "") -> str:
 
 
 def _build_token(config: dict) -> str:
-    """生成和风天气 JWT 令牌；缺凭据时抛 RuntimeError。"""
+    """Build a QWeather JWT token; raises RuntimeError when credentials are missing."""
     key_id = _setting(config, "QWEATHER_KEY_ID")
     project_id = _setting(config, "QWEATHER_PROJECT_ID")
     developer_id = _setting(config, "QWEATHER_DEVELOPER_ID")
@@ -50,7 +51,7 @@ def _build_token(config: dict) -> str:
         if not value
     ]
     if missing:
-        raise RuntimeError("缺少凭据：" + "、".join(missing))
+        raise RuntimeError("Missing credentials: " + ", ".join(missing))
 
     private_key = private_key.replace("\\n", "\n")
     return jwt.encode(
@@ -67,7 +68,7 @@ def _build_token(config: dict) -> str:
 
 
 def _fallback_weather_by_location(api_host: str, city: str, headers: dict) -> str | None:
-    """主接口失败时尝试旧版接口（部分账号仍可用）。"""
+    """Try the legacy endpoint when the primary one fails (still available for some accounts)."""
     try:
         resp = requests.get(
             f"https://{api_host}/v7/weather/now",
@@ -83,20 +84,21 @@ def _fallback_weather_by_location(api_host: str, city: str, headers: dict) -> st
 
 
 def _fetch_weather(city: str, config: dict) -> str:
-    """查询过程本体；所有失败都返回 ``Error:`` 字符串而不是抛异常。"""
+    """Lookup implementation; every failure returns an ``Error:`` string instead of raising."""
     if not city or not city.strip():
-        return tool_error("empty_city", "城市名不能为空。", hint="请提供有效的城市名称，例如 '北京'。")
+        return tool_error("empty_city", "The city name must not be empty.", hint="Provide a valid city name, for example 'Beijing'.")
     city = city.strip()
 
     try:
         token = _build_token(config)
     except Exception as exc:
-        # 缺凭据属于配置问题而不是程序异常，用 warning 以免日志里出现完整栈
+        # Missing credentials are a configuration problem, not a program failure;
+        # log at warning level so the full stack does not appear in the log.
         logger.warning("生成和风天气 JWT 失败：%s", exc)
         return tool_error(
             "auth_config",
-            f"天气服务认证配置异常（{type(exc).__name__}: {exc}）。",
-            hint="请在设置 → 工具里填写 QWEATHER_KEY_ID / PROJECT_ID / DEVELOPER_ID / PRIVATE_KEY。",
+            f"Weather service authentication is misconfigured ({type(exc).__name__}: {exc}).",
+            hint="Enter QWEATHER_KEY_ID / PROJECT_ID / DEVELOPER_ID / PRIVATE_KEY under Settings → Tools.",
         )
 
     headers = {"Authorization": f"Bearer {token}"}
@@ -104,11 +106,11 @@ def _fetch_weather(city: str, config: dict) -> str:
     if not api_host:
         return tool_error(
             "missing_api_host",
-            "缺少 QWEATHER_API_HOST，无法访问和风天气接口。",
-            hint="请在设置 → 工具 → 实时天气里填写你的 API Host（不含 https://）。",
+            "QWEATHER_API_HOST is missing, so the QWeather API cannot be reached.",
+            hint='Enter your API Host (without https://) under Settings → Tools → weather tool.',
         )
 
-    # ---- 1. 城市名 → 经纬度 ----
+    # ---- 1. City name → latitude/longitude ----
     try:
         geo_resp = requests.get(
             f"https://{api_host}/geo/v2/city/lookup",
@@ -122,31 +124,31 @@ def _fetch_weather(city: str, config: dict) -> str:
         if geo_data.get("code") != "200":
             return tool_error(
                 "geo_code",
-                f"地理编码 API 返回错误码 {geo_data.get('code')}，无法解析城市 {city!r}。",
-                hint="请确认城市名称是否正确。",
+                f"The geocoding API returned error code {geo_data.get('code')}; cannot resolve city {city!r}.",
+                hint="Check that the city name is correct.",
             )
         locations = geo_data.get("location") or []
         if not locations:
             return tool_error(
                 "city_not_found",
-                f"未找到城市 {city!r}。",
-                hint="请提供更明确的名称，例如 '北京'、'上海市'、'Guangzhou'。",
+                f"City {city!r} was not found.",
+                hint="Provide a more specific name, for example 'Beijing', 'Shanghai', or 'Guangzhou'.",
             )
         lat = locations[0].get("lat")
         lon = locations[0].get("lon")
         if not lat or not lon:
-            return tool_error("geo_missing", f"城市 {city!r} 的经纬度数据缺失，无法继续查询天气。")
+            return tool_error("geo_missing", f"Latitude/longitude data for city {city!r} is missing; cannot continue the weather lookup.")
     except requests.Timeout:
-        return tool_error("geo_timeout", f"查询城市 {city!r} 的地理信息超时。", hint="请稍后重试。")
+        return tool_error("geo_timeout", f"Timed out looking up geographic information for city {city!r}.", hint="Retry later.")
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else "unknown"
-        return tool_error("geo_http", f"地理编码请求失败（HTTP {status}）：{exc}。")
+        return tool_error("geo_http", f"Geocoding request failed (HTTP {status}): {exc}.")
     except requests.RequestException as exc:
-        return tool_error("geo_network", f"地理编码网络请求异常：{exc}。")
+        return tool_error("geo_network", f"Geocoding network request failed: {exc}.")
     except ValueError:
-        return tool_error("geo_json", "地理编码 API 返回了非 JSON 响应。", hint="请稍后重试。")
+        return tool_error("geo_json", "The geocoding API returned a non-JSON response.", hint="Retry later.")
 
-    # ---- 2. 实时天气（含降级） ----
+    # ---- 2. Current weather (with fallback) ----
     try:
         weather_resp = requests.get(
             f"https://{api_host}/weather/v1/current/{lat}/{lon}",
@@ -159,7 +161,7 @@ def _fetch_weather(city: str, config: dict) -> str:
         if isinstance(data, dict) and data.get("code") not in (None, "200"):
             return tool_error(
                 "weather_code",
-                f"天气 API 返回业务错误码 {data.get('code')}，城市 {city!r} 的实时天气暂时不可用。",
+                f"The weather API returned business error code {data.get('code')}; current weather for city {city!r} is temporarily unavailable.",
             )
         return weather_resp.text
 
@@ -167,7 +169,7 @@ def _fetch_weather(city: str, config: dict) -> str:
         fallback = _fallback_weather_by_location(api_host, city, headers)
         if fallback:
             return fallback
-        return tool_error("weather_timeout", f"查询城市 {city!r} 的实时天气超时。", hint="请稍后重试。")
+        return tool_error("weather_timeout", f"Timed out fetching current weather for city {city!r}.", hint="Retry later.")
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else "unknown"
         fallback = _fallback_weather_by_location(api_host, city, headers)
@@ -175,26 +177,26 @@ def _fetch_weather(city: str, config: dict) -> str:
             return fallback
         return tool_error(
             "weather_http",
-            f"天气 API 请求失败（HTTP {status}），城市 {city!r} 的天气暂时无法获取。",
+            f"The weather API request failed (HTTP {status}); weather for city {city!r} is temporarily unavailable.",
         )
     except requests.RequestException as exc:
-        return tool_error("weather_network", f"天气网络请求异常：{exc}。")
+        return tool_error("weather_network", f"Network request for weather failed: {exc}.")
     except ValueError:
-        return tool_error("weather_json", "天气 API 返回了非 JSON 响应。", hint="请稍后重试。")
+        return tool_error("weather_json", "The weather API returned a non-JSON response.", hint="Retry later.")
 
 
 def build_weather_tools(config: dict) -> list:
-    """按注入的凭据构造 ``get_weather`` 工具。"""
+    """Build the ``get_weather`` tool from the injected credentials."""
 
     @tool
     def get_weather(city: str) -> str:
-        """查询某个城市的实时天气（和风天气 API）。
+        """Get the current weather for a city (QWeather API).
 
         Args:
-            city: 城市名称，例如 "北京"、"上海"、"Guangzhou"。
+            city: City name, for example "Beijing", "Shanghai", or "Guangzhou".
 
         Returns:
-            成功时返回天气 JSON 文本；失败时返回以 "Error:" 开头的说明。
+            Weather JSON text on success; a message starting with "Error:" on failure.
         """
         return _fetch_weather(city, config)
 

@@ -1,5 +1,5 @@
 # tests/patch_test.py
-"""apply_patch 的测试：修改、新建、删除、多文件与读后写约束。"""
+"""apply_patch tests: modify, create, delete, multiple files, and read-before-write constraints."""
 
 import shutil
 import unittest
@@ -65,7 +65,7 @@ class ApplyPatchTest(unittest.TestCase):
 @@ -1 +0,0 @@
 -bye
 """})
-        self.assertIn("已删除", text)
+        self.assertIn("deleted", text)
         self.assertFalse(target.exists())
 
     def test_requires_read_before_edit(self):
@@ -105,7 +105,7 @@ class ApplyPatchTest(unittest.TestCase):
 -b
 +B
 """})
-        self.assertIn("2 个文件", text)
+        self.assertIn("2 file(s)", text)
         self.assertEqual((self.root / "a.txt").read_text(encoding="utf-8"), "A\n")
         self.assertEqual((self.root / "b.txt").read_text(encoding="utf-8"), "B\n")
 

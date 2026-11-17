@@ -1,5 +1,5 @@
 # tests/fetch_test.py
-"""网页抓取工具的测试：本地 HTTP 服务、重定向、SSRF 与错误契约。"""
+"""Web page fetching tool tests: local HTTP server, redirects, SSRF, and error contracts."""
 
 import shutil
 import threading
@@ -76,12 +76,12 @@ class FetchTest(unittest.TestCase):
 
     def test_html_is_converted_to_readable_text(self):
         text = self.tools()["fetch_url"].invoke({"url": self.url("/html")})
-        self.assertIn("状态：200", text)
-        self.assertIn("标题：测试页面", text)
+        self.assertIn("Status: 200", text)
+        self.assertIn("Title: 测试页面", text)
         self.assertIn("标题", text)
         self.assertIn("正文 & 更多", text)
         self.assertNotIn("alert(1)", text)
-        self.assertIn("不可信", text)
+        self.assertIn("untrusted", text)
 
     def test_json_is_pretty_printed(self):
         text = self.tools()["fetch_url"].invoke({"url": self.url("/json")})
@@ -90,7 +90,7 @@ class FetchTest(unittest.TestCase):
 
     def test_redirect_is_followed_and_validated(self):
         text = self.tools()["fetch_url"].invoke({"url": self.url("/redirect")})
-        self.assertIn("标题：测试页面", text)
+        self.assertIn("Title: 测试页面", text)
 
     def test_error_status_is_reported(self):
         text = self.tools()["fetch_url"].invoke({"url": self.url("/nope")})

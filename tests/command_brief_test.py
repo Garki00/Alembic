@@ -1,5 +1,5 @@
 # tests/command_brief_test.py
-"""审批卡片里的「人话说明」：命令翻译、分步拆解与兜底。"""
+"""Plain-language descriptions in approval cards: command translation, step breakdown, and fallbacks."""
 
 import unittest
 

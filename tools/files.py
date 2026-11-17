@@ -1,12 +1,13 @@
 # tools/files.py
-"""文件读写工具：让工作区从「提示词里的一句话」变成 agent 真能操作的地方。
+"""File read/write tools: make the workspace something the agent can actually operate on.
 
-安全边界：
-- 所有路径都经过 :func:`tools.paths.resolve_in_workspace`，越界（含 symlink
-  与 ``..`` 逃逸）一律拒绝；
-- 覆盖已有文件前必须先读过它（见 :func:`_check_read`），避免模型在没看到
-  原文的情况下整文件覆盖；
-- 单次输出按 ``ctx.max_output_chars`` 截断，防止一次读大文件撑爆上下文。
+Safety boundaries:
+- Every path passes through :func:`tools.paths.resolve_in_workspace`; any escape
+  (including symlinks and ``..``) is rejected.
+- An existing file must be read before it is overwritten (see :func:`_check_read`),
+  so the model cannot replace content it has never seen.
+- Each output is truncated to ``ctx.max_output_chars`` so a single large read cannot
+  overflow the context window.
 """
 
 from __future__ import annotations
@@ -31,8 +32,8 @@ from tools.paths import (
     resolve_in_workspace,
 )
 
-# ---------------------------------------------------------------- 读后写校验
-# path -> (mtime_ns, 是否完整读过)。进程内共享，允许跨轮次、跨工具使用。
+# --------------------------------------------------- read-before-write check
+# path -> (mtime_ns, fully_read). Shared within the process across turns and tools.
 _READ_STATE: dict[str, tuple[int, bool]] = {}
 _READ_LOCK = threading.Lock()
 
@@ -68,15 +69,15 @@ def _mark_read(path: Path, *, complete: bool) -> None:
 
 
 def _check_read(path: Path) -> tuple[str | None, bool]:
-    """检查写前是否读过该文件。返回 (错误信息, 是否只读过一部分)。"""
+    """Check that the file was read before writing. Return (error message, partial read flag)."""
     with _READ_LOCK:
         entry = _READ_STATE.get(str(path))
     if entry is None:
         return (
             tool_error(
                 "read_required",
-                f"写入前必须先读取 {path.name} 的现有内容。",
-                hint="请先调用 read_file 查看原文，再决定是整文件覆盖（write_file）还是局部替换（edit_file）。",
+                f"Read the current contents of {path.name} before writing.",
+                hint="Call read_file first to inspect the original text, then choose a full overwrite (write_file) or a targeted replacement (edit_file).",
             ),
             False,
         )
@@ -85,8 +86,8 @@ def _check_read(path: Path) -> tuple[str | None, bool]:
         return (
             tool_error(
                 "stale_read",
-                f"{path.name} 在你上次读取之后已被修改。",
-                hint="请重新 read_file 获取最新内容，再执行写入，避免覆盖别人的改动。",
+                f"{path.name} has changed since you last read it.",
+                hint="Call read_file again for the current content before writing, so no one else's changes are overwritten.",
             ),
             False,
         )
@@ -98,7 +99,7 @@ def _read_text(path: Path) -> str:
 
 
 def _diff_stats(before: str, after: str) -> tuple[int, int]:
-    """按行统计新增 / 删除，用于对话结束后的修改摘要。"""
+    """Count added and removed lines for the change summary shown after an edit."""
     old_lines = before.splitlines()
     new_lines = after.splitlines()
     added = removed = 0
@@ -119,7 +120,7 @@ def _looks_binary(path: Path) -> bool:
 
 
 def _glob_match(relative: str, name: str, pattern: str) -> bool:
-    """文件名 / 相对路径的 glob 匹配，支持 ``**/`` 与无通配符的子串写法。"""
+    """Match a file name or relative path against a glob, supporting ``**/`` and plain substring patterns."""
     text = (pattern or "").strip().replace("\\", "/")
     if not text:
         return False
@@ -127,7 +128,8 @@ def _glob_match(relative: str, name: str, pattern: str) -> bool:
         return text.lower() in name.lower()
     if fnmatch.fnmatch(relative, text) or fnmatch.fnmatch(name, text):
         return True
-    # ``**/*.py`` 在 fnmatch 里要求至少一级目录；根目录下的 a.py 也应当命中
+    # ``**/*.py`` requires at least one directory level in fnmatch; a.py at the
+    # search root should still match
     if text.startswith("**/"):
         rest = text[3:]
         return fnmatch.fnmatch(relative, rest) or fnmatch.fnmatch(name, rest)
@@ -139,7 +141,7 @@ def _as_error(exc: WorkspacePathError) -> str:
 
 
 def _resolve_or_none(ctx: ToolContext, raw: str, *, access: str = "read") -> Path | str:
-    """解析路径；失败时直接返回错误字符串，省掉每处的 try/except。"""
+    """Resolve a path; return the error string directly on failure, avoiding a try/except at each call site."""
     try:
         return resolve_in_workspace(ctx.workspace, raw, access=access)
     except WorkspacePathError as exc:
@@ -147,17 +149,17 @@ def _resolve_or_none(ctx: ToolContext, raw: str, *, access: str = "read") -> Pat
 
 
 def _protected_reason(target: Path, root: Path | None) -> str:
-    """返回不能删除/覆盖的原因；空字符串表示允许。"""
+    """Return why the target cannot be deleted or overwritten; an empty string means allowed."""
     if root is None:
         return ""
     if target == root:
-        return "工作区根目录"
+        return "the workspace root"
     try:
         parts = target.relative_to(root).parts
     except ValueError:
         return ""
     if any(part.lower() == ".git" for part in parts):
-        return ".git 目录"
+        return "the .git directory"
     return ""
 
 
@@ -165,25 +167,25 @@ def _ensure_parent(target: Path) -> str | None:
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        return tool_error("write_failed", f"无法创建目录 {target.parent}：{exc}。")
+        return tool_error("write_failed", f"Cannot create directory {target.parent}: {exc}")
     return None
 
 
 def _check_destination(destination: Path, overwrite: bool) -> str | None:
-    """检查目标是否可写；覆盖已有文件时沿用「读后写」约束。"""
+    """Check that the destination is writable; overwriting an existing file follows the read-before-write rule."""
     if not destination.exists():
         return None
     if not overwrite:
         return tool_error(
             "destination_exists",
-            f"目标已存在：{destination.name}。",
-            hint="换一个目标名，或传 overwrite=True（覆盖前必须先 read_file）。",
+            f"The destination already exists: {destination.name}.",
+            hint="Choose another destination name, or pass overwrite=True (read_file is required first).",
         )
     if destination.is_dir():
         return tool_error(
             "destination_is_directory",
-            f"目标 {destination.name} 是目录，不会自动覆盖目录。",
-            hint="请先删除或改名该目录，再重试。",
+            f"The destination {destination.name} is a directory and will not be overwritten automatically.",
+            hint="Delete or rename that directory first, then retry.",
         )
     error, _partial = _check_read(destination)
     if error:
@@ -191,9 +193,9 @@ def _check_destination(destination: Path, overwrite: bool) -> str | None:
     return None
 
 
-# --------------------------------------------------------------------- 只读组
+# ---------------------------------------------------------- read-only group
 def build_file_read_tools(ctx: ToolContext) -> list:
-    """目录浏览、文件读取、内容搜索（不修改磁盘）。"""
+    """Directory listing, file reading, and content search (no disk changes)."""
 
     @tool
     def list_dir(path: str = ".") -> str:
@@ -210,9 +212,9 @@ def build_file_read_tools(ctx: ToolContext) -> list:
         if isinstance(target, str):
             return target
         if not target.exists():
-            return tool_error("not_found", f"目录不存在：{path}。", hint="可以先用 list_dir(\".\") 查看根目录结构。")
+            return tool_error("not_found", f"Directory not found: {path}.", hint="Call list_dir(\".\") first to inspect the workspace root.")
         if not target.is_dir():
-            return tool_error("not_a_directory", f"{path} 不是目录。", hint="读取文件内容请用 read_file。")
+            return tool_error("not_a_directory", f"{path} is not a directory.", hint="Use read_file to read file contents.")
 
         entries = []
         try:
@@ -224,15 +226,15 @@ def build_file_read_tools(ctx: ToolContext) -> list:
                     is_dir, size = False, 0
                 entries.append((0 if is_dir else 1, child.name.lower(), child.name, is_dir, size))
         except OSError as exc:
-            return tool_error("list_failed", f"无法列出目录 {path}：{exc}。")
+            return tool_error("list_failed", f"Cannot list directory {path}: {exc}")
 
         entries.sort()
         shown = entries[:_MAX_LIST_ENTRIES]
-        lines = [f"目录：{display_path(ctx.workspace, target)}（{len(entries)} 项）"]
+        lines = [f"Directory: {display_path(ctx.workspace, target)} ({len(entries)} entries)"]
         for _, _, name, is_dir, size in shown:
             lines.append(f"{name}/" if is_dir else f"{name}  ({_format_size(size)})")
         if len(entries) > len(shown):
-            lines.append(f"…还有 {len(entries) - len(shown)} 项未列出，请缩小目录范围。")
+            lines.append(f"…{len(entries) - len(shown)} more entries not listed; narrow the directory scope.")
         return truncate("\n".join(lines), ctx.max_output_chars)
 
     @tool
@@ -252,30 +254,30 @@ def build_file_read_tools(ctx: ToolContext) -> list:
         if isinstance(target, str):
             return target
         if not target.exists():
-            return tool_error("not_found", f"文件不存在：{path}。", hint="可以用 list_dir 或 search_files 定位文件。")
+            return tool_error("not_found", f"File not found: {path}.", hint="Use list_dir or search_files to locate the file.")
         if target.is_dir():
-            return tool_error("is_directory", f"{path} 是目录。", hint="用 list_dir 查看目录内容。")
+            return tool_error("is_directory", f"{path} is a directory.", hint="Use list_dir to view the directory contents.")
         if _looks_binary(target):
-            return tool_error("binary_file", f"{path} 看起来是二进制文件，无法按文本读取。")
+            return tool_error("binary_file", f"{path} appears to be a binary file and cannot be read as text.")
 
         try:
             text = _read_text(target)
         except OSError as exc:
-            return tool_error("read_failed", f"读取 {path} 失败：{exc}。")
+            return tool_error("read_failed", f"Failed to read {path}: {exc}")
 
         lines = text.splitlines()
         total = len(lines)
         if total == 0:
             _mark_read(target, complete=True)
-            return f"文件：{display_path(ctx.workspace, target)}（空文件，0 行）"
+            return f"File: {display_path(ctx.workspace, target)} (empty file, 0 lines)"
 
         start = max(1, int(offset or 1))
         take = max(1, min(int(limit or 200), _MAX_READ_LIMIT))
         if start > total:
             return tool_error(
                 "offset_out_of_range",
-                f"起始行 {start} 超过文件总行数 {total}。",
-                hint=f"该文件共 {total} 行，请把 offset 设在 1..{total} 之间。",
+                f"Start line {start} is beyond the file's {total} lines.",
+                hint=f"The file has {total} lines; set offset within 1..{total}.",
             )
         end = min(total, start + take - 1)
         complete = start == 1 and end == total
@@ -284,12 +286,12 @@ def build_file_read_tools(ctx: ToolContext) -> list:
         width = len(str(end))
         body = [f"{index:>{width}}| {lines[index - 1]}" for index in range(start, end + 1)]
         header = (
-            f"文件：{display_path(ctx.workspace, target)}"
-            f"（共 {total} 行，本次第 {start}-{end} 行）"
+            f"File: {display_path(ctx.workspace, target)}"
+            f" ({total} lines, showing {start}-{end})"
         )
         footer = []
         if end < total:
-            footer.append(f"…还有 {total - end} 行，用 offset={end + 1} 继续读取。")
+            footer.append(f"…{total - end} more lines; continue with offset={end + 1}.")
         return truncate("\n".join([header, *body, *footer]), ctx.max_output_chars)
 
     @tool
@@ -309,13 +311,13 @@ def build_file_read_tools(ctx: ToolContext) -> list:
         try:
             regex = re.compile(pattern)
         except re.error as exc:
-            return tool_error("bad_pattern", f"正则表达式无法编译：{exc}。", hint="请检查括号、方括号是否配对。")
+            return tool_error("bad_pattern", f"The regular expression does not compile: {exc}", hint="Check that parentheses and brackets are balanced.")
 
         target = _resolve_or_none(ctx, path)
         if isinstance(target, str):
             return target
         if not target.exists():
-            return tool_error("not_found", f"搜索路径不存在：{path}。")
+            return tool_error("not_found", f"Search path not found: {path}.")
 
         limit = max(1, min(int(max_results or 50), 200))
         matches: list[str] = []
@@ -323,7 +325,7 @@ def build_file_read_tools(ctx: ToolContext) -> list:
         skipped_binary = 0
 
         def scan(file_path: Path) -> bool:
-            """扫描单个文件；返回 False 表示已经凑够结果。"""
+            """Scan one file; return False when enough matches have been collected."""
             nonlocal skipped_binary
             if is_protected_read(file_path, ctx.workspace):
                 return True
@@ -365,10 +367,10 @@ def build_file_read_tools(ctx: ToolContext) -> list:
 
         if not matches:
             return (
-                f"没有匹配 {pattern!r} 的内容（已搜索 {scanned} 个文件"
-                f"{f'，跳过 {skipped_binary} 个二进制文件' if skipped_binary else ''}）。"
+                f"No matches for {pattern!r} (searched {scanned} files"
+                f"{f', skipped {skipped_binary} binary files' if skipped_binary else ''})."
             )
-        header = f"匹配 {pattern!r}：共 {len(matches)} 行（已搜索 {scanned} 个文件）"
+        header = f"Matches for {pattern!r}: {len(matches)} lines (searched {scanned} files)"
         return truncate("\n".join([header, *matches]), ctx.max_output_chars)
 
     @tool
@@ -388,14 +390,14 @@ def build_file_read_tools(ctx: ToolContext) -> list:
         """
         text = (pattern or "").strip()
         if not text:
-            return tool_error("empty_pattern", "pattern 不能为空。", hint="例如 *.py 或 **/*.test.ts。")
+            return tool_error("empty_pattern", "pattern must not be empty.", hint="For example *.py or **/*.test.ts.")
         target = _resolve_or_none(ctx, path)
         if isinstance(target, str):
             return target
         if not target.exists():
-            return tool_error("not_found", f"查找路径不存在：{path}。")
+            return tool_error("not_found", f"Search path not found: {path}.")
         if not target.is_dir():
-            return tool_error("not_a_directory", f"{path} 不是目录。", hint="查找起点需要是目录。")
+            return tool_error("not_a_directory", f"{path} is not a directory.", hint="The search start point must be a directory.")
 
         limit = max(1, min(int(max_results or 100), 300))
         found: list[tuple[str, int]] = []
@@ -426,17 +428,17 @@ def build_file_read_tools(ctx: ToolContext) -> list:
                 if truncated:
                     break
         except OSError as exc:
-            return tool_error("search_failed", f"查找失败：{exc}。")
+            return tool_error("search_failed", f"Search failed: {exc}")
 
         shown = found[:limit]
-        header = f"匹配 {text}：找到 {len(shown)} 个文件（已扫描 {scanned} 个）"
+        header = f"Matches for {text}: {len(shown)} files found ({scanned} scanned)"
         if not shown:
-            return header + "\n没有匹配的文件。"
+            return header + "\nNo matching files."
         lines = [header]
         for relative, size in shown:
             lines.append(f"{relative}  ({_format_size(size)})")
         if truncated:
-            lines.append(f"…结果或扫描范围已达到上限（{limit} 条 / {_MAX_SCAN_FILES} 个文件），请缩小查找范围。")
+            lines.append(f"…Results or scan range reached the limit ({limit} entries / {_MAX_SCAN_FILES} files); narrow the search.")
         return truncate("\n".join(lines), ctx.max_output_chars)
 
     @tool
@@ -455,24 +457,24 @@ def build_file_read_tools(ctx: ToolContext) -> list:
         if isinstance(target, str):
             return target
         if not target.exists():
-            return tool_error("not_found", f"路径不存在：{path}。")
+            return tool_error("not_found", f"Path not found: {path}.")
         try:
             info = target.stat()
         except OSError as exc:
-            return tool_error("stat_failed", f"无法读取 {path} 的信息：{exc}。")
+            return tool_error("stat_failed", f"Cannot read metadata for {path}: {exc}")
 
-        kind = "目录" if target.is_dir() else "文件"
+        kind = "directory" if target.is_dir() else "file"
         lines = [
-            f"路径：{display_path(ctx.workspace, target)}",
-            f"类型：{kind}",
-            f"大小：{_format_size(info.st_size)}（{info.st_size} 字节）",
-            f"修改时间：{datetime.fromtimestamp(info.st_mtime):%Y-%m-%d %H:%M:%S}",
+            f"Path: {display_path(ctx.workspace, target)}",
+            f"Type: {kind}",
+            f"Size: {_format_size(info.st_size)} ({info.st_size} bytes)",
+            f"Modified: {datetime.fromtimestamp(info.st_mtime):%Y-%m-%d %H:%M:%S}",
         ]
         if target.is_file():
-            lines.append(f"后缀：{target.suffix.lower() or '(无)'}")
+            lines.append(f"Extension: {target.suffix.lower() or '(none)'}")
             if not _looks_binary(target) and info.st_size <= 2_000_000:
                 try:
-                    lines.append(f"行数：{len(_read_text(target).splitlines())}")
+                    lines.append(f"Lines: {len(_read_text(target).splitlines())}")
                 except OSError:
                     pass
         return "\n".join(lines)
@@ -480,9 +482,9 @@ def build_file_read_tools(ctx: ToolContext) -> list:
     return [list_dir, read_file, search_files, find_files, file_stat]
 
 
-# --------------------------------------------------------------------- 写入组
+# -------------------------------------------------------------- write group
 def build_file_write_tools(ctx: ToolContext) -> list:
-    """整文件写入与局部替换（都会落盘，受工作区与读后写约束）。"""
+    """Whole-file writes and targeted replacements (both persist to disk under the workspace and read-before-write rules)."""
 
     @tool
     def write_file(path: str, content: str) -> str:
@@ -501,10 +503,10 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         if isinstance(target, str):
             return target
         if target.is_dir():
-            return tool_error("is_directory", f"{path} 是目录，不能写入。", hint="请给出具体的文件名。")
+            return tool_error("is_directory", f"{path} is a directory and cannot be written.", hint="Provide a specific file name.")
         reason = _protected_reason(target, ctx.workspace)
         if reason:
-            return tool_error("protected_path", f"不能写入{reason}：{path}。")
+            return tool_error("protected_path", f"Cannot write to {reason}: {path}.")
 
         existed = target.exists()
         partial_warning = False
@@ -525,33 +527,33 @@ def build_file_write_tools(ctx: ToolContext) -> list:
             with target.open("wb") as handle:
                 handle.write(payload)
         except OSError as exc:
-            return tool_error("write_failed", f"写入 {path} 失败：{exc}。")
+            return tool_error("write_failed", f"Failed to write {path}: {exc}")
 
-        # 落盘后立刻回读元数据：工具返回值只能是「真的写成功」，
-        # 不能让模型用一句“已保存”代替事实（见 write_unverified）。
+        # Re-read metadata immediately after the write: the tool result must reflect a
+        # real write, not a claim that a write happened (see write_unverified).
         try:
             actual = target.stat().st_size
         except OSError as exc:
-            return tool_error("write_unverified", f"写入 {path} 后无法确认文件状态：{exc}。")
+            return tool_error("write_unverified", f"Cannot verify {path} after writing: {exc}")
         if actual != len(payload):
             return tool_error(
                 "write_unverified",
-                f"{path} 写入后大小不一致（磁盘 {actual} 字节，预期 {len(payload)} 字节）。",
-                hint="请用 file_stat 检查文件，再重试写入。",
+                f"Size mismatch after writing {path} (on disk {actual} bytes, expected {len(payload)} bytes).",
+                hint="Use file_stat to inspect the file, then retry the write.",
             )
 
         _mark_read(target, complete=True)
-        action = "已覆盖" if existed else "已创建"
+        action = "Overwritten" if existed else "Created"
         lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         added, removed = _diff_stats(old_text, content)
         result = [
-            f"{action}：{display_path(ctx.workspace, target)}",
-            f"行数：{lines}，字节数：{actual}",
-            f"变更：+{added} -{removed}",
-            "校验：文件已存在，大小与写入内容一致。",
+            f"{action}: {display_path(ctx.workspace, target)}",
+            f"Lines: {lines}, bytes: {actual}",
+            f"Changes: +{added} -{removed}",
+            "Verified: the file exists and its size matches the written content.",
         ]
         if partial_warning:
-            result.append("注意：上次只读取了该文件的局部内容，覆盖写入可能丢失未读部分。")
+            result.append("Note: only part of this file was read last time; overwriting may drop the unread portion.")
         return "\n".join(result)
 
     @tool
@@ -574,16 +576,16 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         if isinstance(target, str):
             return target
         if not target.exists():
-            return tool_error("not_found", f"文件不存在：{path}。", hint="新建文件请用 write_file。")
+            return tool_error("not_found", f"File not found: {path}.", hint="Use write_file to create a new file.")
         if target.is_dir():
-            return tool_error("is_directory", f"{path} 是目录。")
+            return tool_error("is_directory", f"{path} is a directory.")
         reason = _protected_reason(target, ctx.workspace)
         if reason:
-            return tool_error("protected_path", f"不能修改{reason}：{path}。")
+            return tool_error("protected_path", f"Cannot modify {reason}: {path}.")
         if not old_string:
-            return tool_error("empty_old_string", "old_string 不能为空。")
+            return tool_error("empty_old_string", "old_string must not be empty.")
         if old_string == new_string:
-            return tool_error("no_change", "old_string 与 new_string 相同，没有需要修改的内容。")
+            return tool_error("no_change", "old_string and new_string are identical; there is nothing to change.")
 
         error, _ = _check_read(target)
         if error:
@@ -592,14 +594,14 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         try:
             text = _read_text(target)
         except OSError as exc:
-            return tool_error("read_failed", f"读取 {path} 失败：{exc}。")
+            return tool_error("read_failed", f"Failed to read {path}: {exc}")
 
         count = text.count(old_string)
         if count == 0:
             return tool_error(
                 "not_found",
-                f"在 {path} 中没有找到 old_string 指定的内容。",
-                hint="请先用 read_file 确认原文（缩进、空格、换行都要一致），再重试。",
+                f"old_string was not found in {path}.",
+                hint="Use read_file to confirm the exact original text (indentation, spaces, and line breaks must match), then retry.",
             )
         if count > 1 and not replace_all:
             positions = []
@@ -610,8 +612,8 @@ def build_file_write_tools(ctx: ToolContext) -> list:
                 start = index + len(old_string)
             return tool_error(
                 "ambiguous_match",
-                f"old_string 在 {path} 中出现了 {count} 次（行 {', '.join(map(str, positions))}），无法确定改哪一处。",
-                hint="请补足上下文使其唯一，或传 replace_all=True 替换全部。",
+                f"old_string occurs {count} times in {path} (lines {', '.join(map(str, positions))}); the target occurrence is ambiguous.",
+                hint="Add surrounding context to make it unique, or pass replace_all=True to replace all occurrences.",
             )
 
         updated = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
@@ -619,14 +621,14 @@ def build_file_write_tools(ctx: ToolContext) -> list:
             with target.open("w", encoding="utf-8", newline="\n") as handle:
                 handle.write(updated)
         except OSError as exc:
-            return tool_error("write_failed", f"写入 {path} 失败：{exc}。")
+            return tool_error("write_failed", f"Failed to write {path}: {exc}")
 
         _mark_read(target, complete=True)
         replaced = count if replace_all else 1
         added, removed = _diff_stats(text, updated)
         return (
-            f"已修改：{display_path(ctx.workspace, target)}，替换 {replaced} 处。\n"
-            f"变更：+{added} -{removed}"
+            f"Modified: {display_path(ctx.workspace, target)}, {replaced} replacement(s).\n"
+            f"Changes: +{added} -{removed}"
         )
 
     @tool
@@ -644,16 +646,16 @@ def build_file_write_tools(ctx: ToolContext) -> list:
             return target
         reason = _protected_reason(target, ctx.workspace)
         if reason:
-            return tool_error("protected_path", f"不能在{reason}下创建目录：{path}。")
+            return tool_error("protected_path", f"Cannot create a directory under {reason}: {path}.")
         if target.exists():
             if target.is_dir():
-                return f"目录已存在：{display_path(ctx.workspace, target)}"
-            return tool_error("not_a_directory", f"{path} 已存在且是文件。", hint="换一个目录名。")
+                return f"Directory already exists: {display_path(ctx.workspace, target)}"
+            return tool_error("not_a_directory", f"{path} already exists and is a file.", hint="Choose another directory name.")
         try:
             target.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            return tool_error("write_failed", f"创建目录 {path} 失败：{exc}。")
-        return f"已创建目录：{display_path(ctx.workspace, target)}"
+            return tool_error("write_failed", f"Failed to create directory {path}: {exc}")
+        return f"Created directory: {display_path(ctx.workspace, target)}"
 
     @tool
     def delete_file(path: str, recursive: bool = False) -> str:
@@ -696,24 +698,24 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         if isinstance(target, str):
             return target
         if not target.exists():
-            return tool_error("not_found", f"路径不存在：{path}。")
+            return tool_error("not_found", f"Path not found: {path}.")
         reason = _protected_reason(target, ctx.workspace)
         if reason:
-            return tool_error("protected_path", f"不能删除{reason}：{path}。")
+            return tool_error("protected_path", f"Cannot delete {reason}: {path}.")
         try:
             if target.is_dir():
                 if any(target.iterdir()) and not recursive:
                     return tool_error(
                         "directory_not_empty",
-                        f"目录 {path} 不是空的。",
-                        hint="确认要删除全部内容时传 recursive=True。",
+                        f"Directory {path} is not empty.",
+                        hint="Pass recursive=True once you have confirmed that all of its contents should be deleted.",
                     )
                 shutil.rmtree(target)
-                return f"已删除目录：{display_path(ctx.workspace, target)}"
+                return f"Deleted directory: {display_path(ctx.workspace, target)}"
             target.unlink()
-            return f"已删除文件：{display_path(ctx.workspace, target)}"
+            return f"Deleted file: {display_path(ctx.workspace, target)}"
         except OSError as exc:
-            return tool_error("delete_failed", f"删除 {path} 失败：{exc}。")
+            return tool_error("delete_failed", f"Failed to delete {path}: {exc}")
 
     @tool
     def move_file(source: str, destination: str, overwrite: bool = False) -> str:
@@ -737,26 +739,26 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         if isinstance(dst, str):
             return dst
         if not src.exists():
-            return tool_error("not_found", f"源路径不存在：{source}。")
+            return tool_error("not_found", f"Source path not found: {source}.")
         if src == dst:
-            return tool_error("no_change", "源路径与目标路径相同。")
+            return tool_error("no_change", "The source and destination paths are identical.")
         source_reason = _protected_reason(src, ctx.workspace)
         if source_reason:
-            return tool_error("protected_path", f"不能移动{source_reason}：{source}。")
+            return tool_error("protected_path", f"Cannot move {source_reason}: {source}.")
         reason = _protected_reason(dst, ctx.workspace)
         if reason:
-            return tool_error("protected_path", f"不能覆盖{reason}：{destination}。")
+            return tool_error("protected_path", f"Cannot overwrite {reason}: {destination}.")
         if src.is_dir() and dst.is_relative_to(src):
             return tool_error(
                 "invalid_destination",
-                "不能把目录移动到它自己的子目录里。",
-                hint="请换一个工作区内的其他目标目录。",
+                "A directory cannot be moved into its own subdirectory.",
+                hint="Choose another destination directory inside the workspace.",
             )
         if src.is_dir() and dst.exists():
             return tool_error(
                 "destination_exists",
-                f"目标已存在：{destination}。",
-                hint="覆盖目录有风险，请换一个目标名或先删除旧目录。",
+                f"The destination already exists: {destination}.",
+                hint="Overwriting a directory is risky; choose another target name or delete the old directory first.",
             )
         error = _check_destination(dst, overwrite)
         if error:
@@ -770,8 +772,8 @@ def build_file_write_tools(ctx: ToolContext) -> list:
                 dst.unlink()
             shutil.move(str(src), str(dst))
         except (OSError, shutil.Error) as exc:
-            return tool_error("move_failed", f"移动 {source} 失败：{exc}。")
-        return f"已移动：{display_path(ctx.workspace, src)} → {display_path(ctx.workspace, dst)}"
+            return tool_error("move_failed", f"Failed to move {source}: {exc}")
+        return f"Moved: {display_path(ctx.workspace, src)} → {display_path(ctx.workspace, dst)}"
 
     @tool
     def copy_file(source: str, destination: str, overwrite: bool = False) -> str:
@@ -795,20 +797,20 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         if isinstance(dst, str):
             return dst
         if not src.exists():
-            return tool_error("not_found", f"源路径不存在：{source}。")
+            return tool_error("not_found", f"Source path not found: {source}.")
         if src == dst:
-            return tool_error("no_change", "源路径与目标路径相同。")
+            return tool_error("no_change", "The source and destination paths are identical.")
         if src.is_dir() and dst.is_relative_to(src):
             return tool_error(
                 "invalid_destination",
-                "不能把目录复制到它自己的子目录里。",
-                hint="请换一个工作区内的其他目标目录。",
+                "A directory cannot be copied into its own subdirectory.",
+                hint="Choose another destination directory inside the workspace.",
             )
         if src.is_dir() and dst.exists():
             return tool_error(
                 "destination_exists",
-                f"目标已存在：{destination}。",
-                hint="覆盖目录有风险，请换一个目标名或先删除旧目录。",
+                f"The destination already exists: {destination}.",
+                hint="Overwriting a directory is risky; choose another target name or delete the old directory first.",
             )
         error = _check_destination(dst, overwrite)
         if error:
@@ -823,7 +825,7 @@ def build_file_write_tools(ctx: ToolContext) -> list:
             else:
                 shutil.copy2(src, dst)
         except (OSError, shutil.Error) as exc:
-            return tool_error("copy_failed", f"复制 {source} 失败：{exc}。")
-        return f"已复制：{display_path(ctx.workspace, src)} → {display_path(ctx.workspace, dst)}"
+            return tool_error("copy_failed", f"Failed to copy {source}: {exc}")
+        return f"Copied: {display_path(ctx.workspace, src)} → {display_path(ctx.workspace, dst)}"
 
     return [write_file, edit_file, make_dir, delete_file, move_file, copy_file]

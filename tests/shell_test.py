@@ -1,5 +1,5 @@
 # tests/shell_test.py
-"""命令执行工具的测试：终端、退出码、cwd 边界、超时、环境白名单与截断。"""
+"""Command execution tool tests: terminal, exit codes, cwd boundaries, timeouts, environment allowlist, and truncation."""
 
 import os
 import shutil
@@ -72,10 +72,10 @@ class ShellTest(unittest.TestCase):
     # ---- 正常路径 ----
     def test_success_reports_exit_code_and_stdout(self):
         text = self.run_command.invoke({"command": "echo hello"})
-        self.assertIn("退出码：0", text)
+        self.assertIn("Exit code: 0", text)
         self.assertIn("hello", text)
         self.assertIn("--- stdout ---", text)
-        self.assertIn("终端：PowerShell", text)
+        self.assertIn("Terminal: PowerShell", text)
 
     def test_stderr_is_captured_separately(self):
         text = self.run_command.invoke({"command": self.stderr_command})
@@ -85,8 +85,8 @@ class ShellTest(unittest.TestCase):
     def test_nonzero_exit_is_reported_but_not_as_tool_error(self):
         text = self.run_command.invoke({"command": self.fail_command})
         self.assertFalse(text.startswith("Error:"), text)
-        self.assertIn("退出码：3", text)
-        self.assertIn("失败", text)
+        self.assertIn("Exit code: 3", text)
+        self.assertIn("failed", text)
 
     def test_default_cwd_is_workspace(self):
         text = self.run_command.invoke({"command": self.cwd_command})
@@ -97,7 +97,7 @@ class ShellTest(unittest.TestCase):
         if not self.available.get("cmd"):
             self.skipTest("CMD 不可用")
         text = self.run_command.invoke({"command": "echo hello", "terminal": "cmd"})
-        self.assertIn("终端：CMD", text)
+        self.assertIn("Terminal: CMD", text)
         self.assertIn("hello", text)
 
     def test_gitbash_terminal(self):
@@ -108,7 +108,7 @@ class ShellTest(unittest.TestCase):
         # 这是宿主限制而不是终端适配失败。
         if "signal pipe" in text or "Win32 error 5" in text:
             self.skipTest("宿主环境禁止 Git Bash 创建信号管道")
-        self.assertIn("终端：Git Bash", text)
+        self.assertIn("Terminal: Git Bash", text)
         self.assertIn("hello", text)
 
     def test_wsl_terminal(self):
@@ -116,7 +116,11 @@ class ShellTest(unittest.TestCase):
             self.skipTest("WSL 不可用")
         text = self.run_command.invoke({"command": "echo hello", "terminal": "wsl"})
         # 可能已安装 wsl.exe 但没有任何发行版；只要走 WSL 分支并给出明确结果即可。
-        self.assertIn("终端：WSL", text)
+        # The Windows sandbox deliberately rejects WSL, so accept that explicit error too.
+        if "sandbox_unsupported" in text:
+            self.assertIn("WSL terminals are not supported", text)
+        else:
+            self.assertIn("Terminal: WSL", text)
 
     def test_unknown_terminal_rejected(self):
         text = self.run_command.invoke({"command": "echo x", "terminal": "fish"})
@@ -158,7 +162,7 @@ class ShellTest(unittest.TestCase):
     def test_output_is_truncated(self):
         text = self.run_command.invoke({"command": self.big_command})
         self.assertLessEqual(len(text), 2000 + 200)
-        self.assertIn("已截断", text)
+        self.assertIn("truncated", text)
 
     # ---- 实时输出与取消 ----
     def test_output_events_are_emitted_while_running(self):
@@ -170,7 +174,7 @@ class ShellTest(unittest.TestCase):
             )
         }["run_command"]
         text = tool.invoke({"command": self.cwd_command})
-        self.assertIn("退出码：0", text)
+        self.assertIn("Exit code: 0", text)
         self.assertTrue(
             any(kind == "tool_output" and data.get("text") for kind, data in events),
             events,

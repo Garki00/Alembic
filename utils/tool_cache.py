@@ -1,12 +1,12 @@
 # utils/tool_cache.py
 """
-工具输出缓存
+Tool output cache.
 
-支持：
-1. 基于参数的缓存键
-2. TTL（生存时间）
-3. LRU淘汰策略
-4. 缓存统计
+Supports:
+1. cache keys derived from parameters
+2. TTL (time to live)
+3. LRU eviction
+4. cache statistics
 """
 
 import hashlib
@@ -21,7 +21,7 @@ from utils.performance import get_performance_monitor
 
 @dataclass
 class CacheEntry:
-    """缓存条目"""
+    """Cache entry."""
 
     key: str
     value: Any
@@ -30,12 +30,12 @@ class CacheEntry:
     hits: int = 0
 
     def is_expired(self) -> bool:
-        """检查是否过期"""
+        """Whether the entry has expired."""
         return time.time() - self.created_at > self.ttl
 
 
 class ToolCache:
-    """工具输出缓存"""
+    """Tool output cache."""
 
     def __init__(self, max_size: int = 1000, default_ttl: int = 300):
         self.max_size = max_size
@@ -46,14 +46,14 @@ class ToolCache:
         self._misses = 0
 
     def _generate_cache_key(self, tool_name: str, parameters: Dict[str, Any]) -> str:
-        """生成缓存键"""
+        """Generate a cache key."""
         # 将参数转为JSON并排序，确保相同参数生成相同的键
         params_str = json.dumps(parameters, sort_keys=True, ensure_ascii=False)
         key_data = f"{tool_name}:{params_str}"
         return hashlib.sha256(key_data.encode()).hexdigest()[:16]
 
     def get(self, tool_name: str, parameters: Dict[str, Any]) -> Optional[Any]:
-        """从缓存获取结果"""
+        """Get a result from the cache."""
         key = self._generate_cache_key(tool_name, parameters)
 
         if key in self.cache:
@@ -87,7 +87,7 @@ class ToolCache:
         value: Any,
         ttl: Optional[int] = None,
     ):
-        """添加到缓存"""
+        """Add an entry to the cache."""
         key = self._generate_cache_key(tool_name, parameters)
         ttl = ttl if ttl is not None else self.default_ttl
 
@@ -107,12 +107,12 @@ class ToolCache:
             print(f"🗑️  缓存淘汰: {oldest_key} (命中 {oldest_entry.hits} 次)")
 
     def clear(self):
-        """清空缓存"""
+        """Clear the cache."""
         self.cache.clear()
         print("🧹 缓存已清空")
 
     def clear_expired(self):
-        """清除过期条目"""
+        """Remove expired entries."""
         expired_keys = [key for key, entry in self.cache.items() if entry.is_expired()]
         for key in expired_keys:
             del self.cache[key]
@@ -120,7 +120,7 @@ class ToolCache:
             print(f"🧹 清除了 {len(expired_keys)} 个过期缓存条目")
 
     def get_stats(self) -> Dict[str, Any]:
-        """获取缓存统计"""
+        """Get cache statistics."""
         return {
             "size": len(self.cache),
             "max_size": self.max_size,
@@ -130,7 +130,7 @@ class ToolCache:
         }
 
     def print_stats(self):
-        """打印缓存统计"""
+        """Print cache statistics."""
         stats = self.get_stats()
         print("\n" + "=" * 60)
         print("缓存统计")
@@ -147,7 +147,7 @@ _global_cache: Optional[ToolCache] = None
 
 
 def get_tool_cache() -> ToolCache:
-    """获取全局工具缓存"""
+    """Get the global tool cache."""
     global _global_cache
     if _global_cache is None:
         from config.settings_optimized import settings
@@ -159,7 +159,7 @@ def get_tool_cache() -> ToolCache:
 
 
 def cached_tool_call(tool_name: str, ttl: Optional[int] = None):
-    """工具缓存装饰器"""
+    """Decorator that caches tool output."""
 
     def decorator(func: Callable) -> Callable:
         def wrapper(*args, **kwargs) -> Any:
@@ -192,7 +192,7 @@ def cached_tool_call(tool_name: str, ttl: Optional[int] = None):
 
 @cached_tool_call("read_file", ttl=300)
 def read_file_cached(file_path: str) -> str:
-    """缓存的文件读取"""
+    """Cached file read."""
     print(f"📖 实际读取文件: {file_path}")
     with open(file_path, "r", encoding="utf-8") as f:
         return f.read()
@@ -200,14 +200,14 @@ def read_file_cached(file_path: str) -> str:
 
 @cached_tool_call("expensive_computation", ttl=600)
 def expensive_computation(n: int) -> int:
-    """缓存的耗时计算"""
+    """Cached expensive computation."""
     print(f"🔢 实际执行计算: n={n}")
     time.sleep(2)  # 模拟耗时操作
     return sum(range(n))
 
 
 def example_cache_usage():
-    """示例：缓存使用"""
+    """Example: cache usage."""
     from config.settings_optimized import settings
 
     # 临时启用缓存（如果未启用）

@@ -56,7 +56,7 @@ export interface ProviderPayload {
   models: ProviderModelPayload[]
 }
 
-/** 当前激活模型的运行时视图（供应商配置 + 选中的模型）。 */
+/** Runtime view of the active model (provider config plus the selected model). */
 export interface ActiveModelInfo {
   id: string
   name: string
@@ -244,7 +244,7 @@ export interface ProcessInfo {
   sandboxed?: boolean
   sandbox_backend?: string
   network?: string
-  /** 仅 process_completed 事件携带，用于内部续跑提示。 */
+  /** Only carried by process_completed events; used for internal continuation hints. */
   log_tail?: string
 }
 
@@ -301,11 +301,11 @@ export interface ApprovalRequest {
   tool: string
   risk: 'write' | 'exec' | string
   target: string
-  /** 人话说明：这条请求准备做什么。 */
+  /** Plain-language summary of what this request is about to do. */
   summary: string
-  /** 原始命令 / 文件内容，按需展开。 */
+  /** Raw command or file content, expanded on demand. */
   preview: string
-  /** 命令拆出的分步说明（仅命令类工具有值）。 */
+  /** Step-by-step breakdown of the command (only set for command-style tools). */
   steps?: string[]
   reason?: string
   rule?: string

@@ -1,16 +1,18 @@
 # tools/terminals.py
-"""终端适配：把一条命令交给用户偏好的 shell 执行。
+"""Terminal adapter: run a command through the user's preferred shell.
 
-支持的终端：
+Supported terminals:
 
-- ``powershell``：Windows PowerShell / PowerShell 7（默认）
-- ``cmd``：``cmd.exe``
-- ``gitbash``：Git for Windows 自带的 Bash
-- ``wsl``：默认 WSL 发行版里的 Bash
+- ``powershell``: Windows PowerShell / PowerShell 7 (default)
+- ``cmd``: ``cmd.exe``
+- ``gitbash``: the Bash shipped with Git for Windows
+- ``wsl``: Bash inside the default WSL distribution
 
-命令始终以参数列表启动（``shell=False``），命令原文作为单个参数传给目标
-终端，避免 Python 再拼一层 shell 造成二次解析。WSL 无法直接使用 Windows
-路径作为工作目录，因此会把 ``D:\\work`` 映射成 ``/mnt/d/work`` 再 ``cd``。
+Commands are always launched as an argument list (``shell=False``), and the
+command text is passed as a single argument to the target terminal, so Python does
+not add another shell layer that would re-parse it. WSL cannot use a Windows path
+directly as its working directory, so ``D:\\work`` is mapped to ``/mnt/d/work``
+before ``cd``.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ _ALIASES = {
 
 
 class TerminalUnavailable(ValueError):
-    """偏好终端不存在或无法启动。"""
+    """The preferred terminal does not exist or cannot start."""
 
 
 @dataclass(frozen=True)
@@ -59,7 +61,7 @@ class TerminalInfo:
 
 @dataclass(frozen=True)
 class TerminalInvocation:
-    """一次终端调用的完整描述；``shell`` 为 True 时 ``argv`` 是命令字符串。"""
+    """Full description of one terminal invocation; when ``shell`` is True, ``argv`` is a command string."""
 
     argv: list[str] | str
     cwd: str | None
@@ -67,7 +69,7 @@ class TerminalInvocation:
 
 
 def normalize_terminal(value: str | None) -> str:
-    """把用户输入/历史配置规范成受支持的终端 ID。"""
+    """Normalize user input or stored configuration into a supported terminal ID."""
     text = str(value or "").strip().lower()
     if not text:
         return "powershell"
@@ -130,7 +132,7 @@ def _git_bash_path() -> str:
     found = _existing(candidates)
     if found:
         return found
-    # 最后才看 PATH；排除 Windows 自带的 WSL 启动器，它不是 Git Bash。
+    # Only then check PATH; exclude the Windows WSL launcher, which is not Git Bash.
     which = _which("bash.exe") or _which("bash")
     normalized = which.lower().replace("/", "\\")
     if normalized and "windows\\system32\\bash.exe" not in normalized:
@@ -164,12 +166,12 @@ def _resolve(value: str | None) -> tuple[str, str]:
     }
     path = finders[terminal]()
     if not path:
-        raise TerminalUnavailable(f"找不到 {TERMINAL_LABELS[terminal]} 可执行文件。")
+        raise TerminalUnavailable(f"Cannot find the {TERMINAL_LABELS[terminal]} executable.")
     return terminal, path
 
 
 def available_terminals() -> list[TerminalInfo]:
-    """列出四种终端及本机是否可用（供设置页与初始化页展示）。"""
+    """List the four terminals and whether each is available on this machine (for the settings and onboarding pages)."""
     result: list[TerminalInfo] = []
     for terminal in TERMINAL_CHOICES:
         try:
@@ -183,7 +185,7 @@ def available_terminals() -> list[TerminalInfo]:
 
 
 def windows_to_wsl_path(path: str | Path) -> str:
-    """把 Windows 绝对路径转成 WSL 默认自动挂载下的 Linux 路径。"""
+    """Convert a Windows absolute path into a Linux path under WSL's default automount."""
     text = str(path)
     try:
         resolved = Path(text).resolve()
@@ -201,28 +203,31 @@ def build_invocation(
     command: str,
     cwd: str | Path | None,
 ) -> TerminalInvocation:
-    """构造一次终端调用。
+    """Build one terminal invocation.
 
-    ``cmd`` 用 ``shell=True`` 是因为 Windows 的 ``CreateProcess`` 参数转义
-    （``list2cmdline``）与 cmd.exe 的引号规则不一致：把带引号的命令作为列表
-    参数传入会被反斜杠转义，cmd 反而找不到可执行文件。直接交给 cmd 解析命令
-    原文与用户在终端里输入一致。其他终端都用参数列表。
+    ``cmd`` uses ``shell=True`` because Windows ``CreateProcess`` argument escaping
+    (``list2cmdline``) and cmd.exe quoting rules disagree: passing a quoted command
+    as a list argument adds backslash escapes, and cmd then cannot find the
+    executable. Giving cmd the raw command text matches what the user would type in
+    the terminal. All other terminals use argument lists.
 
     Raises:
-        TerminalUnavailable: 偏好终端缺失。
+        TerminalUnavailable: The preferred terminal is missing.
     """
     text = str(command or "")
     resolved, executable = _resolve(terminal)
     workdir = str(cwd) if cwd else None
 
     if resolved == "powershell":
-        # PowerShell 里以引号开头的可执行文件必须用调用运算符，否则会被当成
-        # 字符串表达式。模型常写 "C:\...\python.exe" -c ...，这里补一个 &。
+        # In PowerShell an executable path starting with a quote must use the call
+        # operator, otherwise it is treated as a string expression. The model often
+        # writes "C:\...\python.exe" -c ..., so prepend &.
         script = text.lstrip()
         if script[:1] in {'"', "'"} and not script.startswith("&"):
             script = "& " + script
-        # 原生程序的退出码不会自动成为 powershell.exe 的退出码；
-        # 包一层脚本块再显式 exit，测试/构建失败才能被工具看见。
+        # A native program's exit code does not automatically become
+        # powershell.exe's exit code; wrap the script in a block and exit
+        # explicitly so test/build failures are visible to the tool.
         script = (
             "& {\n" + script + "\n}\n"
             "$ok = $?\n"
@@ -236,7 +241,8 @@ def build_invocation(
         ]
         return TerminalInvocation(argv, workdir)
     if resolved == "cmd":
-        # 见 docstring：cmd 需要原始命令行，不能再经过 list2cmdline。
+        # See the docstring: cmd needs the raw command line, not one passed
+        # through list2cmdline.
         return TerminalInvocation(text, workdir, shell=True)
     if resolved == "gitbash":
         return TerminalInvocation([executable, "--noprofile", "--norc", "-c", text], workdir)
@@ -247,5 +253,5 @@ def build_invocation(
         else:
             script = text
         return TerminalInvocation([executable, "-e", "bash", "-lc", script], None)
-    # 非 Windows：bash/sh
+    # Non-Windows: bash/sh
     return TerminalInvocation([executable, "-c", text], workdir)

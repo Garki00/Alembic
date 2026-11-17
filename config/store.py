@@ -1,13 +1,14 @@
 # config/store.py
-"""网页工作区的持久化配置：模型列表、工具开关与参数、工作区选择。
+"""Persistent configuration of the web workspace: model list, tool switches and
+parameters, and workspace selection.
 
-所有内容都保存在项目内的 ``data/`` 目录（已被 .gitignore 忽略）：
+Everything is stored in the project's ``data/`` directory (ignored by .gitignore):
 
-- ``data/models.json``：模型列表 + 当前激活模型；
-- ``data/tools.json``：每个工具的启用状态与参数（如和风天气密钥）；
-- ``data/workspace.json``：当前工作区与最近使用目录。
+- ``data/models.json``: model list plus the active model;
+- ``data/tools.json``: per-tool enable state and parameters (such as the QWeather key);
+- ``data/workspace.json``: the active workspace and recently used directories.
 
-API Key 只存在本地，接口返回时只给掩码。
+API keys stay local; responses only ever contain a mask.
 """
 
 from __future__ import annotations
@@ -61,7 +62,7 @@ def _resolve(path: str | Path) -> Path:
 
 
 class _JsonFile:
-    """极简 JSON 文件读写：懒加载、原子写入、线程安全。"""
+    """Minimal JSON file store: lazy loading, atomic writes, thread safety."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = _resolve(path)
@@ -107,10 +108,11 @@ _DEFAULT_MAX_OUTPUT_TOKENS = 8_192
 
 
 def default_model_limits(provider: str, model: str) -> dict[str, Any]:
-    """已知模型的上限与能力；未知模型给出保守但可编辑的默认值。
+    """Known model limits and capabilities; unknown models get conservative, editable defaults.
 
-    上游 /models 只返回 ID，不返回上下文窗口或图片能力，所以这里用模型
-    家族的公开上限做默认值。用户可以在模型下拉设置里覆盖。
+    The upstream /models endpoint returns only IDs, not context windows or image support,
+    so the public limits of the model family are used as defaults. Users can override them
+    in the model settings.
     """
     text = f"{provider} {model}".lower()
 
@@ -166,10 +168,11 @@ def _sort_levels(values: Iterable[str]) -> list[str]:
 
 
 def _derive_thinking_levels(raw: Any, current: Any) -> tuple[list[str], str]:
-    """返回 (可选等级列表, 当前等级)。
+    """Return (selectable level list, current level).
 
-    旧数据没有 thinking_levels 时，默认 low/high/max；如果旧的当前等级
-    不在默认集合里（例如 none），把它补进去，避免升级后改变模型行为。
+    When older data has no ``thinking_levels`` the default is low/high/max; if the stored
+    current level is not in that set (for example ``none``), it is added so upgrading does
+    not change model behavior.
     """
     current_level = _thinking_level(current)
     if isinstance(raw, list) and raw:
@@ -203,7 +206,7 @@ def _unique_id(taken: Iterable[str], base: str) -> str:
 
 @dataclass
 class ProviderModel:
-    """供应商下的一个模型条目。"""
+    """One model entry under a provider."""
 
     id: str
     model: str
@@ -234,7 +237,7 @@ class ProviderModel:
 
 @dataclass
 class ProviderConfig:
-    """一个模型供应商（一组共用 Base URL / API Key 的模型）。"""
+    """One model provider (a group of models sharing a Base URL / API key)."""
 
     id: str
     provider: str = "custom"
@@ -245,7 +248,7 @@ class ProviderConfig:
     updated_at: str = field(default_factory=_now)
 
     def public(self) -> dict[str, Any]:
-        """对前端输出：不返回原始 API Key。"""
+        """Shape returned to the frontend: never includes the raw API key."""
         key = self.api_key or ""
         return {
             "id": self.id,
@@ -261,7 +264,7 @@ class ProviderConfig:
 
 @dataclass
 class ModelConfig:
-    """当前激活模型的运行时视图（供应商配置 + 选中的模型）。"""
+    """Runtime view of the active model (provider configuration plus the selected model)."""
 
     id: str
     name: str
@@ -281,7 +284,7 @@ class ModelConfig:
     updated_at: str = field(default_factory=_now)
 
     def public(self) -> dict[str, Any]:
-        """对前端输出的结构：不返回原始 API Key。"""
+        """Shape returned to the frontend: never includes the raw API key."""
         data = asdict(self)
         key = data.pop("api_key", "") or ""
         data["api_key_set"] = bool(key)
@@ -290,7 +293,7 @@ class ModelConfig:
 
 
 class ModelStore:
-    """供应商列表、每个供应商的模型列表，以及当前激活模型。"""
+    """Provider list, the model list of each provider, and the active model."""
 
     SCHEMA_VERSION = 2
     DEFAULT_PROVIDER_ID = "prov-deepseek"
@@ -376,7 +379,7 @@ class ModelStore:
         )
 
     def needs_setup(self) -> bool:
-        """是否还没有一个可用的供应商（Key + Base URL + 至少一个模型）。"""
+        """Whether no usable provider exists yet (key + Base URL + at least one model)."""
         for provider in self.providers():
             if provider.api_key.strip() and provider.base_url.strip() and provider.models:
                 return False
@@ -462,7 +465,7 @@ class ModelStore:
         return True
 
     def set_thinking(self, provider_id: str, model_id: str, thinking: str) -> bool:
-        """只更新某个模型的当前推理等级（必须在它的可选等级里）。"""
+        """Update only the current thinking level of one model (must be one of its selectable levels)."""
         data = self._load()
         provider = next(
             (item for item in data.get("providers", []) if item.get("id") == provider_id),
@@ -488,7 +491,7 @@ class ModelStore:
         return True
 
     def ensure_saved(self) -> None:
-        """首次运行时把默认配置落盘，便于用户直接编辑或备份。"""
+        """Write the default configuration on first run so users can edit or back it up directly."""
         if not self.file.path.exists():
             self.file.save(self._seed())
             return
@@ -496,7 +499,7 @@ class ModelStore:
 
     # ---- 内部 ----
     def _seed(self) -> dict[str, Any]:
-        """首次运行时的空配置；只有显式配置了 Key 与模型名才自动建一条。"""
+        """Empty configuration for first run; an entry is created only when a key and model name are set explicitly."""
         key = os.getenv("DEEPSEEK_API_KEY", "").strip()
         model_name = os.getenv("MODEL_NAME", "").strip()
         if not (key and model_name):
@@ -534,7 +537,7 @@ class ModelStore:
         }
 
     def _migrate(self, data: dict[str, Any]) -> dict[str, Any]:
-        """把旧的「扁平模型列表」迁移成「供应商 + 模型列表」。"""
+        """Migrate the old flat model list into providers with model lists."""
         legacy = data.get("models") or []
         groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         for item in legacy:
@@ -739,19 +742,19 @@ class ModelStore:
 
 
 def _mask(value: str) -> str:
-    """把密钥变成可展示的掩码，只留末 4 位。"""
+    """Turn a secret into a displayable mask, keeping only the last 4 characters."""
     if not value:
         return ""
     return f"••••{value[-4:]}" if len(value) >= 4 else "••••"
 
 
 def _mask_multiline(value: str) -> str:
-    """多行密钥（如 PEM）不展示片段，只说明长度。"""
+    """Multi-line secrets (such as PEM) are not partially shown; only their length is reported."""
     return f"{len(value)} 字符" if value else ""
 
 
 class ToolStore:
-    """工具启用状态与参数。"""
+    """Tool enable states and parameters."""
 
     def __init__(self, path: str | Path | None = None) -> None:
         self.file = _JsonFile(path or settings.tools_file)
@@ -812,11 +815,11 @@ class ToolStore:
         return {name for name, entry in self.state().items() if entry["enabled"]}
 
     def configs(self) -> dict[str, dict[str, str]]:
-        """启用条目的参数表（含密钥），装配 Agent 时按条目注入。
+        """Parameter table of the enabled entries (secrets included), injected per entry when the agent is built.
 
-        这是替代 ``apply_env`` 的关键一步：以前把参数写进 ``os.environ``，
-        多个会话并发、各用一套凭据时会互相覆盖，而且进程内任何代码都能读到。
-        现在参数跟着这一轮 Agent 走，作用域就是这次装配。
+        Parameters are scoped to the agent assembled for this turn instead of being written
+        into ``os.environ``, where concurrent sessions with different credentials would
+        overwrite each other and any code in the process could read them.
         """
         return {
             name: dict(entry["config"])
@@ -857,7 +860,7 @@ class ToolStore:
         return result
 
     def ensure_saved(self) -> None:
-        """把默认配置落盘；已有文件则补齐新增条目并做一次性迁移。"""
+        """Write the defaults to disk; for an existing file, add new entries and run one-time migrations."""
         if not self.file.path.exists():
             self.file.save(self._seed())
             return
@@ -907,7 +910,7 @@ class ToolStore:
 # ---------------------------------------------------------------------------
 @dataclass
 class Workspace:
-    """一个命名工作区，会话按它分组显示在左侧栏。"""
+    """A named workspace; sessions are grouped under it in the sidebar."""
 
     id: str
     name: str
@@ -924,10 +927,10 @@ class Workspace:
 
 
 class WorkspaceStore:
-    """命名工作区列表（data/workspace.json）。
+    """Named workspace list (data/workspace.json).
 
-    旧格式是 ``{"current": ..., "recent": [...]}``，首次读取时迁移成
-    ``{"version": 2, "active_id": ..., "workspaces": [...]}``。
+    The legacy format was ``{"current": ..., "recent": [...]}``; it is migrated on first
+    read to ``{"version": 2, "active_id": ..., "workspaces": [...]}``.
     """
 
     MAX_NAME = 40
@@ -1026,12 +1029,12 @@ class WorkspaceStore:
         return True
 
     def ensure_saved(self) -> None:
-        """首次运行时把默认工作区落盘，方便直接编辑或备份。"""
+        """Write the default workspace on first run so it can be edited or backed up directly."""
         if not self.file.path.exists():
             self.file.save(self._seed())
 
     def browse(self, path: str | None = None) -> dict[str, Any]:
-        """列出某个目录下的子目录，供前端添加工作区。"""
+        """List the subdirectories of a directory so the frontend can add a workspace."""
         target = _resolve(path) if path else self._default_dir()
         if not target.is_dir():
             raise ValueError(f"目录不存在：{target}")
@@ -1067,7 +1070,7 @@ class WorkspaceStore:
         return self._migrate(data)
 
     def _migrate(self, data: dict[str, Any]) -> dict[str, Any]:
-        """把旧的「当前目录 + 最近使用」迁移成命名工作区列表。"""
+        """Migrate the old 'current directory + recent' format into a named workspace list."""
         paths: list[str] = []
         current = str(data.get("current") or "")
         if current:
@@ -1106,7 +1109,7 @@ class WorkspaceStore:
         return migrated
 
     def _seed(self) -> dict[str, Any]:
-        """新安装不自动添加工作区：由用户在界面上选择目录后再创建。"""
+        """A fresh install adds no workspace; the user picks a directory in the UI first."""
         return {
             "version": _WORKSPACE_SCHEMA_VERSION,
             "active_id": "",
@@ -1168,10 +1171,10 @@ def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class PreferencesStore:
-    """通用设置的持久化：工作步骤、权限、终端偏好与链接打开方式。
+    """Persistence for general preferences: work steps, permissions, terminal preference, and link opening.
 
-    这是纯本机偏好，不影响模型请求；但放在用户数据目录里，
-    换浏览器/刷新后仍保持一致。
+    These are machine-local preferences that do not affect model requests; they live in the
+    user data directory so they survive browser changes and reloads.
     """
 
     def __init__(self, path: str | Path | None = None) -> None:
@@ -1236,7 +1239,7 @@ class PreferencesStore:
 # 汇总
 # ---------------------------------------------------------------------------
 class AppPaths:
-    """网页应用的路径集合，方便测试注入临时目录。"""
+    """Path set of the web app; lets tests inject a temporary directory."""
 
     def __init__(self, data_dir: str | Path | None = None) -> None:
         base = _resolve(data_dir or settings.data_dir)

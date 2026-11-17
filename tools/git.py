@@ -1,11 +1,13 @@
 # tools/git.py
-"""Git 工具：``git_status`` / ``git_diff`` / ``git_commit``。
+"""Git tools: ``git_status`` / ``git_diff`` / ``git_commit``.
 
-不通过 shell 拼命令，而是用参数列表调用 ``git``，避免命令注入。所有命令都限制在
-当前工作区；``git_commit`` 属于 ``exec`` 风险，执行前会走审批。
+Git is invoked with argument lists (never shell strings) inside the current
+workspace. ``git_commit`` carries ``exec`` risk and goes through approval before
+running.
 
-``git_commit`` 只提交**已经暂存**的改动：``files`` 非空时先 ``git add`` 这些路径，
-为空时要求用户/模型先自行暂存。它不会静默 ``git add -A``，避免把无关文件带进提交。
+``git_commit`` commits only **already staged** changes: when ``files`` is non-empty
+those paths are ``git add``-ed first; otherwise the changes must already be staged.
+It never runs ``git add -A`` automatically.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from tools.paths import WorkspacePathError, resolve_in_workspace
 
 
 class GitError(ValueError):
-    """Git 调用失败；带机读错误码。"""
+    """Git invocation failed; carries a machine-readable error code."""
 
     def __init__(self, code: str, message: str, *, hint: str = "") -> None:
         super().__init__(message)
@@ -32,12 +34,12 @@ class GitError(ValueError):
 
 
 def _run_git(ctx: ToolContext, args: Sequence[str], *, timeout: int = 30) -> tuple[int, str, str]:
-    """在工作区执行 git；返回 ``(退出码, stdout, stderr)``。"""
+    """Run git in the workspace; return ``(exit code, stdout, stderr)``."""
     if ctx.workspace is None:
         raise GitError(
             "no_workspace",
-            "当前没有可用工作区，无法执行 Git 操作。",
-            hint="请先在顶栏选择一个工作区目录。",
+            "No workspace is available, so Git operations cannot run.",
+            hint="Select a workspace directory in the top bar first.",
         )
     command = ["git", *args]
     try:
@@ -54,17 +56,17 @@ def _run_git(ctx: ToolContext, args: Sequence[str], *, timeout: int = 30) -> tup
     except FileNotFoundError as exc:
         raise GitError(
             "git_missing",
-            "系统里找不到 git 命令。",
-            hint="请先安装 Git，并确认它已加入 PATH。",
+            "The git command was not found on this system.",
+            hint="Install Git and make sure it is on PATH.",
         ) from exc
     except subprocess.TimeoutExpired as exc:
         raise GitError(
             "git_timeout",
-            f"Git 命令在 {timeout}s 内没有结束。",
-            hint="仓库可能过大或正在等待输入；可以先在终端里手动执行一次。",
+            f"The Git command did not finish within {timeout}s.",
+            hint="The repository may be large or waiting for input; try running it once manually in a terminal.",
         ) from exc
     except OSError as exc:
-        raise GitError("git_failed", f"无法启动 Git：{exc}。") from exc
+        raise GitError("git_failed", f"Cannot start Git: {exc}.") from exc
 
     return (
         int(completed.returncode),
@@ -89,8 +91,8 @@ def _ensure_repo(ctx: ToolContext) -> None:
     if code != 0 or out.strip().lower() != "true":
         raise GitError(
             "not_a_git_repo",
-            "当前工作区不是 Git 仓库。",
-            hint="在设置 → 工作区里选择一个 Git 仓库，或先在终端执行 git init。",
+            "The current workspace is not a Git repository.",
+            hint="Select a Git repository under Settings → Workspace, or run git init in a terminal first.",
         )
 
 
@@ -100,7 +102,7 @@ def _status_lines(ctx: ToolContext) -> tuple[str, list[str]]:
     if code != 0:
         raise GitError(
             "git_status_failed",
-            f"git status 失败：{err.strip() or out.strip() or '未知错误'}",
+            f"git status failed: {err.strip() or out.strip() or 'unknown error'}",
         )
     lines = out.splitlines()
     branch = ""
@@ -115,41 +117,43 @@ def _status_lines(ctx: ToolContext) -> tuple[str, list[str]]:
 
 def _status_label(code: str) -> str:
     if code == "??":
-        return "未跟踪"
+        return "Untracked"
     if "R" in code:
-        return "重命名"
+        return "Renamed"
     if "D" in code:
-        return "删除"
+        return "Deleted"
     if "A" in code:
-        return "新增"
+        return "Added"
     if "M" in code:
-        return "修改"
+        return "Modified"
     if "U" in code:
-        return "冲突"
-    return "变更"
+        return "Conflict"
+    return "Changed"
 
 
 def build_git_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
-    """构造 Git 工具组；``only`` 用于按注册表条目拆分。"""
+    """Build the Git tool group; ``only`` splits it by registry entry."""
 
     @tool
     def git_status() -> str:
-        """查看当前分支与工作区改动（相当于 git status --short）。
+        """Show the current branch and working tree changes (equivalent to git status --short).
 
-        适合在修改后确认改了哪些文件；需要看具体内容时用 git_diff。
+        Useful after edits to confirm which files changed; use git_diff when the
+        actual content matters.
 
         Returns:
-            分支、改动数量与逐文件状态；不是 Git 仓库时返回 ``Error:``。
+            The branch, number of changes, and per-file status; returns ``Error:``
+            when the workspace is not a Git repository.
         """
         try:
             branch, changes = _status_lines(ctx)
         except GitError as exc:
             return tool_error(exc.code, exc.message, hint=exc.hint)
         if not changes:
-            return f"分支：{branch or '(未知)'}\n工作区干净，没有未提交的改动。"
+            return f"Branch: {branch or '(unknown)'}\nWorking tree clean; no uncommitted changes."
         lines = [
-            f"分支：{branch or '(未知)'}",
-            f"改动：{len(changes)} 个文件",
+            f"Branch: {branch or '(unknown)'}",
+            f"Changes: {len(changes)} files",
             "",
         ]
         for line in changes:
@@ -160,17 +164,18 @@ def build_git_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
 
     @tool
     def git_diff(path: str = "", staged: bool = False, context: int = 3) -> str:
-        """查看工作区或暂存区的 diff。
+        """Show the diff of the working tree or the staging area.
 
-        适合在提交前检查改动内容；想只看某个文件时传 path。
+        Useful for reviewing changes before committing; pass path to limit the
+        output to one file.
 
         Args:
-            path: 相对工作区的文件/目录路径；留空表示全部改动。
-            staged: True 时查看已暂存（git diff --cached）的改动。
-            context: 每个改动块保留的上下文行数（0-10），默认 3。
+            path: File or directory path relative to the workspace; empty means all changes.
+            staged: When True, show staged changes (git diff --cached).
+            context: Context lines kept per hunk (0-10), default 3.
 
         Returns:
-            标准 unified diff 文本；没有改动时给出说明。
+            Standard unified diff text; a note when there are no changes.
         """
         try:
             _ensure_repo(ctx)
@@ -194,32 +199,34 @@ def build_git_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
         if code != 0:
             return tool_error(
                 "git_diff_failed",
-                f"git diff 失败：{err.strip() or out.strip() or '未知错误'}。",
+                f"git diff failed: {err.strip() or out.strip() or 'unknown error'}.",
             )
         if not out.strip():
-            where = "暂存区" if staged else "工作区"
-            return f"{where}没有可显示的改动。"
-        label = "暂存区" if staged else "工作区"
-        header = f"Git diff（{label}{' · ' + path if path else ''}）"
+            where = "staged area" if staged else "working tree"
+            return f"No changes to show in the {where}."
+        label = "staged" if staged else "working tree"
+        header = f"Git diff ({label}{' · ' + path if path else ''})"
         return truncate(f"{header}\n{out.rstrip()}", ctx.max_output_chars)
 
     @tool
     def git_commit(message: str, files: list[str] | None = None) -> str:
-        """提交已暂存的改动；传 files 时会先暂存这些路径。
+        """Commit staged changes; when files is passed, those paths are staged first.
 
-        不会自动 ``git add -A``：要么在 files 里明确列出要提交的路径，要么先
-        让用户/其他工具暂存。提交前建议先 git_status / git_diff 检查。
+        It never runs ``git add -A`` automatically: either list the paths to commit
+        in files, or let the user/another tool stage them first. Running git_status
+        / git_diff before committing is recommended.
 
         Args:
-            message: 提交信息（不能为空）。
-            files: 要提交的相对路径列表；留空表示只提交已经暂存的改动。
+            message: Commit message (must not be empty).
+            files: List of relative paths to commit; empty means commit only what is already staged.
 
         Returns:
-            提交哈希与摘要；没有暂存内容、提交失败或不是仓库时返回 ``Error:``。
+            The commit hash and summary; returns ``Error:`` when nothing is staged,
+            the commit fails, or the workspace is not a repository.
         """
         text = (message or "").strip()
         if not text:
-            return tool_error("empty_message", "提交信息不能为空。")
+            return tool_error("empty_message", "The commit message must not be empty.")
         try:
             _ensure_repo(ctx)
             if isinstance(files, str):
@@ -238,29 +245,29 @@ def build_git_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
                 if code != 0:
                     return tool_error(
                         "git_add_failed",
-                        f"git add 失败：{err.strip() or out.strip() or '未知错误'}。",
+                        f"git add failed: {err.strip() or out.strip() or 'unknown error'}.",
                     )
             code, out, err = _run_git(ctx, ["diff", "--cached", "--quiet"])
             if code == 0:
                 return tool_error(
                     "nothing_staged",
-                    "暂存区没有改动，无法提交。",
-                    hint="先用 files 指定要提交的路径，或先 git add 再重试。",
+                    "Nothing is staged, so there is nothing to commit.",
+                    hint="Specify the paths to commit via files, or git add first and retry.",
                 )
             if code not in (0, 1):
                 return tool_error(
                     "git_diff_failed",
-                    f"无法检查暂存区：{err.strip() or out.strip() or '未知错误'}。",
+                    f"Cannot inspect the staging area: {err.strip() or out.strip() or 'unknown error'}.",
                 )
             code, out, err = _run_git(ctx, ["commit", "-m", text])
             if code != 0:
                 return tool_error(
                     "git_commit_failed",
-                    f"git commit 失败：{err.strip() or out.strip() or '未知错误'}。",
+                    f"git commit failed: {err.strip() or out.strip() or 'unknown error'}.",
                 )
             summary = out.strip().splitlines()
             head = summary[0] if summary else ""
-            return f"已提交：{head}\n提交信息：{text}"
+            return f"Committed: {head}\nMessage: {text}"
         except GitError as exc:
             return tool_error(exc.code, exc.message, hint=exc.hint)
 

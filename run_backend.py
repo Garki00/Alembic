@@ -1,7 +1,7 @@
-"""PyInstaller 打包入口：等价于 ``python -m web``。
+"""PyInstaller entry point: equivalent to ``python -m web``.
 
-单独放一个文件是因为 PyInstaller 需要一个脚本作为入口，而
-``web/__main__.py`` 是给 ``-m`` 用的。
+It lives in its own file because PyInstaller needs a script as its entry point,
+while ``web/__main__.py`` serves ``-m``.
 """
 
 from web.__main__ import main

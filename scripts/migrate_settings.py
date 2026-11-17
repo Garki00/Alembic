@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Settings 迁移工具
+Settings migration tool.
 
-帮助从旧的 settings.py 迁移到优化后的 settings_optimized.py。
-生成推荐的 .env 配置文件。
+Helps migrate from the old settings.py to the optimized settings_optimized.py and
+generates a recommended .env configuration file.
 """
 
 import os
@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def detect_environment() -> Literal["development", "production", "limited"]:
-    """检测运行环境，返回推荐的配置方案。"""
+    """Detect the runtime environment and return the recommended configuration profile."""
     import psutil
 
     # 获取系统资源
@@ -43,7 +43,7 @@ def generate_env_file(
     mode: Literal["development", "production", "limited"],
     output_path: Path,
 ) -> None:
-    """生成 .env 配置文件。"""
+    """Generate the .env configuration file."""
 
     if mode == "development":
         config = """# ===== 高性能配置（开发环境） =====
@@ -256,7 +256,7 @@ LOG_BACKUP_COUNT=3
 
 
 def backup_existing_env(env_path: Path) -> None:
-    """备份现有的 .env 文件。"""
+    """Back up an existing .env file."""
     if env_path.exists():
         backup_path = env_path.with_suffix(".env.backup")
         counter = 1
@@ -271,7 +271,7 @@ def backup_existing_env(env_path: Path) -> None:
 
 
 def compare_settings() -> None:
-    """对比新旧配置的差异。"""
+    """Compare the differences between the old and new configurations."""
     print("\n" + "=" * 80)
     print("配置对比")
     print("=" * 80)

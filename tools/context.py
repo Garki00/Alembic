@@ -1,17 +1,21 @@
 # tools/context.py
-"""工具运行时上下文：工作区边界、输出预算与跨轮共享的协作对象。
+"""Tool runtime context: workspace boundary, output budget, and shared objects.
 
-单独成模块是为了避免 ``registry -> files -> registry`` 的循环导入：
-registry 依赖 ctx，文件/命令工具也依赖 ctx，但两者互不依赖。
+Defines the context shared by file and command tools. It lives in its own module
+so registry, file tools, and command tools can depend on it without importing
+each other.
 
-这里的几个协作对象都由调用方（CLI / Web）注入：
+These shared objects are injected by the caller (CLI / Web):
 
-- ``session``：当前会话引用。CLI 切换会话时原地改 ``session_id``，
-  已经装配好的工具因此不需要重建；
-- ``asker``：``ask_user_question`` 的提问通道（网页走 SSE，命令行走终端）；
-- ``todo_store``：任务清单的持久化存储；
-- ``process_manager``：后台进程管理器，按工作区共享；
-- ``emit``：把工具内部事件（如 todo 更新）推给前端的回调，可为空。
+- ``session``: reference to the current session. The CLI changes
+  ``session_id`` in place when switching sessions, so already assembled tools
+  do not need to be rebuilt.
+- ``asker``: question channel for ``ask_user_question`` (SSE on the web,
+  terminal on the CLI).
+- ``todo_store``: persistent storage for the task list.
+- ``process_manager``: background process manager, shared per workspace.
+- ``emit``: callback that pushes tool-internal events (such as todo updates) to
+  the frontend; may be None.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-if TYPE_CHECKING:  # 仅用于类型标注，避免运行时循环导入
+if TYPE_CHECKING:  # Type annotations only; avoids runtime circular imports
     from threading import Event
 
     from tools.catalog import ToolActivation
@@ -32,32 +36,43 @@ if TYPE_CHECKING:  # 仅用于类型标注，避免运行时循环导入
 
 @dataclass
 class SessionRef:
-    """可变的会话引用；工具在真正调用时才读取 ``session_id``。"""
+    """Mutable session reference; tools read ``session_id`` only when called."""
 
     session_id: str = "default"
 
 
 @dataclass(frozen=True)
 class ToolContext:
-    """一次运行内所有工具共享的环境参数。
+    """Environment parameters shared by all tools in one run.
 
     Attributes:
-        workspace: 文件与命令类工具的根目录；``None`` 表示没有工作区，
-            此类工具会直接返回错误而不是退化成「任意路径可写」。
-        max_output_chars: 单个工具输出的字符上限，超出部分截断并标注。
-        command_timeout: 命令执行默认超时（秒）。
-        session: 当前会话引用，todo 等按会话保存的工具使用它。
-        asker: 向用户提问并等待回答；``None`` 时提问工具返回错误。
-        todo_store: 任务清单存储；``None`` 时退化为进程内存储。
-        process_manager: 后台进程管理器；``None`` 时按工作区创建默认实例。
-        emit: 工具事件出口，网页端用它推送 ``todo`` 等 SSE 事件。
-        vision: 视觉通道，``read_image`` 用它把图片交给当前模型理解。
-        terminal: 命令工具优先使用的终端：powershell / cmd / gitbash / wsl。
-        activation: 当前会话的扩展工具激活状态；``None`` 时扩展工具不可加载。
-        enabled_tool_names: 用户设置里实际启用的具体工具名，供 tools_search 过滤。
-        cancel_event: 停止生成时置位的取消信号，前台命令会轮询它并结束进程树。
-        sandbox: 命令沙盒后端；``None`` 时命令工具必须失败关闭，不能直接执行。
-        sandbox_policy: 本次运行的沙盒策略（工作区、网络、临时目录）。
+        workspace: Root directory for file and command tools; ``None`` means no
+            workspace, and such tools return an error instead of falling back to
+            "any path is writable".
+        max_output_chars: Character limit for a single tool output; excess is
+            truncated with a marker.
+        command_timeout: Default command timeout in seconds.
+        session: Reference to the current session, used by tools such as todo
+            that persist per session.
+        asker: Ask the user and wait for an answer; when ``None``, question tools
+            return an error.
+        todo_store: Task list storage; when ``None``, an in-process store is used.
+        process_manager: Background process manager; when ``None``, a default
+            instance is created per workspace.
+        emit: Tool event outlet used by the web UI to push SSE events such as ``todo``.
+        vision: Vision channel used by ``read_image`` to hand an image to the
+            current model for understanding.
+        terminal: Preferred terminal for command tools:
+            powershell / cmd / gitbash / wsl.
+        activation: Extension tool activation state for the current session;
+            when ``None``, extension tools cannot be loaded.
+        enabled_tool_names: Concrete tool names enabled in user settings, used by
+            tools_search for filtering.
+        cancel_event: Cancellation signal set when generation stops; foreground
+            commands poll it and terminate the process tree.
+        sandbox: Command sandbox backend; when ``None``, command tools must fail
+            closed and cannot execute directly.
+        sandbox_policy: Sandbox policy for this run (workspace, network, temp directory).
     """
 
     workspace: Path | None = None
@@ -74,20 +89,21 @@ class ToolContext:
     cancel_event: "Event | None" = None
     sandbox: "SandboxRunner | None" = None
     sandbox_policy: "SandboxPolicy | None" = None
-    #: 视觉通道：``(data_url, prompt) -> 文字描述``。由运行时用当前模型注入；
-    #: ``None`` 时 ``read_image`` 返回 ``vision_unavailable``。
+    #: Vision channel: ``(data_url, prompt) -> text description``. Injected by the
+    #: runtime with the current model; when ``None``, ``read_image`` returns
+    #: ``vision_unavailable``.
     vision: Callable[[str, str], str] | None = None
 
     @property
     def session_id(self) -> str:
-        """当前会话 ID 的快捷读取。"""
+        """Shortcut for the current session ID."""
         return self.session.session_id or "default"
 
     def emit_event(self, kind: str, data: dict[str, Any]) -> None:
-        """安全地推一个事件：没有前端（命令行）时静默忽略。"""
+        """Safely emit an event; silently ignored when there is no frontend (CLI)."""
         if self.emit is None:
             return
         try:
             self.emit(kind, data)
-        except Exception:  # 前端通道异常不应让工具失败
+        except Exception:  # A frontend channel error must not fail the tool
             pass

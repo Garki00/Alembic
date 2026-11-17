@@ -1,14 +1,15 @@
 # web/questions.py
-"""网页端的提问中继：工具线程阻塞等回答，浏览器通过 HTTP 投递。
+"""Question relay for the web frontend: tool threads block for an answer and the browser submits it over HTTP.
 
-结构与 :mod:`web.approvals` 一致：
+The structure mirrors :mod:`web.approvals`:
 
-- 工具调用 :meth:`QuestionBroker.ask` → 登记、推 ``question`` SSE 事件、
-  阻塞在 ``threading.Event``；
-- 浏览器提交 → ``POST /api/questions/{id}`` → :meth:`QuestionRegistry.resolve`
-  写入回答并唤醒工具线程；
-- 超时或流断开 → 返回 ``None``，工具转成 ``question_timeout`` /
-  ``question_cancelled`` 错误，绝不假装用户回答了。
+- A tool call invokes :meth:`QuestionBroker.ask`, registers a pending entry,
+  emits a ``question`` SSE event, and blocks on ``threading.Event``.
+- The browser submits ``POST /api/questions/{id}``, which calls
+  :meth:`QuestionRegistry.resolve`, stores the answer, and wakes the tool thread.
+- On timeout or stream disconnect, the method returns ``None`` and the tool
+  produces a ``question_timeout`` / ``question_cancelled`` error instead of
+  pretending the user answered.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from tools.questions import Question
 
 @dataclass
 class PendingQuestion:
-    """一条等待回答的提问。"""
+    """A question awaiting an answer."""
 
     question: Question
     event: threading.Event = field(default_factory=threading.Event)
@@ -30,7 +31,7 @@ class PendingQuestion:
 
 
 class QuestionRegistry:
-    """全局待答表：``question_id`` → 等待者，供 HTTP 端点投递回答。"""
+    """Global pending table mapping ``question_id`` to its waiter so HTTP endpoints can deliver answers."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -52,7 +53,7 @@ class QuestionRegistry:
         return True
 
     def cancel(self, question_id: str) -> None:
-        """按「没有回答」收尾（流断开时用）。"""
+        """Finish as unanswered; used when the stream disconnects."""
         with self._lock:
             pending = self._pending.pop(question_id, None)
         if pending is None:
@@ -70,7 +71,7 @@ class QuestionRegistry:
 
 
 class QuestionBroker:
-    """单个对话流的提问通道。"""
+    """Question channel for a single conversation stream."""
 
     def __init__(
         self,
@@ -87,7 +88,7 @@ class QuestionBroker:
         self._closed = False
 
     def ask(self, question: Question) -> str | None:
-        """阻塞等待回答；超时/关闭/异常一律返回 None。"""
+        """Block for an answer; return None on timeout, close, or any error."""
         with self._lock:
             if self._closed:
                 return None
@@ -108,7 +109,7 @@ class QuestionBroker:
         return pending.answer
 
     def close(self) -> None:
-        """流断开时取消所有等待，别把工具线程永远挂在那里。"""
+        """Cancel all pending waits when the stream disconnects so tool threads do not hang."""
         with self._lock:
             self._closed = True
             pending_ids = list(self._ids)

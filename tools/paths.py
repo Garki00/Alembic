@@ -1,18 +1,20 @@
 # tools/paths.py
-"""工作区路径解析：文件 / 命令类工具唯一的边界检查。
+"""Workspace path resolution: the single boundary check for file and command tools.
 
-所有落盘操作都必须经过 :func:`resolve_in_workspace`。三道关键处理：
+Every write to disk must go through :func:`resolve_in_workspace`, which performs three key steps:
 
-1. 先 ``resolve()`` 再判断包含关系。symlink、``..``、Windows 的盘符相对
-   路径都会在 resolve 之后露出真实位置，判断的是真实路径；
-2. 用 ``Path.relative_to`` 而不是字符串 ``startswith``。后者会把
-   ``D:\\work`` 误判为包含 ``D:\\workspace-evil``；
-3. 在边界之内再排除凭据路径：即使工作区是用户主目录，``.ssh``、
-   ``.aws``、私钥与 ``.env`` 也不允许被读取（``.env`` 可以写，但不能
-   把内容读回来）。
+1. ``resolve()`` first, then check containment. Symlinks, ``..``, and Windows
+   drive-relative paths reveal their real location after resolving, so the real
+   path is what gets checked;
+2. ``Path.relative_to`` rather than string ``startswith``. The latter would treat
+   ``D:\\work`` as containing ``D:\\workspace-evil``;
+3. Inside the boundary, credential paths are excluded as well: even when the
+   workspace is the user's home directory, ``.ssh``, ``.aws``, private keys, and
+   ``.env`` cannot be read (``.env`` may be written, but its contents cannot be
+   read back).
 
-第三层只覆盖文件工具。shell 命令由命令策略与审批负责，不能把它当成
-操作系统级沙盒。
+This third layer covers file tools only. Shell commands are governed by command
+policy and approval, and must not be treated as an OS-level sandbox.
 """
 
 from __future__ import annotations
@@ -23,29 +25,29 @@ from typing import Literal
 
 Access = Literal["read", "write"]
 
-#: 这些目录下的内容视为凭据，读取与写入都拒绝。
+#: Contents of these directories are treated as credentials; both reads and writes are rejected.
 _SENSITIVE_DIRS = {".ssh", ".aws", ".kube", ".gnupg", ".docker"}
 
-#: 读取敏感目录：.docker 的 config.json 里可能有 registry 凭据。
+#: Read-sensitive directories: .docker's config.json may contain registry credentials.
 _SENSITIVE_READ_DIRS = _SENSITIVE_DIRS
 
-#: 明确禁止读取的文件名。
+#: File names that are never readable.
 _SENSITIVE_READ_NAMES = {
     ".netrc", ".npmrc", ".pypirc", "credentials", "id_rsa", "id_dsa",
     "id_ecdsa", "id_ed25519",
 }
 
-#: 明确禁止写入的文件名（.env 允许写、不允许读）。
+#: File names that are never writable (.env may be written but not read).
 _SENSITIVE_WRITE_NAMES = {".netrc"}
 
 _SENSITIVE_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"}
 
-#: .env 的这些衍生文件名是模板，允许读取。
+#: These .env variant names are templates and remain readable.
 _ENV_TEMPLATE_SUFFIXES = {".example", ".sample", ".template", ".dist"}
 
 
 class WorkspacePathError(ValueError):
-    """路径越界、受保护或无法解析；带上机读错误码供工具转成 ``Error:`` 输出。"""
+    """A path is out of bounds, protected, or unresolvable; carries a machine-readable error code for ``Error:`` output."""
 
     def __init__(self, code: str, message: str, *, hint: str = "") -> None:
         super().__init__(message)
@@ -55,7 +57,7 @@ class WorkspacePathError(ValueError):
 
 
 def normalize_workspace(raw: str | Path | None) -> Path | None:
-    """把外部传入的工作区字符串规范成绝对路径；空值返回 None。"""
+    """Normalize an externally supplied workspace string into an absolute path; return None for empty input."""
     if raw is None:
         return None
     text = str(raw).strip()
@@ -69,7 +71,7 @@ def normalize_workspace(raw: str | Path | None) -> Path | None:
 
 @lru_cache(maxsize=1)
 def _app_home() -> Path | None:
-    """应用数据目录（只解析一次供路径检查复用）。"""
+    """Application data directory (resolved once and reused by path checks)."""
     try:
         from config.settings import settings
 
@@ -79,7 +81,7 @@ def _app_home() -> Path | None:
 
 
 def protected_reason(target: Path, root: Path | None, access: Access = "read") -> str:
-    """判断路径是否属于受保护的凭据路径；返回原因，空字符串表示放行。"""
+    """Return why the path is a protected credential path; an empty string means it is allowed."""
     if root is None:
         return ""
     try:
@@ -90,55 +92,56 @@ def protected_reason(target: Path, root: Path | None, access: Access = "read") -
     dirs = _SENSITIVE_READ_DIRS if access == "read" else _SENSITIVE_DIRS
     for part in parts[:-1]:
         if part in dirs:
-            return f"受保护的凭据目录 {part}"
+            return f"protected credential directory {part}"
     name = target.name.lower()
     if name in dirs:
-        return f"受保护的凭据目录 {name}"
+        return f"protected credential directory {name}"
 
-    # 应用自己的数据目录（models.json / tools.json / 会话）不在工作区语义内，
-    # 即使被选成工作区也不允许 Agent 读写。
+    # The application's own data directory (models.json / tools.json / sessions) is
+    # outside workspace semantics and stays off-limits even if selected as a workspace.
     app_home = _app_home()
     if app_home is not None and (target == app_home or app_home in target.parents):
-        return "应用数据目录"
+        return "application data directory"
 
     if access == "read":
         if name == ".env" or (
             name.startswith(".env.") and not any(name.endswith(s) for s in _ENV_TEMPLATE_SUFFIXES)
         ):
-            return "环境变量文件（可能包含密钥）"
+            return "environment variable file (may contain secrets)"
         if name in _SENSITIVE_READ_NAMES or name.startswith(("id_rsa.", "id_ed25519.")):
-            return f"凭据文件 {target.name}"
+            return f"credential file {target.name}"
         if target.suffix.lower() in _SENSITIVE_SUFFIXES:
-            return f"凭据文件 {target.name}"
+            return f"credential file {target.name}"
     else:
         if name in _SENSITIVE_WRITE_NAMES:
-            return f"凭据文件 {target.name}"
+            return f"credential file {target.name}"
 
     return ""
 
 
 def is_protected_read(target: Path, root: Path | None) -> bool:
-    """递归搜索时快速跳过受保护的读取目标。"""
+    """Quick check used by recursive searches to skip protected read targets."""
     return bool(protected_reason(target, root, "read"))
 
 
 def resolve_in_workspace(root: Path | None, raw: str, *, access: Access = "read") -> Path:
-    """把相对路径解析到工作区内，拒绝任何逃逸与受保护路径。
+    """Resolve a path inside the workspace, rejecting any escape and any protected path.
 
     Args:
-        root: 工作区根目录。
-        raw: 用户/模型给出的路径。
-        access: ``read`` 会额外拒绝凭据文件；``write`` 只拒绝明确禁止写入的
-            凭据路径（``.env`` 允许写入，但之后无法读回）。
+        root: The workspace root directory.
+        raw: The path supplied by the user or model.
+        access: ``read`` additionally rejects credential files; ``write`` rejects
+            only credential paths that must never be written (``.env`` may be
+            written, but cannot be read back afterwards).
 
     Raises:
-        WorkspacePathError: 没有工作区、路径非法、越界或受保护。
+        WorkspacePathError: No workspace, invalid path, path escape, or protected path.
     """
     if root is None:
         raise WorkspacePathError(
             "no_workspace",
-            "当前没有可用的工作区，无法操作文件。",
-            hint="请先在顶栏选择一个工作区目录。",
+            "No workspace is available, so files cannot be operated on.",
+            hint="Select a workspace directory in the top bar first.",
         )
 
     text = (raw or "").strip()
@@ -151,7 +154,7 @@ def resolve_in_workspace(root: Path | None, raw: str, *, access: Access = "read"
     except OSError as exc:
         raise WorkspacePathError(
             "bad_path",
-            f"路径无法解析：{text or '.'}（{exc}）。",
+            f"Cannot resolve path: {text or '.'} ({exc}).",
         ) from exc
 
     try:
@@ -159,23 +162,23 @@ def resolve_in_workspace(root: Path | None, raw: str, *, access: Access = "read"
     except ValueError as exc:
         raise WorkspacePathError(
             "path_escape",
-            f"路径 {text or '.'} 不在当前工作区内，已拒绝访问。",
-            hint=f"当前工作区：{root}。请用相对路径（如 src/main.py）或工作区内的绝对路径。",
+            f"Path {text or '.'} is outside the current workspace; access denied.",
+            hint=f"Current workspace: {root}. Use a relative path (for example src/main.py) or an absolute path inside the workspace.",
         ) from exc
 
     reason = protected_reason(target, root, access)
     if reason:
         raise WorkspacePathError(
             "protected_path",
-            f"{reason}不在可访问范围内：{text or '.'}。",
-            hint="凭据文件请直接在系统里管理；Agent 不会读取或修改它们。",
+            f"Cannot access {reason}: {text or '.'}.",
+            hint="Manage credential files directly in the system; the Agent does not read or modify them.",
         )
 
     return target
 
 
 def display_path(root: Path | None, target: Path) -> str:
-    """把绝对路径转成相对工作区的显示名，便于模型复用。"""
+    """Convert an absolute path into a workspace-relative display name for reuse by the model."""
     if root is None:
         return str(target)
     try:

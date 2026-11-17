@@ -1,19 +1,20 @@
 # agents/context.py
-"""会话上下文：多轮历史、本地持久化与上下文压缩。
+"""Session context: multi-turn history, local persistence, and context compaction.
 
-设计要点：
-
-- ``ChatSession`` 持有当前会话的全部消息，每轮把它整体交给 Agent，
-  因此多轮对话天然带上下文；
-- 历史按会话 ID 保存成 ``memory/<session>.json``，进程重启后可以继续聊；
-- 上下文 token 数优先取模型 API 返回的 ``usage``（与计费口径一致，包含系统
-  提示词与工具 schema），拿不到时才用本地字符估算兜底；
-- 超过阈值（窗口 × 比例 − 预留，或消息条数）时，把较早的对话交给模型压缩成
-  一段中文摘要，只保留最近的若干条消息，避免上下文无限增长；
-- 两次自动压缩之间至少间隔若干轮，且单条工具输出有 token 预算，防止“压完
-  立刻再压”和大输出撑爆窗口；
-- 压缩失败（例如摘要请求出错）时降级为“丢弃更早消息 + 明确提示”，
-  保证对话仍然可用。
+- ``ChatSession`` holds every message of the current session and hands the whole list
+  to the agent each turn, so a multi-turn conversation carries context naturally;
+- history is saved per session ID as ``memory/<session>.json``, so a restarted process
+  can continue the conversation;
+- the context token count prefers the ``usage`` reported by the model API (the same
+  basis as billing, including the system prompt and tool schemas) and falls back to a
+  local character estimate only when it is unavailable;
+- above the threshold (window × ratio − reserve, or a message count) earlier turns are
+  summarized by the model and only the most recent messages are kept, so the context
+  cannot grow without bound;
+- automatic compactions are at least a few turns apart, and a single tool output has a
+  token budget, so repeated compaction and oversized outputs cannot overflow the window;
+- when summarization fails (for example a failed summary request) it degrades to
+  dropping older messages with an explicit note, keeping the conversation usable.
 """
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ def _now() -> str:
 
 
 def message_text(message: Any) -> str:
-    """取出消息的纯文本内容（兼容 str 与 content blocks 两种形式）。"""
+    """Return the plain text of a message (supports both ``str`` and content blocks)."""
     content = getattr(message, "content", "")
     if isinstance(content, str):
         return content
@@ -85,12 +86,12 @@ def message_text(message: Any) -> str:
 
 
 def thought_key(text: str) -> str:
-    """用于去重的思考指纹：忽略空格、换行等供应商侧格式差异。"""
+    """Deduplication fingerprint for reasoning: ignores provider-side whitespace differences."""
     return re.sub(r"\s+", "", text or "")
 
 
 def reasoning_text(message: Any) -> str:
-    """提取供应商返回的可见推理文本，兼容常见 OpenAI/DeepSeek 结构。"""
+    """Extract visible reasoning text returned by the provider, covering common OpenAI/DeepSeek shapes."""
     parts: list[str] = []
 
     def append(value: Any) -> None:
@@ -129,7 +130,7 @@ def reasoning_text(message: Any) -> str:
 
 
 def _approx_tokens(text: str) -> int:
-    """粗略估算 token 数：中日韩字符按 1 个算，其余按 4 字符约 1 个 token。"""
+    """Rough token estimate: one per CJK character, about one per four other characters."""
     if not text:
         return 0
     cjk = 0
@@ -141,11 +142,12 @@ def _approx_tokens(text: str) -> int:
 
 
 def estimate_tokens(messages: Sequence[BaseMessage]) -> int:
-    """本地近似估算（仅在拿不到 API 用量时的兜底）。
+    """Local approximation (fallback used only when API usage is unavailable).
 
-    按字符分布粗算：中日韩字符 1 个 token，其他约 4 字符 1 个 token，再加
-    每条消息的框架开销。它不含系统提示词和工具 schema，误差可能有 ±30%，
-    所以只作兜底，正常情况下用 :func:`context_tokens` 的 API 用量结果。
+    Counts roughly by character mix: one token per CJK character, about one token per
+    four other characters, plus per-message framing overhead. It excludes the system
+    prompt and tool schemas, so the error can reach ±30%; use it only as a fallback,
+    normally :func:`context_tokens` returns the API usage.
     """
     total = 0
     for message in messages:
@@ -158,7 +160,7 @@ def estimate_tokens(messages: Sequence[BaseMessage]) -> int:
 
 
 def _usage_tokens(message: AIMessage) -> int | None:
-    """取 AI 消息里 provider 返回的用量（含系统提示、工具 schema 与回复）。"""
+    """Return the provider-reported usage from an AI message (system prompt, tool schemas, and reply)."""
     usage = getattr(message, "usage_metadata", None)
     if not usage:
         return None
@@ -173,12 +175,13 @@ def _usage_tokens(message: AIMessage) -> int | None:
 
 
 def context_tokens(messages: Sequence[BaseMessage]) -> tuple[int, str]:
-    """估算当前上下文的 token 数，返回 ``(tokens, 来源)``。
+    """Estimate the current context tokens and return ``(tokens, source)``.
 
-    优先用 provider 上报的用量（``usage_metadata.total_tokens``）：它是服务端
-    按真实 tokenizer 算出来的，包含系统提示词、工具 schema 与本次回复；
-    再把它之后的增量消息（工具结果、新提问）用本地估算补上。
-    没有用量信息时退回 :func:`estimate_tokens`。
+    Prefers the usage reported by the provider (``usage_metadata.total_tokens``): it is
+    computed server-side with the real tokenizer and covers the system prompt, tool
+    schemas, and the current reply; messages after it (tool results, new questions) are
+    added from the local estimate. Falls back to :func:`estimate_tokens` when no usage
+    information is available.
     """
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
@@ -192,17 +195,17 @@ def context_tokens(messages: Sequence[BaseMessage]) -> tuple[int, str]:
     return estimate_tokens(messages), "estimate"
 
 
-TOOL_OUTPUT_TRUNCATED = "…[工具输出已截断，原始约 {tokens} tokens]"
+TOOL_OUTPUT_TRUNCATED = "…[tool output truncated, original about {tokens} tokens]"
 
 
 def cap_tool_outputs(
     messages: Sequence[BaseMessage],
     max_tokens: int,
 ) -> list[BaseMessage]:
-    """把超过预算的工具输出截断后再写入历史（类似 Codex 的 tool_output_token_limit）。
+    """Truncate tool output that exceeds the budget before it enters history (similar to Codex's tool_output_token_limit).
 
-    长日志、大文件内容整段塞进上下文会迅速撑满窗口，这里按 token 预算截断，
-    并留下明确标记，后续需要细节时让模型重新调用工具读取。
+    Long logs and large file contents fill the window quickly, so output is cut to a token
+    budget and marked explicitly; the model can call the tool again when it needs details.
     """
     if max_tokens <= 0:
         return list(messages)
@@ -222,7 +225,7 @@ def cap_tool_outputs(
 
 
 def _final_text(messages: Sequence[BaseMessage]) -> str:
-    """取最后一条有正文的 AI 回复。"""
+    """Return the last AI reply that has body text."""
     for message in reversed(messages):
         if isinstance(message, AIMessage):
             text = message_text(message).strip()
@@ -235,7 +238,7 @@ def _final_text(messages: Sequence[BaseMessage]) -> str:
 # 历史持久化
 # ---------------------------------------------------------------------------
 def session_slug(session_id: str) -> str:
-    """把会话 ID 变成安全的文件名，防止路径穿越。"""
+    """Turn a session ID into a safe file name to prevent path traversal."""
     raw = (session_id or "default").strip() or "default"
     slug = _SESSION_ID_UNSAFE.sub("_", raw).strip("._-")[:64] or "default"
     if slug != raw:
@@ -247,7 +250,7 @@ def session_slug(session_id: str) -> str:
 
 @dataclass
 class SessionMeta:
-    """会话元信息（同时写入 json，供 /sessions 展示）。"""
+    """Session metadata (also written to the JSON file for the session list)."""
 
     session_id: str
     created_at: str = field(default_factory=_now)
@@ -260,7 +263,7 @@ class SessionMeta:
 
 
 class SessionStore:
-    """把会话历史保存成 JSON 文件。"""
+    """Persist session history as JSON files."""
 
     def __init__(self, directory: str | Path | None = None) -> None:
         path = Path(directory or settings.memory_dir).expanduser()
@@ -294,7 +297,7 @@ class SessionStore:
             return [], SessionMeta(session_id=session_id)
 
     def load_display(self, session_id: str) -> list[BaseMessage]:
-        """用户可见的完整原文；旧会话没有该字段时退回模型消息。"""
+        """Full user-visible text; falls back to the model messages for older sessions."""
         path = self.path(session_id)
         if not path.exists():
             return []
@@ -392,7 +395,7 @@ def _summarize(model, messages: Sequence[BaseMessage]) -> str:
 
 
 def _keep_start_index(messages: Sequence[BaseMessage], keep_recent: int) -> int:
-    """计算保留区起点，避免把工具结果和触发它的 AI 消息拆开。"""
+    """Compute the start of the kept region so a tool result is never split from the AI message that triggered it."""
     start = max(0, len(messages) - max(1, keep_recent))
     while start > 0 and isinstance(messages[start], ToolMessage):
         start -= 1
@@ -404,11 +407,11 @@ def compact_messages(
     summarizer,
     keep_recent: int = 8,
 ) -> tuple[list[BaseMessage], str | None]:
-    """压缩历史消息。
+    """Compact the message history.
 
     Returns:
-        ``(新消息列表, 摘要文本)``。没有可压缩内容或摘要失败时返回
-        ``(原列表, None)`` 或降级后的列表。
+        ``(new message list, summary text)``. When there is nothing to compact or
+        summarization fails, returns ``(original list, None)`` or the degraded list.
     """
     start = _keep_start_index(messages, keep_recent)
     if start <= 0:
@@ -421,7 +424,7 @@ def compact_messages(
     except Exception as exc:  # 摘要失败不应中断对话
         logger.warning("上下文摘要失败，降级为省略更早消息：%s", exc)
         note = HumanMessage(
-            content=f"（更早的 {len(older)} 条对话因压缩失败被省略，如需细节请重新询问。）"
+            content=f"({len(older)} earlier messages were omitted because summarization failed; ask again if you need those details.)"
         )
         return [note, *recent], None
 
@@ -433,7 +436,7 @@ def compact_messages(
 # ---------------------------------------------------------------------------
 @dataclass
 class TurnResult:
-    """一轮问答的结果。"""
+    """Result of one question/answer turn."""
 
     text: str
     new_messages: list[BaseMessage]
@@ -447,7 +450,7 @@ MIN_TURNS_BETWEEN_COMPACTIONS = 2
 
 
 class ChatSession:
-    """带持久化与自动压缩的多轮会话。"""
+    """Multi-turn session with persistence and automatic compaction."""
 
     def __init__(
         self,
@@ -505,7 +508,7 @@ class ChatSession:
         return len(self.messages)
 
     def usage(self) -> tuple[int, str]:
-        """当前上下文的 ``(token 数, 来源)``。"""
+        """Current context ``(tokens, source)``."""
         return context_tokens(self.messages)
 
     def needs_compaction(self) -> bool:
@@ -532,13 +535,13 @@ class ChatSession:
         }
 
     def recent(self, limit: int = 10) -> list[BaseMessage]:
-        """用户可见的最近原文；压缩只影响模型上下文。"""
+        """Recent user-visible text; compaction only affects the model context."""
         source = self.display_messages or self.messages
         return source[-limit:] if limit > 0 else list(source)
 
     # ---- 主流程 ----
     def ask(self, question: str) -> TurnResult:
-        """发送一轮提问，返回回复与本轮新增的消息。"""
+        """Send one question and return the reply plus the messages added this turn."""
         compacted = self._begin_turn(question)
         history = list(self.messages)
         try:
@@ -552,17 +555,19 @@ class ChatSession:
         return self._finish_turn(history, messages, compacted)
 
     def ask_stream(self, question: str, *, internal: bool = False):
-        """流式提问，依次产出事件：
+        """Stream one question, yielding events in order:
 
-        - ``("compacted", None)``：本轮开始前压缩了上下文；
-        - ``("thought", 文本)``：ReAct 的中间推理（工作步骤预览，不属于最终答案）；
-        - ``("delta", 文本)``：模型输出的增量文本；
-        - ``("tool", {"id", "name", "args"})``：模型发起了一次工具调用；
-        - ``("tool_result", {"id", "name", "content"})``：工具返回的结果；
-        - ``("done", TurnResult)``：本轮结束（已写入历史与磁盘）。
+        - ``("compacted", None)``: the context was compacted before this turn started;
+        - ``("thought", text)``: intermediate ReAct reasoning (work-step preview, not part
+          of the final answer);
+        - ``("delta", text)``: incremental model output;
+        - ``("tool", {"id", "name", "args"})``: the model started a tool call;
+        - ``("tool_result", {"id", "name", "content"})``: a tool result;
+        - ``("done", TurnResult)``: the turn is finished (history and disk already written).
 
-        ``internal`` 用于后台任务完成等系统触发的续跑：消息仍进入模型上下文，
-        但前端可以在历史里隐藏它，不把它当成用户输入。
+        ``internal`` marks system-triggered continuations such as a finished background
+        task: the message still enters the model context, but the frontend may hide it
+        from the transcript instead of treating it as user input.
         """
         compacted = self._begin_turn(question, internal=internal)
         if compacted:
@@ -688,7 +693,7 @@ class ChatSession:
         yield ("done", result)
 
     def compact(self, keep_recent: int | None = None) -> bool:
-        """立即压缩上下文，返回是否发生了压缩。"""
+        """Compact the context immediately; returns whether a compaction happened."""
         if self.summarizer is None:
             raise RuntimeError("当前会话没有配置摘要模型，无法压缩。")
         messages, _summary = compact_messages(
@@ -706,7 +711,7 @@ class ChatSession:
         return True
 
     def reset(self) -> None:
-        """清空当前会话（同时删除磁盘上的历史文件）。"""
+        """Clear the current session (also deletes the history file on disk)."""
         self.messages = []
         self.display_messages = []
         self.meta = SessionMeta(session_id=self.session_id)

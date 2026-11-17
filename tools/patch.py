@@ -1,14 +1,17 @@
 # tools/patch.py
-"""补丁式编辑工具：``apply_patch``。
+"""Patch-style editing tool: ``apply_patch``.
 
-支持标准 unified diff（``---`` / ``+++`` / ``@@``），一次可以改多个文件、多个
-hunk。相比逐个 ``edit_file``，它的优势是：
+Supports standard unified diff (``---`` / ``+++`` / ``@@``) and can modify several
+files and several hunks per call. Compared with repeated ``edit_file`` calls, it:
 
-- 一个补丁就是一次审批，跨文件重构不会弹很多次确认；
-- 上下文行会做校验，错位的补丁不会悄悄改到别处；
-- 允许 ``--- /dev/null`` 新建、``+++ /dev/null`` 删除。
+- needs a single approval per patch, so cross-file refactors do not trigger many
+  confirmations;
+- validates context lines, so a misplaced patch does not silently modify the wrong
+  place;
+- supports creation via ``--- /dev/null`` and deletion via ``+++ /dev/null``.
 
-仍然遵守「读后写」：修改已有文件前必须先用 ``read_file`` 读过它。
+It still follows read-before-write: an existing file must be read with
+``read_file`` before it can be modified.
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 class PatchError(ValueError):
-    """补丁格式或上下文错误；带机读错误码。"""
+    """Patch format or context error; carries a machine-readable error code."""
 
     def __init__(self, code: str, message: str, *, hint: str = "") -> None:
         super().__init__(message)
@@ -67,7 +70,7 @@ class FilePatch:
 
 
 def _header_path(raw: str) -> str:
-    """从 ``--- a/foo\t2024-...`` 里取出路径，去掉 git 的 a/ b/ 前缀。"""
+    """Extract the path from ``--- a/foo\t2024-...``, stripping git's a/ b/ prefixes."""
     text = raw.strip().split("\t", 1)[0].strip()
     if len(text) >= 2 and text[0] == text[-1] == '"':
         text = text[1:-1]
@@ -82,7 +85,7 @@ def _header_path(raw: str) -> str:
 
 
 def parse_unified_diff(patch: str) -> list[FilePatch]:
-    """解析 unified diff；格式不完整时抛 :class:`PatchError`。"""
+    """Parse a unified diff; raise :class:`PatchError` when the format is incomplete."""
     lines = (patch or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
     files: list[FilePatch] = []
     index = 0
@@ -93,8 +96,8 @@ def parse_unified_diff(patch: str) -> list[FilePatch]:
         if index + 1 >= len(lines) or not lines[index + 1].startswith("+++ "):
             raise PatchError(
                 "bad_patch",
-                f"第 {index + 1} 行的 --- 后面缺少 +++ 文件头。",
-                hint="请提供标准 unified diff，每个文件以 --- 旧路径 / +++ 新路径开头。",
+                f"Line {index + 1} has a --- header without a following +++ header.",
+                hint="Provide a standard unified diff where each file starts with --- old path / +++ new path.",
             )
         old_path = _header_path(lines[index][4:])
         new_path = _header_path(lines[index + 1][4:])
@@ -103,7 +106,7 @@ def parse_unified_diff(patch: str) -> list[FilePatch]:
         while index < len(lines) and lines[index].startswith("@@"):
             match = _HUNK_RE.match(lines[index])
             if not match:
-                raise PatchError("bad_hunk", f"无法解析 hunk 头：{lines[index]}。")
+                raise PatchError("bad_hunk", f"Cannot parse hunk header: {lines[index]}.")
             old_start = int(match.group(1))
             old_count = int(match.group(2) or 1)
             new_start = int(match.group(3))
@@ -127,37 +130,38 @@ def parse_unified_diff(patch: str) -> list[FilePatch]:
                     old_left -= 1
                     new_left -= 1
                 elif line == "":
-                    # 有些工具会省略上下文行前的空格；按空上下文行处理
+                    # Some tools omit the leading space of an empty context line;
+                    # treat it as an empty context line
                     body.append((" ", ""))
                     old_left -= 1
                     new_left -= 1
                 else:
                     raise PatchError(
                         "bad_hunk",
-                        f"hunk 内出现无法识别的行：{line[:80]!r}。",
-                        hint="每行必须以空格、+ 或 - 开头。",
+                        f"Unrecognized line inside hunk: {line[:80]!r}.",
+                        hint="Every line must start with a space, +, or -.",
                     )
                 index += 1
             if old_left != 0 or new_left != 0:
                 raise PatchError(
                     "bad_hunk",
-                    f"hunk 声明的行数与实际内容不一致（还差 {old_left} 旧行 / {new_left} 新行）。",
+                    f"The hunk header line counts do not match its content (missing {old_left} old / {new_left} new lines).",
                 )
             hunks.append(Hunk(old_start, old_count, new_start, new_count, body))
         if not hunks:
-            raise PatchError("bad_patch", f"{new_path or old_path} 没有任何 hunk。")
+            raise PatchError("bad_patch", f"{new_path or old_path} has no hunks.")
         files.append(FilePatch(old_path, new_path, hunks))
     if not files:
         raise PatchError(
             "empty_patch",
-            "补丁里没有找到任何文件。",
-            hint="请提供以 --- / +++ / @@ 开头的标准 unified diff。",
+            "No files were found in the patch.",
+            hint="Provide a standard unified diff starting with --- / +++ / @@.",
         )
     return files
 
 
 def _find_block(lines: list[str], block: list[str], start: int) -> int | None:
-    """在 ``start`` 附近找完全匹配的行块；找不到时再做一次全文唯一匹配。"""
+    """Find an exactly matching block of lines near ``start``; fall back to a unique whole-file match."""
     if not block:
         return max(0, min(start, len(lines)))
     start = max(0, min(start, max(0, len(lines) - len(block))))
@@ -190,8 +194,8 @@ def _apply_hunks(source: list[str], hunks: list[Hunk], name: str) -> list[str]:
         if position is None:
             raise PatchError(
                 "context_mismatch",
-                f"{name} 的补丁上下文与当前文件不一致（期望从第 {hunk.old_start} 行开始）。",
-                hint="请重新 read_file 获取最新内容，再基于当前内容生成补丁。",
+                f"The patch context for {name} does not match the current file (expected to start at line {hunk.old_start}).",
+                hint="Call read_file again for the current content, then regenerate the patch from it.",
             )
         result[position:position + len(old_lines)] = new_lines
         offset += len(new_lines) - len(old_lines)
@@ -207,7 +211,7 @@ def _resolve(ctx: ToolContext, raw: str) -> Path:
 
 
 def apply_patch_text(ctx: ToolContext, patch: str) -> str:
-    """应用补丁并返回工具输出（拆出来方便测试）。"""
+    """Apply a patch and return the tool output; split out for testing."""
     try:
         files = parse_unified_diff(patch)
     except PatchError as exc:
@@ -218,41 +222,42 @@ def apply_patch_text(ctx: ToolContext, patch: str) -> str:
     for item in files:
         name = item.display_path
         if not name or name == "/dev/null":
-            return tool_error("bad_patch", "补丁里缺少有效的文件路径。")
+            return tool_error("bad_patch", "The patch is missing a valid file path.")
         try:
             target = _resolve(ctx, name)
         except WorkspacePathError as exc:
             return tool_error(exc.code, exc.message, hint=exc.hint)
         key = str(target)
         if key in seen:
-            return tool_error("duplicate_path", f"同一个补丁里重复修改了 {name}。")
+            return tool_error("duplicate_path", f"The same patch modifies {name} more than once.")
         seen.add(key)
         resolved.append((item, target))
 
-    # 先全部校验 / 计算，再统一落盘，避免补丁中途失败留下半套修改
+    # Validate and compute everything first, then write; a failed patch must not
+    # leave half of its changes on disk
     plans: list[tuple[FilePatch, Path, str, int, int]] = []
     for item, target in resolved:
         name = display_path(ctx.workspace, target)
         reason = _protected_reason(target, ctx.workspace)
         if reason:
-            return tool_error("protected_path", f"不能修改{reason}：{name}。")
+            return tool_error("protected_path", f"Cannot modify {reason}: {name}.")
         if item.creating:
             if target.exists():
                 return tool_error(
                     "file_exists",
-                    f"补丁要新建 {name}，但该文件已经存在。",
-                    hint="请基于现有文件生成修改补丁，或先确认是否要覆盖。",
+                    f"The patch creates {name}, but that file already exists.",
+                    hint="Generate a modification patch against the existing file, or confirm whether it should be overwritten.",
                 )
             before = ""
         else:
             if not target.exists():
                 return tool_error(
                     "not_found",
-                    f"补丁要修改 {name}，但文件不存在。",
-                    hint="新建文件请使用 --- /dev/null 的补丁，或先用 write_file 创建。",
+                    f"The patch modifies {name}, but the file does not exist.",
+                    hint="Create new files with a --- /dev/null patch, or use write_file first.",
                 )
             if target.is_dir():
-                return tool_error("is_directory", f"{name} 是目录，不能应用补丁。")
+                return tool_error("is_directory", f"{name} is a directory; a patch cannot be applied to it.")
             error, _partial = _check_read(target)
             if error:
                 return error
@@ -278,40 +283,41 @@ def apply_patch_text(ctx: ToolContext, patch: str) -> str:
         try:
             if item.deleting:
                 target.unlink()
-                changes.append(f"- {name}：已删除")
+                changes.append(f"- {name}: deleted")
                 total_removed += removed
                 continue
             reason = _protected_reason(target, ctx.workspace)
             if reason:
-                return tool_error("protected_path", f"不能修改{reason}：{name}。")
+                return tool_error("protected_path", f"Cannot modify {reason}: {name}.")
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("w", encoding="utf-8", newline="\n") as handle:
                 handle.write(updated)
             _mark_read(target, complete=True)
-            changes.append(f"- {name}：+{added} -{removed}")
+            changes.append(f"- {name}: +{added} -{removed}")
             total_added += added
             total_removed += removed
         except OSError as exc:
-            return tool_error("write_failed", f"写入 {name} 失败：{exc}。")
+            return tool_error("write_failed", f"Failed to write {name}: {exc}")
 
     return (
-        f"已应用补丁：{len(plans)} 个文件\n"
+        f"Applied patch to {len(plans)} file(s)\n"
         + "\n".join(changes)
-        + f"\n变更：+{total_added} -{total_removed}"
+        + f"\nChanges: +{total_added} -{total_removed}"
     )
 
 
 def build_patch_tools(ctx: ToolContext) -> list:
-    """构造 ``apply_patch``。"""
+    """Build the ``apply_patch`` tool."""
 
     @tool
     def apply_patch(patch: str) -> str:
-        """应用一个标准 unified diff 补丁，可一次修改多个文件/多个位置。
+        """Apply a standard unified diff patch, modifying multiple files or locations in one call.
 
-        适合跨文件重构、批量重命名式修改。只改一处时 edit_file 更直接。
-        修改已有文件前必须先 read_file 读过它；新建文件用 --- /dev/null。
+        Suited to cross-file refactors and batch rename-style changes. For a single
+        change, edit_file is more direct. An existing file must be read with
+        read_file before it is modified; create new files with --- /dev/null.
 
-        示例：
+        Example:
             --- a/app.py
             +++ b/app.py
             @@ -1,3 +1,3 @@
@@ -320,15 +326,16 @@ def build_patch_tools(ctx: ToolContext) -> list:
             +    print("new")
 
         Args:
-            patch: unified diff 文本，包含 --- / +++ / @@ 行。
+            patch: The unified diff text, including the --- / +++ / @@ lines.
 
         Returns:
-            每个文件的增删行数与总变更；格式错误、上下文不匹配或未读文件时
-            返回 ``Error:``。
+            The added and removed line counts per file plus the total change; returns
+            ``Error:`` for a malformed patch, mismatched context, or a file that was
+            not read first.
         """
         text = patch or ""
         if not text.strip():
-            return tool_error("empty_patch", "patch 不能为空。")
+            return tool_error("empty_patch", "patch must not be empty.")
         return apply_patch_text(ctx, text)
 
     return [apply_patch]

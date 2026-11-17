@@ -1,20 +1,22 @@
 /**
- * 模型供应商模板。
+ * Model provider templates.
  *
- * 前端与供应商相关的展示（初始化向导、设置 → 供应商）都从这里派生：
- * - baseUrl / hint 用于表单自动填充与说明；
- * - modelPlaceholder / modelExamples 仅作为模板元数据保留，界面不再展示
- *   「常用模型」选项；
- * - iconPaths 是 24×24 viewBox 的品牌图形（OpenAI / Anthropic / DeepSeek /
- *   Qwen / SiliconCloud 来自公开图标集，自定义供应商为通用描边图形）；
- * - 实际请求都走 OpenAI 兼容接口，Claude 使用 Anthropic 的兼容端点。
+ * All provider-related UI (setup wizard, Settings → Providers) is derived from here:
+ * - baseUrl / hint feed form autofill and help text;
+ * - modelPlaceholder / modelExamples are template metadata only; the UI does not
+ *   show "common models" options;
+ * - iconPaths are brand marks in a 24×24 viewBox (OpenAI / Anthropic / DeepSeek /
+ *   Qwen / SiliconCloud come from public icon sets; the custom provider uses a
+ *   generic outlined mark);
+ * - all requests go through OpenAI-compatible endpoints; Claude uses Anthropic's
+ *   compatible endpoint.
  */
 
 export interface ProviderTemplate {
   id: string
-  /** 中文展示名，如「深度求索」 */
+  /** Display name shown in the UI (Chinese for some built-in providers). */
   name: string
-  /** 英文短名，如「DeepSeek」 */
+  /** Short English name, e.g. "DeepSeek". */
   short: string
   baseUrl: string
   modelPlaceholder: string
@@ -23,7 +25,7 @@ export interface ProviderTemplate {
   color: string
   background: string
   iconPaths: string[]
-  /** true 表示图标用描边渲染（自定义供应商） */
+  /** If true, the icon is rendered as a stroke (custom providers). */
   stroke?: boolean
 }
 

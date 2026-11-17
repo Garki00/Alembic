@@ -1,12 +1,12 @@
 # utils/performance.py
 """
-性能监控和自适应调整工具
+Performance monitoring and adaptive tuning utilities.
 
-支持：
-1. 实时监控系统资源
-2. 自动调整并发限制
-3. 性能指标收集
-4. 优化建议生成
+Supports:
+1. real-time system resource monitoring
+2. automatic concurrency-limit adjustment
+3. metric collection
+4. optimization suggestion generation
 """
 
 import time
@@ -25,7 +25,7 @@ except ImportError:
 
 @dataclass
 class PerformanceMetrics:
-    """性能指标数据类"""
+    """Performance metric data class."""
 
     timestamp: datetime = field(default_factory=datetime.now)
     cpu_percent: float = 0.0
@@ -42,13 +42,13 @@ class PerformanceMetrics:
 
     @property
     def cache_hit_rate(self) -> float:
-        """缓存命中率"""
+        """Cache hit rate."""
         total = self.cache_hits + self.cache_misses
         return self.cache_hits / total if total > 0 else 0.0
 
     @property
     def context_usage_rate(self) -> float:
-        """上下文使用率"""
+        """Context usage rate."""
         return (
             self.context_tokens_used / self.context_tokens_limit
             if self.context_tokens_limit > 0
@@ -57,7 +57,7 @@ class PerformanceMetrics:
 
 
 class PerformanceMonitor:
-    """性能监控器"""
+    """Performance monitor."""
 
     def __init__(self, sample_interval: int = 10):
         self.sample_interval = sample_interval
@@ -77,7 +77,7 @@ class PerformanceMonitor:
         task_duration: Optional[float] = None,
         errors: Optional[int] = None,
     ):
-        """更新性能指标"""
+        """Update the performance metrics."""
         if context_tokens_used is not None:
             self.current_metrics.context_tokens_used = context_tokens_used
         if context_tokens_limit is not None:
@@ -104,7 +104,7 @@ class PerformanceMonitor:
             self._last_sample_time = current_time
 
     def _sample_system_resources(self):
-        """采样系统资源"""
+        """Sample system resources."""
         if not PSUTIL_AVAILABLE:
             return
 
@@ -120,11 +120,11 @@ class PerformanceMonitor:
             self.metrics_history = self.metrics_history[-100:]
 
     def get_current_metrics(self) -> PerformanceMetrics:
-        """获取当前性能指标"""
+        """Get the current performance metrics."""
         return self.current_metrics
 
     def get_average_metrics(self, last_n: int = 10) -> PerformanceMetrics:
-        """获取平均性能指标"""
+        """Get averaged performance metrics."""
         if not self.metrics_history:
             return self.current_metrics
 
@@ -138,7 +138,7 @@ class PerformanceMonitor:
         return avg
 
     def should_reduce_load(self, cpu_threshold: int = 80, memory_threshold: int = 85) -> bool:
-        """判断是否应该降低负载"""
+        """Whether the load should be reduced."""
         if not PSUTIL_AVAILABLE:
             return False
 
@@ -146,7 +146,7 @@ class PerformanceMonitor:
         return avg.cpu_percent > cpu_threshold or avg.memory_percent > memory_threshold
 
     def should_increase_load(self, cpu_threshold: int = 50, memory_threshold: int = 60) -> bool:
-        """判断是否可以增加负载"""
+        """Whether the load can be increased."""
         if not PSUTIL_AVAILABLE:
             return False
 
@@ -154,7 +154,7 @@ class PerformanceMonitor:
         return avg.cpu_percent < cpu_threshold and avg.memory_percent < memory_threshold
 
     def get_optimization_suggestions(self) -> List[str]:
-        """生成优化建议"""
+        """Generate optimization suggestions."""
         suggestions = []
         metrics = self.current_metrics
 
@@ -213,7 +213,7 @@ class PerformanceMonitor:
         return suggestions if suggestions else ["✅ 性能良好，无需优化"]
 
     def print_report(self):
-        """打印性能报告"""
+        """Print the performance report."""
         metrics = self.current_metrics
 
         print("\n" + "=" * 80)
@@ -258,7 +258,7 @@ class PerformanceMonitor:
 
 
 class AdaptiveLimitAdjuster:
-    """自适应限制调整器"""
+    """Adaptive limit adjuster."""
 
     def __init__(
         self,
@@ -278,7 +278,7 @@ class AdaptiveLimitAdjuster:
         self.current_concurrent_agents = base_concurrent_agents
 
     def adjust(self) -> Dict[str, int]:
-        """自动调整限制"""
+        """Adjust the limits automatically."""
         if not PSUTIL_AVAILABLE:
             return {
                 "max_parallel_tool_calls": self.current_parallel_calls,
@@ -321,7 +321,7 @@ _global_monitor: Optional[PerformanceMonitor] = None
 
 
 def get_performance_monitor() -> PerformanceMonitor:
-    """获取全局性能监控器"""
+    """Get the global performance monitor."""
     global _global_monitor
     if _global_monitor is None:
         from config.settings_optimized import settings
@@ -331,7 +331,7 @@ def get_performance_monitor() -> PerformanceMonitor:
 
 
 def init_performance_monitoring():
-    """初始化性能监控"""
+    """Initialize performance monitoring."""
     from config.settings_optimized import settings
 
     if not settings.enable_performance_monitoring:

@@ -1,9 +1,10 @@
 # config/storage.py
-"""用户级数据目录的初始化与一次性迁移。
+"""Initialization and one-time migration of the user-level data directory.
 
-打包后的应用装在 Program Files 这类只读位置，配置和会话必须放到用户目录。
-为了不让人「升级后配置全没了」，首次启动会把仓库里的旧 ``data/`` / ``memory/``
-复制过去（只在目标为空时复制，原目录保留不动，可随时回退）。
+A packaged app lives in a read-only location such as Program Files, so configuration
+and sessions must go to the user directory. On first start the repository's old
+``data/`` / ``memory/`` are copied there (only while the target is empty; the originals
+are left untouched, so the user can roll back at any time).
 """
 
 from __future__ import annotations
@@ -60,14 +61,14 @@ def ensure_storage(
     home: str | Path | None = None,
     legacy: str | Path | None = None,
 ) -> dict:
-    """准备数据目录，必要时迁移旧数据。
+    """Prepare the data directory, migrating legacy data when necessary.
 
     Args:
-        home: 目标用户目录；默认 ``settings.app_home``。
-        legacy: 旧数据所在的项目根目录；默认 ``settings.legacy_root``。
+        home: target user directory; defaults to ``settings.app_home``.
+        legacy: project root holding the old data; defaults to ``settings.legacy_root``.
 
     Returns:
-        ``{"home": Path, "migrated": [名字, ...]}``
+        ``{"home": Path, "migrated": [name, ...]}``
     """
     home_path = Path(home or settings.app_home).expanduser().resolve()
     legacy_path = Path(legacy or settings.legacy_root).expanduser().resolve()

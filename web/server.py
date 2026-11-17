@@ -1,7 +1,7 @@
 # web/server.py
-"""网页工作区后端：会话、模型设置、工具设置、工作区与流式对话。
+"""Web workspace backend: sessions, model settings, tool settings, workspaces, and streaming chat.
 
-启动：
+Startup:
     .venv\\Scripts\\python.exe -m uvicorn web.server:app --port 8000
 """
 
@@ -210,7 +210,7 @@ def _upstream_int(value: Any) -> int:
 
 
 def _upstream_model_metadata(item: dict[str, Any]) -> dict[str, Any]:
-    """兼容 OpenRouter 等带能力字段的 /models 响应；普通供应商通常没有。"""
+    """Support /models responses with capability fields, such as OpenRouter; most providers omit them."""
     architecture = item.get("architecture") if isinstance(item.get("architecture"), dict) else {}
     top_provider = item.get("top_provider") if isinstance(item.get("top_provider"), dict) else {}
     context = _upstream_int(
@@ -261,7 +261,7 @@ def _new_session_id() -> str:
 
 
 def _context_limit(model_cfg=None) -> int:
-    """当前模型上下文压缩阈值；优先使用模型配置里的上下文长度。"""
+    """Context compaction threshold for the active model; prefer the model configuration's context length."""
     if settings.max_context_tokens:
         return int(settings.max_context_tokens)
     window = int(getattr(model_cfg, "context_length", 0) or settings.model_context_window)
@@ -273,7 +273,7 @@ def _context_limit(model_cfg=None) -> int:
 
 
 def _safe_attachment_name(raw: str) -> str:
-    """只保留文件名，去掉路径和控制字符。"""
+    """Keep only the file name, removing path components and control characters."""
     name = Path(str(raw or "")).name
     name = re.sub(r"[\x00-\x1f\x7f]+", "", name).strip(" .")
     name = name.replace("\\", "_").replace("/", "_")
@@ -360,7 +360,7 @@ def create_app(
     app.state.continued_lock = threading.Lock()
 
     def resolve_workspace(workspace_id: str | None, legacy_path: str | None) -> tuple[str, str]:
-        """把请求里的工作区解析成 ``(id, 绝对路径)``。"""
+        """Resolve the request workspace into ``(id, absolute path)``."""
         workspace = workspaces.get(workspace_id) if workspace_id else None
         if workspace is None:
             workspace = workspaces.active()
@@ -375,7 +375,7 @@ def create_app(
     # ---- API 根与健康检查 ----
     @app.get("/")
     def index():
-        """API 说明。页面请打开前端开发服务器（默认 http://127.0.0.1:5173）。"""
+        """API description. For the page itself, open the frontend dev server (default http://127.0.0.1:5173)."""
         return {
             "name": "ALEMBIC API",
             "version": "0.1.0",
@@ -422,7 +422,7 @@ def create_app(
     # ---- 后台任务视图 ----
     @app.get("/api/processes/events")
     def process_events():
-        """后台任务状态事件流；进程视图和自动续跑共用。"""
+        """Background task state event stream shared by the process view and automatic continuation."""
 
         def event_stream():
             try:
@@ -562,7 +562,7 @@ def create_app(
 
     @app.post("/api/providers/fetch")
     def fetch_models(payload: FetchModelsPayload):
-        """从上游获取模型 ID；有能力的供应商会一并返回上下文/图片/推理信息。"""
+        """Fetch model IDs from the upstream provider; capable providers also return context, image, and reasoning metadata."""
         base_url = payload.base_url.strip().rstrip("/")
         api_key = payload.api_key.strip()
         if not api_key and payload.provider_id:
@@ -840,7 +840,7 @@ def create_app(
 
     @app.post("/api/sessions/{session_id}/compact")
     def compact_session(session_id: str):
-        """立即压缩指定会话；不占用正在对话的会话锁。"""
+        """Compact the given session immediately without taking the conversation's session lock."""
         model_cfg = models.active()
         if model_cfg is None:
             raise HTTPException(400, "还没有可用的模型，请先在设置里添加")
@@ -887,7 +887,7 @@ def create_app(
         filename: str = "attachment",
         workspace_id: str | None = None,
     ):
-        """把浏览器文件写入工作区内的隐藏附件目录，返回模型可读的相对路径。"""
+        """Write a browser file into the hidden attachment directory inside the workspace and return its model-readable relative path."""
         _, root_text = resolve_workspace(workspace_id, None)
         root = Path(root_text)
         body = await request.body()
@@ -920,7 +920,7 @@ def create_app(
 
     @app.get("/api/sessions/{session_id}/todos")
     def session_todos(session_id: str):
-        """当前会话的任务清单（网页刷新/切换会话后恢复面板）。"""
+        """Task list for the current session (restores the panel after a page refresh or session switch)."""
         return {"session_id": session_id, "items": app.state.todos.load(session_id)}
 
     # ---- 对话（SSE 流式） ----
@@ -955,7 +955,7 @@ def create_app(
                     f"({_attachment_kind(target.name)}, {size} bytes)"
                 )
             lines.append("[/Attached files]")
-            message = "\n".join([*lines, "", message or "请查看这些附件。"])
+            message = "\n".join([*lines, "", message or "Please review the attached files."])
 
         if payload.process_id:
             with app.state.continued_lock:
@@ -1125,7 +1125,7 @@ def create_app(
     # ---- 停止当前轮 ----
     @app.post("/api/sessions/{session_id}/cancel")
     def cancel_session(session_id: str, background: bool = True):
-        """停止生成：中断当前轮的前台命令；默认同时停止本会话的后台任务。"""
+        """Stop generation: interrupt foreground commands in the current turn and, by default, stop this session's background tasks."""
         event = app.state.cancels.get(session_id)
         if event is not None:
             event.set()
@@ -1148,14 +1148,14 @@ def create_app(
 
     @app.get("/api/approvals")
     def list_approvals(session_id: str = ""):
-        """查看某个会话里「始终允许」记住了哪些操作。"""
+        """List the operations remembered as "always allow" for a session."""
         sid = (session_id or "default").strip() or "default"
         items = list(app.state.approval_memo.get(sid, {}).values())
         return {"session_id": sid, "items": items}
 
     @app.delete("/api/approvals")
     def clear_approvals(session_id: str = ""):
-        """撤销某个会话里所有「始终允许」。"""
+        """Revoke all "always allow" entries for a session."""
         sid = (session_id or "default").strip() or "default"
         return {"ok": True, "cleared": len(app.state.approval_memo.pop(sid, {}) or {})}
 

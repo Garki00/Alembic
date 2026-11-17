@@ -1,8 +1,8 @@
 # agents/agent.py
-"""Agent 组装：模型、工具，以及重试 / 调用上限等运行保护中间件。
+"""Agent assembly: model, tools, and runtime guards such as retries and call limits.
 
-工具清单不再硬编码在这里，而是从 :mod:`tools.registry` 派生，
-网页与命令行因此始终使用同一套工具。
+The tool list is not hard-coded here; it is derived from :mod:`tools.registry`,
+so the web UI and the CLI always share one tool set.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def cli_tool_context(
     sandbox=None,
     sandbox_policy=None,
 ) -> ToolContext:
-    """命令行模式的工具上下文：工作区默认是当前目录。"""
+    """Tool context for CLI mode; the workspace defaults to the current directory."""
     workspace = Path(settings.workspace_dir or Path.cwd()).expanduser().resolve()
     return ToolContext(
         workspace=workspace,
@@ -71,20 +71,20 @@ def cli_tool_context(
 
 
 def cli_enabled_tools() -> set[str]:
-    """命令行启用的条目：注册表里默认启用的那些。"""
+    """Entries enabled for the CLI: those the registry enables by default."""
     return default_enabled_names()
 
 
 def build_default_tools(ctx: ToolContext | None = None) -> list:
-    """按命令行配置装配工具实例。"""
+    """Build tool instances from the CLI configuration."""
     return build_tools(cli_enabled_tools(), {}, ctx or cli_tool_context())
 
 
 def build_cli_approval() -> ApprovalGate | None:
-    """命令行的审批开关：终端提问，默认开启。
+    """CLI approval switch: asks on the terminal, enabled by default.
 
-    ``APPROVAL_ENABLED=false`` 只关闭弹审批；不可恢复的高危命令仍由
-    命令策略拒绝。
+    ``APPROVAL_ENABLED=false`` only disables approval prompts; irreversible
+    high-risk commands are still rejected by the command policy.
     """
     enabled = cli_enabled_tools()
     gated = permission_tools(enabled, "workspace_write") if settings.approval_enabled else {}
@@ -99,7 +99,7 @@ def build_cli_approval() -> ApprovalGate | None:
 
 
 def build_model() -> ChatDeepSeek:
-    """创建对话模型；同一个模型也用于生成历史对话摘要。"""
+    """Create the chat model; the same model also summarizes earlier conversation."""
     if not settings.deepseek_api_key:
         raise RuntimeError("缺少 DEEPSEEK_API_KEY，请在 .env 中配置后再运行。")
     if not settings.model_name:
@@ -116,13 +116,13 @@ def build_middleware(
     *,
     visibility=None,
 ) -> list[AgentMiddleware]:
-    """必要的运行保护：
+    """Runtime guard middleware:
 
-    - 模型调用失败自动重试（网络抖动、限流）；
-    - 单轮模型调用数上限，避免 Agent 陷入死循环；
-    - 单轮工具调用数上限，超出的工具调用会被拦截而不是继续堆积上下文；
-    - 扩展工具可见性过滤（基础 + 已激活扩展）；
-    - 审批（放在最内层，先让调用上限与可见性拦截，再问人）。
+    - retry failed model calls automatically (network jitter, rate limits);
+    - cap model calls per turn so the agent cannot loop forever;
+    - cap tool calls per turn; excess calls are blocked instead of piling up in the context;
+    - filter visibility of extended tools (basic tools plus activated extensions);
+    - approval, as the innermost layer, so call limits and visibility block first and a human is asked last.
     """
 
     middleware: list[AgentMiddleware] = [
@@ -154,11 +154,12 @@ def build_agent(
     ctx: ToolContext | None = None,
     engine: str | None = None,
 ):
-    """组装 Agent；参数可注入，方便测试或替换模型。
+    """Assemble the agent; dependencies are injectable for tests or model substitution.
 
-    ``engine="tool_calling"``（默认）使用 LangChain ``create_agent`` 的模型原生
-    工具调用；``engine="react"`` 走原生 ReAct 文本循环（严格单步解析，作为可选
-    兼容模式）。传了 ``middleware`` 时按 tool_calling 处理。
+    ``engine="tool_calling"`` (default) uses native tool calling from LangChain
+    ``create_agent``; ``engine="react"`` runs the native ReAct text loop (strict
+    single-step parsing, an optional compatibility mode). Passing ``middleware``
+    is treated as tool_calling.
     """
     resolved_engine = (engine or settings.agent_engine).strip().lower()
     chat_model = model or build_model()

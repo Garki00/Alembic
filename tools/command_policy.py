@@ -1,18 +1,19 @@
 # tools/command_policy.py
-"""命令策略：在执行前按文本识别高危命令。
+"""Command policy: detect high-risk commands from their text before execution.
 
-这是审批之外的一层独立策略：
+Two levels are reported:
 
-- ``hardline``：无论当前是什么权限模式（包括“完全权限”），都直接拒绝，
-  不弹审批、也不能用“始终允许”绕过。只覆盖不可恢复的操作，例如格式化
-  磁盘、清空系统盘、删除 WSL 发行版、破坏引导记录。
-- ``elevated``：命令可以执行，但审批卡片会显示具体风险原因（递归删除、
-  强制推送、结束进程、访问凭据文件等），让用户在点“允许”前知道自己在
-  同意什么。
+- ``hardline``: always rejected, regardless of permission mode, with no approval
+  prompt and no "always allow" override. Only irreversible operations are covered
+  (formatting a disk, wiping the system drive, removing a WSL distribution,
+  destroying the boot record).
+- ``elevated``: the command may run, but the approval card shows the specific risk
+  reason (recursive delete, force push, ending processes, accessing credential
+  files, and so on).
 
-策略按命令原文匹配，会做小写化与空白折叠。它不是完整的 shell 解释器，
-也无法阻止刻意混淆的命令；它的目标是拦住常见的高破坏性误操作，并给审批
-提供可解释的理由，真正的隔离边界仍然应该由操作系统/容器提供。
+Matching uses the lowercased, whitespace-collapsed command text. This is not a
+complete shell interpreter and cannot stop deliberately obfuscated commands; it
+catches common high-damage mistakes and gives approvals an explainable reason.
 """
 
 from __future__ import annotations
@@ -37,6 +38,14 @@ class CommandRisk:
     @property
     def is_elevated(self) -> bool:
         return self.level == "elevated"
+
+    @property
+    def reason_en(self) -> str:
+        """English explanation for model-facing rejection messages."""
+        return _HARDLINE_REASONS_EN.get(
+            self.rule,
+            "This operation is irreversible and cannot be released by approval.",
+        )
 
 
 SAFE = CommandRisk("none")
@@ -132,6 +141,25 @@ _HARDLINE_RULES = (
     ),
 )
 
+_HARDLINE_REASONS_EN = {
+    "format_drive": "Formatting a disk partition is irreversible.",
+    "diskpart": "Disk or partition management can destroy disk data immediately.",
+    "delete_root": "Recursively deletes the filesystem root or the user home directory.",
+    "delete_drive_root": "Deletes the root of an entire disk partition.",
+    "remove_item_root": "Recursively force-deletes the root of a disk.",
+    "mkfs": "Formatting a filesystem erases the target device.",
+    "dd_device": "Writing directly to a block device destroys disk data.",
+    "fork_bomb": "A shell fork bomb exhausts system process resources.",
+    "boot_config": "Changing boot configuration or deleting shadow copies can make the system unrecoverable.",
+    "registry_hive_delete": "Deleting a registry hive root corrupts system configuration.",
+    "power_control": "Shutting down or restarting interrupts all current work.",
+    "account_tamper": "Deleting an account or granting administrator membership changes system access.",
+    "wipe_free_space": "Wiping free disk space is irreversible.",
+    "unregister_wsl": "Unregistering a WSL distribution deletes all data inside it.",
+    "take_over_root": "Taking ownership or permissions of a disk root removes system protection.",
+    "encoded_payload": "A Base64-encoded command cannot be reviewed and is treated as a malicious payload.",
+}
+
 _ELEVATED_RULES = (
     _compile(
         "recursive_delete",
@@ -204,12 +232,12 @@ _ELEVATED_RULES = (
 
 
 def normalize_command(command: str) -> str:
-    """小写化并折叠空白，便于规则匹配。"""
+    """Lowercase and collapse whitespace for rule matching."""
     return re.sub(r"\s+", " ", str(command or "").strip()).lower()
 
 
 def assess_command(command: str) -> CommandRisk:
-    """评估一条命令；返回第一条命中的规则（hardline 优先）。"""
+    """Assess a command; return the first matching rule (hardline takes precedence)."""
     text = normalize_command(command)
     if not text:
         return SAFE

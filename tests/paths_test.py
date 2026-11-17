@@ -1,5 +1,5 @@
 # tests/paths_test.py
-"""工作区路径边界与凭据保护测试。"""
+"""Workspace path boundary and credential protection tests."""
 
 import shutil
 import unittest

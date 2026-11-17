@@ -1,5 +1,5 @@
 # tests/questions_test.py
-"""提问工具与网页中继的测试。"""
+"""Tests for the question tool and the web relay."""
 
 import threading
 import time
@@ -33,7 +33,7 @@ class QuestionToolTest(unittest.TestCase):
             return "A"
 
         text = self.tool(asker).invoke({"question": "选哪个？", "options": ["A", "B"]})
-        self.assertEqual(text, "用户回答：A")
+        self.assertEqual(text, "User answer: A")
         self.assertEqual(seen[0].options, ("A", "B"))
         self.assertEqual(seen[0].session_id, "s1")
 

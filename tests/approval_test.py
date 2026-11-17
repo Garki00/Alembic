@@ -1,5 +1,5 @@
 # tests/approval_test.py
-"""工具审批的测试：策略、中间件拦截、命令行提问、失败关闭。"""
+"""Tool approval tests: policy, middleware interception, CLI prompts, and fail-closed behavior."""
 
 import unittest
 from types import SimpleNamespace
@@ -25,7 +25,7 @@ def make_call(name: str, args: dict):
 
 
 class Recorder:
-    """记录被问到的请求，按预设顺序作答。"""
+    """Records incoming requests and answers them in a preset order."""
 
     def __init__(self, *decisions: str) -> None:
         self.decisions = list(decisions) or ["deny"]
@@ -144,7 +144,7 @@ class PolicyTest(unittest.TestCase):
         self.assertFalse(self.policy.is_allowed("write_file", {"path": "b.txt", "content": "x"}))
 
     def test_write_tools_share_one_grant(self):
-        """允许改 a.py 之后，换成 edit_file 改同一个文件不该再问一次。"""
+        """After allowing an a.py edit, switching to edit_file on the same file must not prompt again."""
         self.policy.remember("write_file", {"path": "a.py", "content": "x"})
         self.assertTrue(self.policy.is_allowed("edit_file", {"path": "a.py", "old_string": "a", "new_string": "b"}))
         self.assertFalse(self.policy.is_allowed("edit_file", {"path": "b.py", "old_string": "a", "new_string": "b"}))

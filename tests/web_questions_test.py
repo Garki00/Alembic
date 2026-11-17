@@ -1,5 +1,5 @@
 # tests/web_questions_test.py
-"""网页端提问通道与任务清单接口的测试。"""
+"""Tests for the web question channel and the todo list API."""
 
 import json
 import shutil

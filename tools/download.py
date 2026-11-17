@@ -1,11 +1,13 @@
 # tools/download.py
-"""文件下载工具：``download_file``。
+"""File download tool: ``download_file``.
 
-``fetch_url`` 只能读文本，遇到 PDF / 图片 / 压缩包会提示「先下载到工作区」。
-本模块补上这一步：把远程二进制流式写入工作区，带 SSRF 校验、重定向逐跳校验、
-大小上限和临时文件保护（失败不会留下半个文件）。
+``fetch_url`` can only read text; for PDFs, images, and archives it tells the model to
+download them to the workspace first. This module performs that step: it streams remote
+binary data into the workspace with SSRF validation, per-hop redirect validation, a size
+cap, and temporary-file protection (a failed download leaves no partial file behind).
 
-它属于 ``write`` 风险：真正落盘前需要用户确认。
+It carries the ``write`` risk level: user confirmation is required before anything is
+written to disk.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
 
 
 def _filename_from_url(url: str) -> str:
-    """从 URL 路径推断一个安全的文件名。"""
+    """Infer a safe filename from the URL path."""
     try:
         name = unquote(Path(urlparse(url).path).name)
     except ValueError:
@@ -60,7 +62,7 @@ def _stream_to_file(
     allow_private: bool,
     user_agent: str,
 ) -> dict:
-    """流式下载到 ``target``，失败时清理临时文件。"""
+    """Stream the download to ``target`` and remove the temporary file on failure."""
     headers = {"User-Agent": user_agent, "Accept": "*/*"}
     current = url
     part = target.with_name(target.name + ".part")
@@ -69,7 +71,7 @@ def _stream_to_file(
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise FetchError("write_failed", f"无法创建目录 {target.parent}：{exc}。") from exc
+        raise FetchError("write_failed", f"Could not create directory {target.parent}: {exc}.") from exc
 
     try:
         with httpx.Client(timeout=float(timeout), follow_redirects=False) as client:
@@ -82,15 +84,15 @@ def _stream_to_file(
                             if not location:
                                 raise FetchError(
                                     "bad_redirect",
-                                    f"HTTP {response.status_code} 没有给出 Location。",
+                                    f"HTTP {response.status_code} did not provide a Location header.",
                                 )
                             current = urljoin(current, location)
                             continue
                         if response.status_code >= 400:
                             raise FetchError(
                                 "http_error",
-                                f"HTTP {response.status_code}：{current}",
-                                hint="确认 URL 是否需要登录、是否有访问权限，或换一个地址。",
+                                f"HTTP {response.status_code}: {current}",
+                                hint="Check whether the URL requires login or permission, or use a different address.",
                             )
                         content_type = (
                             response.headers.get("content-type") or "application/octet-stream"
@@ -103,8 +105,8 @@ def _stream_to_file(
                                 if wrote > max_bytes:
                                     raise FetchError(
                                         "file_too_large",
-                                        f"下载内容超过 {_human_size(max_bytes)} 上限。",
-                                        hint="可以在设置 → 工具 → 文件下载里调大「最大字节」，或直接下载更小的文件。",
+                                        f"Download exceeds the {_human_size(max_bytes)} limit.",
+                                        hint='Increase "Max bytes" under Settings → Tools → File Download, or download a smaller file.',
                                     )
                                 handle.write(chunk)
                         os.replace(part, target)
@@ -114,8 +116,8 @@ def _stream_to_file(
                             "bytes": wrote,
                         }
                 except (httpx.TimeoutException, httpx.HTTPError) as exc:
-                    raise FetchError("download_failed", f"下载失败：{exc}。") from exc
-            raise FetchError("too_many_redirects", f"重定向超过 {_MAX_REDIRECTS} 次，已停止。")
+                    raise FetchError("download_failed", f"Download failed: {exc}.") from exc
+            raise FetchError("too_many_redirects", f"Exceeded {_MAX_REDIRECTS} redirects; stopped.")
     finally:
         if part.exists():
             try:
@@ -125,7 +127,7 @@ def _stream_to_file(
 
 
 def build_download_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
-    """构造 ``download_file``（配置来自设置面板）。"""
+    """Build ``download_file`` (configured through the settings panel)."""
 
     @tool
     def download_file(url: str, path: str = "", overwrite: bool = False) -> str:
@@ -141,7 +143,7 @@ def build_download_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
         """
         text = (url or "").strip()
         if not text:
-            return tool_error("empty_url", "url 不能为空。")
+            return tool_error("empty_url", "url must not be empty.")
         if "://" not in text:
             text = "https://" + text
 
@@ -153,18 +155,18 @@ def build_download_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
         if target.exists() and target.is_dir():
             return tool_error(
                 "destination_is_directory",
-                f"目标 {relative} 是目录，不能作为文件保存。",
-                hint="请给出具体的文件名。",
+                f"Target {relative} is a directory and cannot be saved as a file.",
+                hint="Provide a concrete file name.",
             )
         if target.exists() and not overwrite:
             return tool_error(
                 "destination_exists",
-                f"目标已存在：{relative}。",
-                hint="换一个文件名，或传 overwrite=True（覆盖前请确认）。",
+                f"Target already exists: {relative}.",
+                hint="Use a different file name, or pass overwrite=True (confirm before overwriting).",
             )
         reason = _protected_reason(target, ctx.workspace)
         if reason:
-            return tool_error("protected_path", f"不能写入{reason}：{relative}。")
+            return tool_error("protected_path", f"Cannot write {reason}: {relative}.")
 
         allow_private = _setting(config, "DOWNLOAD_ALLOW_PRIVATE", "false").lower() in {
             "1", "true", "on", "yes",
@@ -188,10 +190,10 @@ def build_download_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
             return tool_error(exc.code, exc.message, hint=exc.hint)
 
         return (
-            f"已下载：{display_path(ctx.workspace, target)}\n"
-            f"大小：{_human_size(result['bytes'])}（{result['bytes']} 字节）\n"
-            f"类型：{result['content_type']}\n"
-            f"最终 URL：{result['url']}"
+            f"Downloaded: {display_path(ctx.workspace, target)}\n"
+            f"Size: {_human_size(result['bytes'])} ({result['bytes']} bytes)\n"
+            f"Type: {result['content_type']}\n"
+            f"Final URL: {result['url']}"
         )
 
     return [download_file]

@@ -1,2 +1,2 @@
 # web/__init__.py
-"""网页对话工作区。"""
+"""Web chat workspace."""

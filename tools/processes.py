@@ -1,17 +1,19 @@
 # tools/processes.py
-"""后台进程工具：启动、查看、读日志、停止。
+"""Background process tools: start, list, read logs, wait, and stop.
 
-``run_command`` 是一次性抓完整输出，跑 dev server / 长任务时不适合：
-它会把整轮对话卡到超时。这里的 ``start_process`` 立即返回进程 ID，
-输出落到日志文件，由 ``read_process_logs`` 按需读取。
+``start_process`` returns a process ID immediately and writes output to a log
+file; use it for dev servers, watch builds, and other long-running tasks.
+``read_process_logs`` and ``wait_process`` inspect that log on demand, while
+``run_command`` captures a complete result in one call.
 
-安全边界：
+Safety boundaries:
 
-- ``start_process`` / ``stop_process`` 属于 exec 风险，注册表会把它们
-  纳入审批；
-- 进程只能通过本管理器启动的 ID 操作，不接受任意 PID；
-- 停止时按进程树处理（Windows ``taskkill /T``，POSIX 进程组），
-  避免只杀掉 shell 而留下子进程。
+- ``start_process`` / ``stop_process`` carry exec risk and are subject to
+  registry approval.
+- Processes are addressed only by IDs created by this manager; arbitrary PIDs
+  are not accepted.
+- Stopping targets the process tree (Windows ``taskkill /T``, POSIX process
+  groups) so child processes are not left behind.
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ def _decode(raw: bytes) -> str:
 
 @dataclass
 class ProcessRecord:
-    """一个由本管理器启动的进程。"""
+    """A process started by this manager."""
 
     id: str
     command: str
@@ -105,7 +107,7 @@ class ProcessRecord:
         return "completed" if self.exit_code == 0 else "failed"
 
     def public(self) -> dict:
-        """给进程视图使用的结构；不包含 Popen 对象。"""
+        """Structure used by the process view; excludes the Popen object."""
         return {
             "id": self.id,
             "command": self.command,
@@ -162,7 +164,7 @@ class _LogPump(threading.Thread):
 
 
 class ProcessManager:
-    """进程表与日志目录；一个应用实例共享一份。"""
+    """Process table and log directory; one instance is shared per application instance."""
 
     def __init__(
         self,
@@ -189,7 +191,7 @@ class ProcessManager:
             pass
 
     def _watch(self, record: ProcessRecord) -> None:
-        """等待进程结束并发出完成事件，供网页端和模型继续处理。"""
+        """Wait for the process to exit and emit a completion event for the web UI and consumers."""
         try:
             record.process.wait()
         except Exception:
@@ -209,7 +211,7 @@ class ProcessManager:
         _, text = self.read_log(record.id, lines)
         return text
 
-    # ---- 生命周期 ----
+    # ---- lifecycle ----
     def start(
         self,
         command: str,
@@ -225,26 +227,26 @@ class ProcessManager:
     ) -> ProcessRecord:
         text = (command or "").strip()
         if not text:
-            raise ValueError("command 不能为空")
+            raise ValueError("command must not be empty")
         chosen = (terminal or "powershell").strip().lower()
         if chosen not in TERMINAL_CHOICES:
-            raise ValueError(f"不支持的终端：{terminal}")
+            raise ValueError(f"Unsupported terminal: {terminal}")
         if sandbox is None or policy is None:
             raise SandboxError(
                 "sandbox_unavailable",
-                "当前没有可用的命令沙盒，后台任务未启动。",
-                hint="以管理员身份运行 scripts/setup-sandbox.ps1，然后重试。",
+                "No command sandbox is available; the background task was not started.",
+                hint="Run scripts/setup-sandbox.ps1 as administrator, then retry.",
             )
         with self._lock:
             running = sum(1 for record in self._records.values() if record.running)
         if running >= 10:
-            raise ValueError("同时运行的后台进程过多（上限 10），请先停止不用的进程")
+            raise ValueError("Too many background processes are running (limit 10); stop unused processes first")
         process_id = f"proc-{uuid4().hex[:8]}"
         log_path = self.log_dir / f"{process_id}.log"
         try:
             log_path.write_bytes(b"")
         except OSError as exc:
-            raise OSError(f"无法创建日志文件 {log_path}：{exc}") from exc
+            raise OSError(f"Could not create log file {log_path}: {exc}") from exc
 
         invocation = build_invocation(chosen, text, cwd)
         env = build_child_env({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
@@ -268,7 +270,7 @@ class ProcessManager:
         except SandboxError:
             raise
         except Exception as exc:
-            raise SandboxError("sandbox_spawn_failed", f"沙盒启动失败：{exc}") from exc
+            raise SandboxError("sandbox_spawn_failed", f"Sandbox failed to start: {exc}") from exc
 
         log_threads = [
             _LogPump(stream, log_path)
@@ -325,11 +327,11 @@ class ProcessManager:
             return record, ""
         text = _decode(raw).replace("\r\n", "\n")
         if size > _MAX_LOG_BYTES:
-            text = f"…[日志超过 {_MAX_LOG_BYTES // 1000} KB，只读取尾部]…\n{text}"
+            text = f"…[log exceeds {_MAX_LOG_BYTES // 1000} KB; only the tail was read]…\n{text}"
         lines = text.splitlines()
         limit = max(10, min(int(tail or 200), 5000))
         if len(lines) > limit:
-            lines = [f"…[日志共 {len(lines)} 行，只显示最后 {limit} 行]…", *lines[-limit:]]
+            lines = [f"…[{len(lines)} log lines total; showing the last {limit}]…", *lines[-limit:]]
         return record, "\n".join(lines)
 
     def stop(self, process_id: str, timeout: float = 5.0) -> ProcessRecord | None:
@@ -339,7 +341,8 @@ class ProcessManager:
         if not record.running:
             return record
 
-        # 用户主动停止不再触发“后台任务完成，继续处理”，但仍会推送状态更新。
+        # A user-requested stop suppresses the "background task completed" prompt
+        # but still emits a status update.
         record.notify_on_exit = False
         record.stop_requested = True
         try:
@@ -354,7 +357,7 @@ class ProcessManager:
         return record
 
     def stop_session(self, session_id: str, timeout: float = 5.0) -> int:
-        """停止某个会话正在运行的全部后台任务。"""
+        """Stop every background task running in a session."""
         sid = (session_id or "").strip()
         if not sid:
             return 0
@@ -369,7 +372,7 @@ class ProcessManager:
                 self.stop(record.id, timeout=2)
 
     def _prune_locked(self) -> None:
-        """最多保留 100 条记录，优先删已退出的旧记录。"""
+        """Keep at most 100 records, removing old finished records first."""
         if len(self._records) <= 100:
             return
         finished = [key for key, record in self._records.items() if not record.running]
@@ -394,7 +397,7 @@ _SHARED_LOCK = threading.Lock()
 
 
 def get_process_manager(workspace: Path | None) -> ProcessManager:
-    """按工作区取共享管理器（没有注入时使用）。"""
+    """Return the shared manager for a workspace (used when none is injected)."""
     from config.settings import settings
 
     key = str(workspace) if workspace else "__none__"
@@ -407,7 +410,7 @@ def get_process_manager(workspace: Path | None) -> ProcessManager:
 
 
 def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
-    """构造后台进程工具组；``only`` 用于按注册表条目拆分工具。"""
+    """Build the background process tool group; ``only`` splits tools by registry entry."""
     manager = ctx.process_manager or get_process_manager(ctx.workspace)
 
     @tool
@@ -438,28 +441,28 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
         """
         text = (command or "").strip()
         if not text:
-            return tool_error("empty_command", "command 不能为空。")
+            return tool_error("empty_command", "command must not be empty.")
         try:
             workdir = resolve_in_workspace(ctx.workspace, cwd) if cwd.strip() else ctx.workspace
         except WorkspacePathError as exc:
             return tool_error(exc.code, exc.message, hint=exc.hint)
         if workdir is None:
-            return tool_error("no_workspace", "当前没有可用工作区，无法启动进程。")
+            return tool_error("no_workspace", "No workspace is available; cannot start a process.")
         if not workdir.is_dir():
-            return tool_error("not_a_directory", f"执行目录不存在：{cwd}。")
+            return tool_error("not_a_directory", f"Working directory does not exist: {cwd}.")
 
         chosen = (terminal or ctx.terminal or "powershell").strip().lower()
         if chosen not in TERMINAL_CHOICES:
             return tool_error(
                 "unknown_terminal",
-                f"不支持的终端：{terminal}。",
-                hint="可选 powershell / cmd / gitbash / wsl。",
+                f"Unsupported terminal: {terminal}.",
+                hint="Choose powershell / cmd / gitbash / wsl.",
             )
         if chosen == "wsl":
             return tool_error(
                 "sandbox_unsupported",
-                "Windows 沙盒下不能使用 WSL 终端：WSL 进程不继承沙盒令牌。",
-                hint="改用 powershell / cmd / gitbash；需要 WSL 时使用独立的 Linux 沙盒后端。",
+                "WSL terminals are not supported under the Windows sandbox: WSL processes do not inherit the sandbox token.",
+                hint="Use powershell / cmd / gitbash; use a separate Linux sandbox backend when WSL is required.",
             )
         try:
             record = manager.start(
@@ -476,83 +479,84 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
         except SandboxError as exc:
             return tool_error(exc.code, exc.message, hint=exc.hint)
         except (OSError, ValueError) as exc:
-            return tool_error("spawn_failed", f"无法启动进程：{exc}。")
+            return tool_error("spawn_failed", f"Could not start process: {exc}.")
 
         return (
-            f"已启动后台进程：{record.id}\n"
-            f"PID：{record.pid}\n"
-            f"命令：{record.command}\n"
-            f"终端：{terminal_label(record.terminal)}\n"
-            f"目录：{display_path(ctx.workspace, workdir)}\n"
-            f"完成通知：{'开' if record.notify_on_exit else '关'}\n"
-            f"日志：{record.log_path}\n"
-            "用 read_process_logs 查看输出，用 stop_process 结束。"
+            f"Started background process: {record.id}\n"
+            f"PID: {record.pid}\n"
+            f"Command: {record.command}\n"
+            f"Terminal: {terminal_label(record.terminal)}\n"
+            f"Directory: {display_path(ctx.workspace, workdir)}\n"
+            f"Completion notification: {'on' if record.notify_on_exit else 'off'}\n"
+            f"Log: {record.log_path}\n"
+            "Use read_process_logs to view output and stop_process to stop it."
         )
 
     @tool
     def list_processes() -> str:
-        """列出本应用启动过的后台进程及其运行状态。"""
+        """List background processes started by this application and their status."""
         records = manager.list()
         if not records:
-            return "当前没有后台进程。"
-        lines = [f"后台进程（{len(records)} 个）："]
+            return "No background processes."
+        lines = [f"Background processes ({len(records)}):"]
         for record in records:
             if record.running:
-                status = f"运行中 (PID {record.pid}, {record.duration_seconds:.1f}s)"
+                status = f"running (PID {record.pid}, {record.duration_seconds:.1f}s)"
             elif record.status == "stopped":
-                status = "已停止"
+                status = "stopped"
             else:
-                status = f"已退出 (code {record.exit_code})"
+                status = f"exited (code {record.exit_code})"
             lines.append(f"- {record.id} · {status} · {record.command}")
-            lines.append(f"  启动：{record.started_at}，日志：{record.log_path.name}")
+            lines.append(f"  Started: {record.started_at}, log: {record.log_path.name}")
         return truncate("\n".join(lines), ctx.max_output_chars)
 
     @tool
     def read_process_logs(process_id: str, tail: int = 200) -> str:
-        """读取后台进程的日志尾部。
+        """Read the tail of a background process log.
 
         Args:
-            process_id: start_process 返回的进程 ID。
-            tail: 最多返回最后多少行（10-5000），默认 200。
+            process_id: Process ID returned by start_process.
+            tail: Maximum number of trailing lines to return (10-5000); defaults to 200.
 
         Returns:
-            进程状态、命令与日志内容；ID 不存在时返回 ``Error:``。
+            Process status, command, and log content; returns ``Error:`` when the ID is unknown.
         """
         record, text = manager.read_log(process_id, tail)
         if record is None:
             return tool_error(
                 "unknown_process",
-                f"找不到进程 {process_id!r}。",
-                hint="先用 list_processes 查看现有进程 ID。",
+                f"Process {process_id!r} not found.",
+                hint="Use list_processes to see available process IDs.",
             )
-        status = f"运行中 (PID {record.pid})" if record.running else f"已退出 (code {record.exit_code})"
-        header = [f"进程：{record.id} · {status}", f"命令：{record.command}", "--- 日志 ---"]
-        body = text.rstrip() or "(暂无输出)"
+        status = f"running (PID {record.pid})" if record.running else f"exited (code {record.exit_code})"
+        header = [f"Process: {record.id} · {status}", f"Command: {record.command}", "--- log ---"]
+        body = text.rstrip() or "(no output yet)"
         return truncate("\n".join([*header, body]), ctx.max_output_chars, keep_tail=True)
 
     @tool
     def wait_process(process_id: str, timeout: int = 30, pattern: str = "", tail: int = 60) -> str:
-        """等待后台进程退出，或等待日志中出现某个模式。
+        """Wait for a background process to exit, or for a pattern to appear in its log.
 
-        适合启动 dev server 后等「Listening on ...」、跑构建后等结束，
-        避免模型反复调用 read_process_logs 轮询。
+        Useful after starting a dev server to wait for "Listening on ...", or
+        after a build to wait for completion, instead of polling
+        read_process_logs repeatedly.
 
         Args:
-            process_id: start_process 返回的进程 ID。
-            timeout: 最长等待秒数（1-120），默认 30。
-            pattern: 可选的正则；日志中出现匹配行时立即返回。
-            tail: 返回最后多少行日志（10-500），默认 60。
+            process_id: Process ID returned by start_process.
+            timeout: Maximum wait in seconds (1-120); defaults to 30.
+            pattern: Optional regular expression; returns as soon as a matching log line appears.
+            tail: Number of trailing log lines to return (10-500); defaults to 60.
 
         Returns:
-            进程状态、命中的日志行与日志尾部。等待超时不算工具错误，
-            会明确说明进程仍在运行。
+            Process status, the matched log line, and the log tail. A wait timeout
+            is not a tool error; the result states that the process is still running.
         """
         record = manager.get(process_id)
         if record is None:
             return tool_error(
                 "unknown_process",
-                f"找不到进程 {process_id!r}。",
-                hint="先用 list_processes 查看现有进程 ID。",
+                f"Process {process_id!r} not found.",
+                hint="Use list_processes to see available process IDs.",
             )
         regex = None
         if (pattern or "").strip():
@@ -563,8 +567,8 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
             except re.error as exc:
                 return tool_error(
                     "bad_pattern",
-                    f"正则表达式无法编译：{exc}。",
-                    hint="请检查括号、方括号是否配对，或留空 pattern 只等进程退出。",
+                    f"Could not compile regular expression: {exc}.",
+                    hint="Check that parentheses and brackets are balanced, or leave pattern empty to wait only for exit.",
                 )
 
         limit = max(1, min(int(timeout or 30), 120))
@@ -599,46 +603,46 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
         if record.running and not matched and time.monotonic() >= deadline:
             timed_out = True
 
-        status = f"运行中 (PID {record.pid})" if record.running else f"已退出 (code {record.exit_code})"
-        header = [f"进程：{record.id} · {status}"]
+        status = f"running (PID {record.pid})" if record.running else f"exited (code {record.exit_code})"
+        header = [f"Process: {record.id} · {status}"]
         if matched:
-            header.append(f"命中：{matched.strip()}")
+            header.append(f"Matched: {matched.strip()}")
         elif regex is not None:
-            header.append(f"未命中模式：{pattern}")
+            header.append(f"Pattern not matched: {pattern}")
         if timed_out:
-            header.append(f"等待超时：进程在 {limit}s 内没有退出，也没有命中模式。")
+            header.append(f"Wait timed out: the process did not exit or match the pattern within {limit}s.")
 
         text = log_text().replace("\r\n", "\n")
         lines = text.rstrip("\n").splitlines()
         keep = max(10, min(int(tail or 60), 500))
         if len(lines) > keep:
-            lines = [f"…[日志共 {len(lines)} 行，只显示最后 {keep} 行]…", *lines[-keep:]]
-        header.append("--- 日志 ---")
-        header.append("\n".join(lines) if lines else "(暂无输出)")
+            lines = [f"…[{len(lines)} log lines total; showing the last {keep}]…", *lines[-keep:]]
+        header.append("--- log ---")
+        header.append("\n".join(lines) if lines else "(no output yet)")
         return truncate("\n".join(header), ctx.max_output_chars, keep_tail=True)
 
     @tool
     def stop_process(process_id: str) -> str:
-        """停止一个由本应用启动的后台进程（会结束其子进程）。
+        """Stop a background process started by this application, including its children.
 
         Args:
-            process_id: start_process 返回的进程 ID。
+            process_id: Process ID returned by start_process.
 
         Returns:
-            停止结果与退出码；ID 不存在时返回 ``Error:``。
+            Stop result and exit code; returns ``Error:`` when the ID is unknown.
         """
         record = manager.get(process_id)
         if record is None:
             return tool_error(
                 "unknown_process",
-                f"找不到进程 {process_id!r}。",
-                hint="先用 list_processes 查看现有进程 ID。",
+                f"Process {process_id!r} not found.",
+                hint="Use list_processes to see available process IDs.",
             )
         if not record.running:
-            return f"进程 {record.id} 已经退出（code {record.exit_code}），无需停止。"
+            return f"Process {record.id} has already exited (code {record.exit_code}); nothing to stop."
         stopped = manager.stop(record.id)
         code = stopped.exit_code if stopped else None
-        return f"已停止进程：{record.id}（退出码 {code}）。"
+        return f"Stopped process: {record.id} (exit code {code})."
 
     tools = [start_process, list_processes, read_process_logs, wait_process, stop_process]
     if only is None:

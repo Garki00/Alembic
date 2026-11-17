@@ -1,5 +1,5 @@
 # tests/images_test.py
-"""read_image 的测试：视觉通道注入、格式校验与错误契约。"""
+"""read_image tests: vision channel injection, format validation, and error contracts."""
 
 import base64
 import shutil

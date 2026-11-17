@@ -1,12 +1,12 @@
 # utils/parallel_executor.py
 """
-并行工具调用执行器
+Parallel tool-call executor.
 
-支持：
-1. 并行执行独立的工具调用
-2. 批量处理相似的工具调用
-3. 依赖管理（DAG）
-4. 错误恢复
+Supports:
+1. parallel execution of independent tool calls
+2. batching of similar tool calls
+3. dependency management (DAG)
+4. error recovery
 """
 
 import asyncio
@@ -20,7 +20,7 @@ from utils.performance import get_performance_monitor
 
 @dataclass
 class ToolCall:
-    """工具调用"""
+    """A tool call."""
 
     id: str
     tool_name: str
@@ -34,7 +34,7 @@ class ToolCall:
 
 @dataclass
 class ToolResult:
-    """工具调用结果"""
+    """Result of a tool call."""
 
     id: str
     success: bool
@@ -44,7 +44,7 @@ class ToolResult:
 
 
 class ParallelExecutor:
-    """并行执行器"""
+    """Parallel executor."""
 
     def __init__(
         self,
@@ -62,7 +62,7 @@ class ParallelExecutor:
         tool_calls: List[ToolCall],
         tool_registry: Dict[str, Callable],
     ) -> Dict[str, ToolResult]:
-        """并行执行工具调用（无依赖）"""
+        """Execute tool calls in parallel (independent calls)."""
         if not tool_calls:
             return {}
 
@@ -115,7 +115,7 @@ class ParallelExecutor:
         tool_calls: List[ToolCall],
         tool_registry: Dict[str, Callable],
     ) -> Dict[str, ToolResult]:
-        """执行DAG（有依赖的工具调用）"""
+        """Execute a DAG (tool calls with dependencies)."""
         # 构建依赖图
         call_map = {call.id: call for call in tool_calls}
         results = {}
@@ -151,7 +151,7 @@ class ParallelExecutor:
         return results
 
     def _batch_similar_calls(self, tool_calls: List[ToolCall]) -> Dict[int, List[ToolCall]]:
-        """批处理相似的工具调用"""
+        """Batch similar tool calls."""
         # 按工具名称分组
         groups: Dict[str, List[ToolCall]] = {}
         for call in tool_calls:
@@ -175,7 +175,7 @@ class ParallelExecutor:
         batch: List[ToolCall],
         tool_registry: Dict[str, Callable],
     ) -> Dict[str, ToolResult]:
-        """执行一个批次的工具调用"""
+        """Execute one batch of tool calls."""
         results = {}
 
         for call in batch:
@@ -204,7 +204,7 @@ class ParallelExecutor:
         return results
 
     def _topological_sort(self, tool_calls: List[ToolCall]) -> List[List[str]]:
-        """拓扑排序，返回执行层次"""
+        """Topological sort returning the execution layers."""
         # 构建图
         graph = {call.id: call.dependencies for call in tool_calls}
         in_degree = {call.id: len(call.dependencies) for call in tool_calls}
@@ -238,7 +238,7 @@ class ParallelExecutor:
 
 
 class RetryExecutor:
-    """带重试的执行器"""
+    """Executor with retries."""
 
     def __init__(
         self,
@@ -259,7 +259,7 @@ class RetryExecutor:
         *args,
         **kwargs,
     ) -> Any:
-        """执行函数，失败时重试"""
+        """Run a function and retry it on failure."""
         last_error = None
 
         for attempt in range(self.max_retries + 1):
@@ -296,7 +296,7 @@ def parallel_execute(
     tool_registry: Dict[str, Callable],
     max_workers: Optional[int] = None,
 ) -> Dict[str, ToolResult]:
-    """并行执行工具调用的便捷函数"""
+    """Convenience helper that executes tool calls in parallel."""
     from config.settings_optimized import settings
 
     if max_workers is None:
@@ -317,7 +317,7 @@ def execute_with_retry(
     max_retries: Optional[int] = None,
     **kwargs,
 ) -> Any:
-    """带重试的执行便捷函数"""
+    """Convenience helper that executes a function with retries."""
     from config.settings_optimized import settings
 
     if max_retries is None:
@@ -336,10 +336,10 @@ def execute_with_retry(
 # 使用示例
 
 def example_parallel_file_reading():
-    """示例：并行读取多个文件"""
+    """Example: reading several files in parallel."""
 
     def read_file(file_path: str) -> str:
-        """读取文件内容"""
+        """Read the file contents."""
         with open(file_path, "r", encoding="utf-8") as f:
             return f.read()
 
@@ -372,7 +372,7 @@ def example_parallel_file_reading():
 
 
 def example_dag_execution():
-    """示例：DAG执行（有依赖的任务）"""
+    """Example: DAG execution (tasks with dependencies)."""
 
     def task_a() -> str:
         time.sleep(1)

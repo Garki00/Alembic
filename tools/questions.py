@@ -1,13 +1,10 @@
 # tools/questions.py
-"""向用户提问的工具与终端提问通道。
+"""Question tool and terminal question channel.
 
-与审批的区别：
-
-- 审批是「这个操作能不能执行」，回答只会是 once / always / deny；
-- 提问是「我需要一个信息才能继续」，回答是自由文本或选项之一。
-
-工具在工具线程里同步等待，因此网页端用 ``web.questions`` 的中继把 SSE
-事件和 HTTP 回执接起来；命令行直接用终端 ``input()``。
+Use a question when information is needed to continue; the answer is free text or
+one of the offered options, unlike an approval whose answer is once / always / deny.
+The tool waits synchronously on the tool thread; the web UI delivers events and
+answers through the ``web.questions`` relay, while the CLI reads terminal input.
 """
 
 from __future__ import annotations
@@ -25,12 +22,12 @@ MAX_OPTIONS = 6
 
 
 class QuestionCancelled(Exception):
-    """用户中断回答（终端 EOF / Ctrl-C，或网页流已断开）。"""
+    """The user interrupted the answer (terminal EOF / Ctrl-C, or the web stream closed)."""
 
 
 @dataclass(frozen=True)
 class Question:
-    """一次待回答的提问，可直接序列化成 SSE 事件。"""
+    """One pending question, directly serializable to an SSE event."""
 
     id: str
     question: str
@@ -47,12 +44,12 @@ class Question:
         }
 
 
-#: 提问通道：返回用户回答；``None`` 表示没有回答（超时/流断开）。
+#: Question channel: returns the user's answer; ``None`` means no answer (timeout / stream closed).
 Asker = Callable[[Question], str | None]
 
 
 def console_asker(question: Question) -> str | None:
-    """命令行提问：打印问题与选项，读一行输入。"""
+    """Ask on the command line: print the question and options, then read one input line."""
     print("\n[需要你的输入]")
     print(question.question)
     for index, option in enumerate(question.options, 1):
@@ -61,7 +58,7 @@ def console_asker(question: Question) -> str | None:
     try:
         raw = input(prompt).strip()
     except (EOFError, KeyboardInterrupt) as exc:
-        raise QuestionCancelled("用户中断了回答。") from exc
+        raise QuestionCancelled("The user interrupted the answer.") from exc
 
     if raw and raw.isdigit() and question.options:
         index = int(raw)
@@ -83,7 +80,7 @@ def _clean_options(options: list[str] | tuple[str, ...]) -> tuple[str, ...]:
 
 
 def build_question_tools(ctx: ToolContext) -> list:
-    """构造提问工具。没有提问通道时返回错误而不是静默跳过。"""
+    """Build the question tool. Without a question channel it returns an error instead of silently skipping."""
 
     @tool
     def ask_user_question(
@@ -91,40 +88,42 @@ def build_question_tools(ctx: ToolContext) -> list:
         options: list[str] = [],
         allow_free_text: bool = True,
     ) -> str:
-        """向用户提出一个问题并等待回答，适合补齐无法从工作区确认的信息。
+        """Ask the user a question and wait for the answer; use it for information that cannot be confirmed from the workspace.
 
-        只在确实需要用户决定时使用：例如目标不明确、要在多个方案中选择、
-        缺少只有用户知道的参数。不要用它确认自己已经能查到的事实。
+        Use it only when a user decision is genuinely required: the goal is
+        ambiguous, there is a choice between approaches, or a parameter is missing
+        that only the user knows. Do not use it to confirm facts you can look up.
 
         Args:
-            question: 要问用户的问题，尽量一句话说清楚。
-            options: 可选的候选项（最多 6 个），用户可点选，也可自由输入。
-            allow_free_text: 是否允许用户输入选项之外的文字。
+            question: The question to ask the user; keep it to one clear sentence.
+            options: Optional choices (at most 6) the user can click, and free text is allowed as well.
+            allow_free_text: Whether the user may type text outside the options.
 
         Returns:
-            用户回答的文本；超时、被取消或没有提问通道时返回 ``Error:``。
+            The user's answer as text; returns ``Error:`` on timeout, cancellation,
+            or when no question channel is available.
         """
         text = (question or "").strip()
         if not text:
-            return tool_error("empty_question", "question 不能为空。")
+            return tool_error("empty_question", "question must not be empty.")
         if ctx.asker is None:
             return tool_error(
                 "no_ask_channel",
-                "当前没有可用的提问通道，无法等待用户回答。",
-                hint="请先根据现有信息继续；确实无法判断时，在回复里说明需要用户补充什么。",
+                "No question channel is available, so the tool cannot wait for the user's answer.",
+                hint="Continue with the information you have; if something truly cannot be decided, state in your reply what the user needs to provide.",
             )
 
         cleaned = _clean_options(options)
         if len(cleaned) > MAX_OPTIONS:
             return tool_error(
                 "too_many_options",
-                f"最多只能提供 {MAX_OPTIONS} 个选项，这次收到 {len(cleaned)} 个。",
-                hint="请合并或删减选项后重新提问，不要假设用户能看到被截断的选项。",
+                f"At most {MAX_OPTIONS} options are allowed; {len(cleaned)} were provided.",
+                hint="Merge or remove options and ask again; do not assume the user can see truncated options.",
             )
         if not cleaned and not allow_free_text:
             return tool_error(
                 "no_options",
-                "allow_free_text=False 时至少需要提供一个选项。",
+                "When allow_free_text=False, at least one option is required.",
             )
 
         request = Question(
@@ -139,19 +138,19 @@ def build_question_tools(ctx: ToolContext) -> list:
         except QuestionCancelled:
             return tool_error(
                 "question_cancelled",
-                "等待回答时对话被中断，用户没有回答。",
-                hint="不要原样再问一次；可以先用只读方式继续，或在回复里留下问题。",
+                "The conversation was interrupted while waiting, and the user did not answer.",
+                hint="Do not repeat the same question verbatim; continue with read-only work, or leave the question in your reply.",
             )
-        except Exception as exc:  # 通道异常不应中断整轮对话
-            return tool_error("question_failed", f"提问通道出错：{exc}。")
+        except Exception as exc:  # a channel failure must not break the whole turn
+            return tool_error("question_failed", f"Question channel failed: {exc}.")
 
         if answer is None:
             return tool_error(
                 "question_timeout",
-                "等待用户回答超时，没有收到回答。",
-                hint="不要原样重试；先按最合理的假设继续，并在回复里说明这个假设。",
+                "Timed out waiting for the user to answer; no answer was received.",
+                hint="Do not retry verbatim; proceed with the most reasonable assumption and state it in your reply.",
             )
         answer = str(answer).strip()
-        return f"用户回答：{answer}" if answer else "用户回答：（空）"
+        return f"User answer: {answer}" if answer else "User answer: (empty)"
 
     return [ask_user_question]

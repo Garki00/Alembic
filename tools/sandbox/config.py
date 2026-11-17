@@ -22,7 +22,7 @@ DEFAULT_DOMAINS = (
 
 
 class SandboxConfigStore:
-    """``data/sandbox.json`` 的读写；只保存策略，不保存账号密码。"""
+    """Read and write ``data/sandbox.json``; stores policy only, never account credentials."""
 
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path or (Path(settings.data_dir) / "sandbox.json")).expanduser()

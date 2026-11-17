@@ -1,15 +1,11 @@
 # tools/env.py
-"""子进程环境变量：白名单透传，密钥一律不继承。
+"""Child process environment variables: whitelist passthrough, never inherit keys.
 
-Agent 启动的 shell / 后台进程与后端本身共享同一个 OS 用户，但不应共享
-后端的环境变量。最典型的问题是 ``.env`` 里的模型密钥被 ``load_dotenv()``
-写进 ``os.environ`` 后，任意一条命令都能用 ``env`` / ``Get-ChildItem Env:``
-把密钥打印出来。
-
-因此这里只放行工具链真正需要的系统变量（``PATH``、``SystemRoot``、
-``APPDATA``、``TEMP`` 等），再叠加极少数显式允许的前缀；其余一律丢弃。
-白名单是主规则，密钥模式识别是第二道保险：即使以后有人往白名单里加变量，
-``*_API_KEY`` / ``*_TOKEN`` / ``*_SECRET`` 之类仍会被剥离。
+The environment is filtered before a child process starts: only system variables
+the toolchain needs (``PATH``, ``SystemRoot``, ``APPDATA``, ``TEMP``, etc.) and
+a few explicitly allowed prefixes are passed through. Secret-name detection is a
+second safeguard, so names such as ``*_API_KEY``, ``*_TOKEN``, and ``*_SECRET``
+are stripped even if added to the whitelist.
 """
 
 from __future__ import annotations
@@ -18,18 +14,18 @@ import os
 import re
 from collections.abc import Mapping
 
-#: 工具链跨平台运行所必需的系统变量（大小写不敏感）。
+#: System variables required for cross-platform toolchain execution (case-insensitive).
 ALLOWED_ENV_KEYS: frozenset[str] = frozenset({
-    # 进程与系统
+    # Process and system
     "PATH", "PATHEXT", "COMSPEC", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR",
     "OS", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
     "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION",
-    # 用户目录与临时目录
+    # User and temporary directories
     "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME", "APPDATA", "LOCALAPPDATA",
     "PROGRAMDATA", "ALLUSERSPROFILE", "PUBLIC", "TEMP", "TMP", "TMPDIR",
     "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "COMMONPROGRAMFILES",
     "COMMONPROGRAMFILES(X86)", "COMMONPROGRAMW6432",
-    # 终端与 PowerShell
+    # Terminal and PowerShell
     "PSMODULEPATH", "POWERSHELL_DISTRIBUTION_CHANNEL", "TERM", "COLORTERM",
     "LANG", "LC_ALL", "LC_CTYPE", "SHELL", "USER", "USERNAME", "LOGNAME",
     "SESSIONNAME", "WT_SESSION",
@@ -37,18 +33,18 @@ ALLOWED_ENV_KEYS: frozenset[str] = frozenset({
     "WSL_DISTRO_NAME", "WSL_INTEROP", "WSLENV",
     # Git Bash / MSYS
     "MSYSTEM", "MINGW_PREFIX", "MINGW_CHOST", "MSYS", "CHERE_INVOKING", "EXEPATH",
-    # Git / Python 工具链的少量无害变量
+    # A few harmless Git / Python toolchain variables
     "GIT_EXEC_PATH", "GIT_INSTALL_ROOT", "PYTHONIOENCODING", "PYTHONUTF8",
     "PYTHONUNBUFFERED", "NODE_OPTIONS",
 })
 
-#: 变量名命中这些模式时一律剥离（第二道保险）。
+#: Names matching these patterns are always stripped (second safeguard).
 _SECRET_NAME = re.compile(
     r"(?i)(?:^|_)(?:API_?KEY|ACCESS_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|"
     r"CREDENTIALS?|PRIVATE_?KEY|AUTH|COOKIE)(?:_|$)"
 )
 
-#: 这些供应商 / 云平台前缀下的变量全部视为密钥。
+#: Variables under these vendor / cloud prefixes are all treated as secrets.
 _SECRET_PREFIXES = (
     "AWS_", "AZURE_", "GOOGLE_", "GCP_", "OPENAI_", "ANTHROPIC_", "DEEPSEEK_",
     "DASHSCOPE_", "QWEN_", "SILICONFLOW_", "MOONSHOT_", "MISTRAL_", "GROQ_",
@@ -59,7 +55,7 @@ _SECRET_PREFIXES = (
 
 
 def is_secret_name(name: str) -> bool:
-    """判断变量名是否属于密钥类（只按名字，不读取值）。"""
+    """Return whether a variable name belongs to a secret class (name only, value not read)."""
     upper = str(name or "").upper()
     if not upper:
         return True
@@ -69,7 +65,7 @@ def is_secret_name(name: str) -> bool:
 
 
 def is_allowed_name(name: str) -> bool:
-    """白名单内的变量才允许传给子进程。"""
+    """Return whether a whitelisted variable may be passed to child processes."""
     upper = str(name or "").upper()
     return upper in ALLOWED_ENV_KEYS and not is_secret_name(upper)
 
@@ -79,15 +75,17 @@ def build_child_env(
     *,
     inherit: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """构造干净的子进程环境。
+    """Build a clean child process environment.
 
     Args:
-        overrides: 在本进程之上强制设置的变量（例如 UTF-8 相关开关）。
-        inherit: 要读取的源环境，默认 ``os.environ``；测试可注入。
+        overrides: Variables to force-set on top of this process (for example
+            UTF-8 switches).
+        inherit: Source environment to read; defaults to ``os.environ`` and can
+            be injected by tests.
 
     Returns:
-        只包含白名单变量的新字典。``PATH`` 缺失时会补一个安全默认值，
-        避免子进程完全找不到命令。
+        A new dictionary containing only whitelisted variables. When ``PATH`` is
+        missing, a safe default is added so child processes can still find commands.
     """
     source = os.environ if inherit is None else inherit
     env = {

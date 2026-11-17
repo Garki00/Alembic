@@ -1,18 +1,14 @@
 # tools/registry.py
-"""工具注册表：工具的唯一事实来源。
+"""Tool registry: the single source of truth for tools.
 
-此前同一份工具清单散在三处（``config/store.py`` 的 TOOL_SPECS、
-``agents/agent.py`` 的 TOOLS、``web/runtime.py`` 的 TOOL_REGISTRY），
-新增一个工具要改三遍，漏一处就会出现「设置面板能开关、命令行却没有」。
+Register a tool once in :data:`TOOL_SPECS`; consumers derive from it:
 
-现在改为：**在这里登记一次**，三处消费者各自派生：
+- Web settings panel ← :data:`TOOL_SPECS` (config fields and risk level);
+- Web chat ← :func:`build_tools` (assembled from enabled state and current configuration);
+- CLI ← :func:`build_tools` + :func:`default_enabled_names`.
 
-- 网页设置面板 ← :data:`TOOL_SPECS`（含配置字段、风险等级）；
-- 网页对话 ← :func:`build_tools`（按启用状态 + 当前配置装配）；
-- 命令行 ← :func:`build_tools` + :func:`default_enabled_names`。
-
-一个条目（ToolSpec）可以由多个工具组成（如文件读写组），
-启用/禁用与配置都以「条目」为粒度。
+A single entry (ToolSpec) may consist of several tools (for example the file
+read/write groups); enable/disable and configuration apply at entry granularity.
 """
 
 from __future__ import annotations
@@ -42,12 +38,12 @@ from tools.weather import build_weather_tools
 
 logger = logging.getLogger(__name__)
 
-# 风险等级：read 只读；write 会改工作区内的文件；exec 会执行任意命令。
+# Risk levels: read = read-only; write = modifies files in the workspace; exec = runs arbitrary commands.
 RISK_READ = "read"
 RISK_WRITE = "write"
 RISK_EXEC = "exec"
 
-# 字段形态：决定设置面板用什么控件，以及保存时怎么校验。
+# Field kinds: determine the settings-panel control and how values are validated on save.
 FIELD_TEXT = "text"
 FIELD_NUMBER = "number"
 FIELD_SELECT = "select"
@@ -59,16 +55,17 @@ Builder = Callable[[Mapping[str, str], ToolContext], Sequence]
 
 @dataclass(frozen=True)
 class ToolField:
-    """设置面板里可编辑的一项工具参数。
+    """One editable tool parameter in the settings panel.
 
-    除 ``key`` / ``label`` 外的字段都有默认值，新增工具按需使用即可：
+    Every field except ``key`` / ``label`` has a default, so new tools can use only
+    what they need:
 
-    - ``secret``：密钥，不回显，留空表示保持原值；
-    - ``multiline``：多行文本框（``kind="text"`` 时生效）；
-    - ``kind``：控件形态，见 ``FIELD_KINDS``；
-    - ``options``：``kind="select"`` 时的候选，``((值, 显示名), ...)``；
-    - ``required``：仅用于界面标记（是否为空由工具自己报错）；
-    - ``default``：配置文件里没有这个键时的初始值。
+    - ``secret``: secret value, never echoed back; empty means keep the current value;
+    - ``multiline``: multi-line text box (effective when ``kind="text"``);
+    - ``kind``: control type, see ``FIELD_KINDS``;
+    - ``options``: candidates for ``kind="select"``, as ``((value, display name), ...)``;
+    - ``required``: UI marker only (the tool itself reports whether the value is empty);
+    - ``default``: initial value when the configuration file has no such key.
     """
 
     key: str
@@ -88,7 +85,7 @@ class ToolField:
             raise ValueError(f"字段 {self.key} 是 select，但没有给出 options")
 
     def public(self) -> dict:
-        """给前端的结构；值相关的字段由 :class:`ToolStore` 补齐。"""
+        """Frontend-facing structure; value-related fields are filled in by :class:`ToolStore`."""
         return {
             "key": self.key,
             "label": self.label,
@@ -101,10 +98,10 @@ class ToolField:
         }
 
     def normalize(self, value: str) -> str:
-        """按字段类型校验并规范化待保存的值。
+        """Validate and normalize the value to save according to the field type.
 
         Raises:
-            ValueError: 值不符合该字段的类型（由接口转成 400）。
+            ValueError: The value does not match the field type (converted to 400 by the API).
         """
         text = str(value)
         if self.kind == FIELD_SWITCH:
@@ -123,17 +120,17 @@ class ToolField:
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """一个可启停的工具条目。
+    """One tool entry that can be enabled or disabled.
 
     Attributes:
-        name: 条目名，也是 /api/tools/{name} 与 data/tools.json 的键。
-        label: 设置面板显示名。
-        description: 给用户看的一句话说明。
-        fields: 需要用户填写的参数。
-        risk: 风险等级，见 RISK_*。
-        default_enabled: 首次生成 data/tools.json 时是否默认启用。
-        tool_names: 实际暴露给模型的工具函数名（一个条目可含多个）。
-        builder: ``(config, ctx) -> Sequence[BaseTool]`` 的装配函数。
+        name: Entry name, also the key for /api/tools/{name} and data/tools.json.
+        label: Display name in the settings panel.
+        description: One-line description shown to the user.
+        fields: Parameters the user needs to fill in.
+        risk: Risk level, see RISK_*.
+        default_enabled: Whether the entry is enabled by default when data/tools.json is first generated.
+        tool_names: Names of the tool functions actually exposed to the model (one entry may contain several).
+        builder: Assembly function of type ``(config, ctx) -> Sequence[BaseTool]``.
     """
 
     name: str
@@ -147,7 +144,7 @@ class ToolSpec:
 
 
 # ---------------------------------------------------------------------------
-# 装配函数
+# Assembly functions
 # ---------------------------------------------------------------------------
 def _build_time(_config: Mapping[str, str], _ctx: ToolContext) -> Sequence:
     return [get_current_time]
@@ -230,7 +227,7 @@ def _build_mock(config: Mapping[str, str], _ctx: ToolContext) -> Sequence:
 
 
 # ---------------------------------------------------------------------------
-# 注册表
+# Registry
 # ---------------------------------------------------------------------------
 TOOL_SPECS: dict[str, ToolSpec] = {
     "get_current_time": ToolSpec(
@@ -474,8 +471,9 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         tool_names=("git_commit",),
         builder=_build_git_commit,
     ),
-    # 模拟工具：验证「注册表声明字段 → 设置面板 → 工具读到」这条链路，
-    # 同时也是新增工具只写 Python 的样板。默认关闭，避免干扰日常使用。
+    # Mock tool: exercises the chain "registry declares field → settings panel →
+    # tool reads it", and doubles as a template for new Python-only tools.
+    # Disabled by default so it does not interfere with daily use.
     "mock_data": ToolSpec(
         name="mock_data",
         label="模拟数据",
@@ -497,7 +495,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
 
 
 def default_enabled_names() -> set[str]:
-    """默认启用的条目名（供命令行使用）。"""
+    """Entry names enabled by default (used by the CLI)."""
     return {name for name, spec in TOOL_SPECS.items() if spec.default_enabled}
 
 
@@ -506,15 +504,16 @@ def build_tools(
     configs: Mapping[str, Mapping[str, str]] | None,
     ctx: ToolContext,
 ) -> list:
-    """按启用状态装配实际工具实例。
+    """Assemble actual tool instances according to enabled state.
 
     Args:
-        enabled: 启用的条目名集合；``None`` 表示全部启用。
-        configs: 条目名 → 参数表（如 QWeather 凭据）；缺省时工具回落到 .env。
-        ctx: 工作区与输出预算。
+        enabled: Set of enabled entry names; ``None`` means all enabled.
+        configs: Entry name → parameter table (such as QWeather credentials);
+            when omitted, tools fall back to .env.
+        ctx: Workspace and output budget.
 
     Returns:
-        LangChain 工具实例列表，顺序与 :data:`TOOL_SPECS` 一致。
+        List of LangChain tool instances, ordered like :data:`TOOL_SPECS`.
     """
     names = set(TOOL_SPECS) if enabled is None else set(enabled)
     built: list = []
@@ -524,7 +523,7 @@ def build_tools(
         config = dict((configs or {}).get(name) or {})
         try:
             built.extend(spec.builder(config, ctx))
-        except Exception:  # 单个条目装配失败不应拖垮整轮对话
+        except Exception:  # a single entry failing to assemble must not break the whole turn
             logger.exception("装配工具 %s 失败，已跳过", name)
     return built
 

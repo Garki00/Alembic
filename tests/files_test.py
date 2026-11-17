@@ -1,5 +1,5 @@
 # tests/files_test.py
-"""文件读写工具的测试：重点覆盖工作区边界与「读后写」约束。"""
+"""File read/write tool tests, focused on workspace boundaries and read-before-write rules."""
 
 import os
 import shutil
@@ -40,13 +40,13 @@ class ReadToolsTest(FilesTestBase):
         text = self.read["list_dir"].invoke({"path": "."})
         self.assertIn("src/", text)
         self.assertIn("note.txt", text)
-        self.assertIn("2 项", text)
+        self.assertIn("(2 entries)", text)
 
     def test_read_file_returns_numbered_lines(self):
         (self.root / "a.txt").write_text("第一行\n第二行\n第三行\n", encoding="utf-8")
 
         text = self.read["read_file"].invoke({"path": "a.txt"})
-        self.assertIn("共 3 行", text)
+        self.assertIn("3 lines", text)
         self.assertIn("1| 第一行", text)
         self.assertIn("3| 第三行", text)
 
@@ -113,7 +113,7 @@ class ReadToolsTest(FilesTestBase):
         )
         text = self.read["read_file"].invoke({"path": "big.txt", "limit": 200})
         self.assertLessEqual(len(text), 2000 + 100)
-        self.assertIn("已截断", text)
+        self.assertIn("truncated", text)
 
 
 class WorkspaceBoundaryTest(FilesTestBase):
@@ -135,7 +135,7 @@ class WorkspaceBoundaryTest(FilesTestBase):
         self.assertFalse(target.exists())
 
     def test_similar_prefix_directory_is_not_inside(self):
-        """D:\\work 不应把 D:\\workspace-evil 当成自己的子目录。"""
+        """D:\\work must not treat D:\\workspace-evil as its subdirectory."""
         sibling = self.root.parent / (self.root.name + "-evil")
         sibling.mkdir()
         self.addCleanup(shutil.rmtree, sibling, ignore_errors=True)
@@ -154,9 +154,9 @@ class WorkspaceBoundaryTest(FilesTestBase):
 class WriteToolsTest(FilesTestBase):
     def test_write_creates_new_file_and_parents(self):
         text = self.write["write_file"].invoke({"path": "pkg/sub/new.txt", "content": "hi"})
-        self.assertIn("已创建", text)
-        self.assertIn("变更：+1 -0", text)
-        self.assertIn("校验：文件已存在", text)
+        self.assertIn("Created:", text)
+        self.assertIn("Changes: +1 -0", text)
+        self.assertIn("Verified: the file exists", text)
         self.assertEqual((self.root / "pkg" / "sub" / "new.txt").read_text(encoding="utf-8"), "hi")
 
     def test_overwrite_requires_read_first(self):
@@ -169,7 +169,7 @@ class WriteToolsTest(FilesTestBase):
 
         self.read["read_file"].invoke({"path": "exist.txt"})
         allowed = self.write["write_file"].invoke({"path": "exist.txt", "content": "new"})
-        self.assertIn("已覆盖", allowed)
+        self.assertIn("Overwritten:", allowed)
         self.assertEqual(target.read_text(encoding="utf-8"), "new")
 
     def test_write_after_external_change_is_stale(self):
@@ -192,8 +192,8 @@ class WriteToolsTest(FilesTestBase):
         text = self.write["edit_file"].invoke({
             "path": "a.py", "old_string": "return 1", "new_string": "return 2",
         })
-        self.assertIn("替换 1 处", text)
-        self.assertIn("变更：+1 -1", text)
+        self.assertIn("1 replacement(s)", text)
+        self.assertIn("Changes: +1 -1", text)
         self.assertEqual(target.read_text(encoding="utf-8"), "def f():\n    return 2\n")
 
     def test_edit_file_requires_read(self):
@@ -213,12 +213,12 @@ class WriteToolsTest(FilesTestBase):
             "path": "c.py", "old_string": "x = 1", "new_string": "x = 2",
         })
         self.assertTrue(text.startswith("Error: [ambiguous_match]"), text)
-        self.assertIn("2 次", text)
+        self.assertIn("occurs 2 times", text)
 
         replaced = self.write["edit_file"].invoke({
             "path": "c.py", "old_string": "x = 1", "new_string": "x = 2", "replace_all": True,
         })
-        self.assertIn("替换 2 处", replaced)
+        self.assertIn("2 replacement(s)", replaced)
 
     def test_edit_file_missing_old_string(self):
         target = self.root / "d.py"

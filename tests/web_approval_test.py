@@ -1,5 +1,5 @@
 # tests/web_approval_test.py
-"""网页端审批通道的测试：中继、超时、HTTP 端点，以及完整的 SSE 交互。"""
+"""Web approval channel tests: relay, timeout, HTTP endpoints, and full SSE interaction."""
 
 import json
 import shutil
@@ -95,7 +95,7 @@ class BrokerTest(unittest.TestCase):
 
 
 class SSEApprovalFlowTest(unittest.TestCase):
-    """从一个真实 SSE 流里拿到 approval 事件，回执后工具线程继续跑。"""
+    """Gets an approval event from a real SSE stream; after the response the tool thread continues."""
 
     def setUp(self):
         self.tmp = make_tempdir()
@@ -172,7 +172,7 @@ class SSEApprovalFlowTest(unittest.TestCase):
 
 
 class ApprovalStubAgent:
-    """流式过程中触发一次审批，验证「阻塞 → 回执 → 继续」。"""
+    """Triggers one approval during streaming to verify block, response, then resume."""
 
     def __init__(self, gate, seen: list[str]) -> None:
         self.gate = gate

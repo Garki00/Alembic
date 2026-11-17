@@ -1,5 +1,5 @@
 # tests/cli_test.py
-"""命令行交互层（main.ChatCLI）的单元测试。"""
+"""Unit tests for the CLI interaction layer (main.ChatCLI)."""
 
 import io
 import shutil
@@ -17,7 +17,7 @@ from main import ChatCLI
 
 @contextmanager
 def workspace_tempdir():
-    """项目内的临时目录（避免沙箱下系统临时目录不可写）。"""
+    """Temporary directory inside the project (the system temp directory may be unwritable in the sandbox)."""
     root = Path(__file__).resolve().parents[1] / ".tmp" / "tests"
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"cli_{uuid4().hex[:12]}"

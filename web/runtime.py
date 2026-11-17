@@ -1,5 +1,5 @@
 # web/runtime.py
-"""按网页端的当前设置组装模型与 Agent。"""
+"""Build the model and agent from the web frontend's current settings."""
 
 from __future__ import annotations
 
@@ -43,11 +43,21 @@ PROVIDER_BASE_URLS: dict[str, str] = {
 
 
 def create_chat_model(model_cfg: ModelConfig):
-    """根据模型配置创建聊天模型。
+    """Create a chat model from its configuration.
 
-    ``provider`` 决定默认 Base URL；除 DeepSeek 走 :class:`ChatDeepSeek` 外，
-    其余供应商都使用 :class:`ChatOpenAI` 的 OpenAI 兼容接口（Claude 走
-    Anthropic 的兼容端点）。
+    ``provider`` selects the default base URL. All providers use an
+    OpenAI-compatible interface: DeepSeek uses :class:`ChatDeepSeek`; every
+    other provider, including Claude through Anthropic's compatible endpoint,
+    uses :class:`ChatOpenAI`.
+
+    Args:
+        model_cfg: Model configuration with credentials and endpoint details.
+
+    Returns:
+        A chat model instance for the configured provider.
+
+    Raises:
+        RuntimeError: If the API key, model ID, or base URL is missing.
     """
     if not model_cfg.api_key:
         raise RuntimeError(f"模型「{model_cfg.name}」还没有配置 API Key，请在设置里填写。")
@@ -93,7 +103,7 @@ def tool_context(
     sandbox=None,
     sandbox_policy: SandboxPolicy | None = None,
 ) -> ToolContext:
-    """把网页端的工作区字符串变成工具上下文。"""
+    """Convert the web frontend's workspace string into a tool context."""
     text = (workspace or "").strip()
     root = Path(text).expanduser().resolve() if text else Path.cwd().resolve()
     return ToolContext(
@@ -135,21 +145,28 @@ def build_runtime(
     sandbox=None,
     sandbox_config: Mapping[str, Any] | None = None,
 ):
-    """返回 ``(agent, summarizer)``，供一轮对话使用。
+    """Return ``(agent, summarizer)`` for one conversation turn.
 
-    ``tool_configs`` 是条目名 → 参数表（如 QWeather 凭据）。参数按这一轮
-    注入到工具实例里，不再写进 ``os.environ``，因此并发会话不会互相污染。
+    ``tool_configs`` maps entry names to parameter maps (for example QWeather
+    credentials). Parameters are injected into tool instances for this turn
+    instead of being written to ``os.environ``, so concurrent sessions do not
+    interfere with each other.
 
-    ``approval`` 为工具审批开关；网页端由 :class:`web.approvals.ApprovalBroker`
-    提供「阻塞等待浏览器回执」的提问函数。``asker`` 是 ask_user_question 的
-    提问通道（网页端由 :class:`web.questions.QuestionBroker` 提供）。
+    ``approval`` is the tool approval gate. On the web frontend,
+    :class:`web.approvals.ApprovalBroker` supplies the function that blocks for
+    a browser decision. ``asker`` is the question channel for
+    ask_user_question, supplied on the web frontend by
+    :class:`web.questions.QuestionBroker`.
 
-    ``engine`` 默认取 ``settings.agent_engine``：``tool_calling`` 走 LangChain
-    ``create_agent`` 的模型原生工具调用（默认），``react`` 走原生 ReAct 文本循环
-    （可选兼容模式，解析器严格单步）。
+    ``engine`` defaults to ``settings.agent_engine``: ``tool_calling`` uses
+    LangChain ``create_agent`` native tool calling (the default), while
+    ``react`` uses the native ReAct text loop (an optional compatibility mode
+    with a strict single-step parser).
 
-    ``activation`` 是调用方按会话持有的扩展工具激活状态。Agent 会一次性装配
-    所有已启用工具，再由 ``ToolVisibilityMiddleware`` 按激活状态过滤模型 schema。
+    ``activation`` is the caller's per-session activation state for extended
+    tools. The agent assembles all enabled tools at once, and
+    ``ToolVisibilityMiddleware`` filters the model schema according to the
+    activation state.
     """
     model = create_chat_model(model_cfg)
     enabled_entries = set(enabled_tools)

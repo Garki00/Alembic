@@ -1,16 +1,18 @@
 # tools/time.py
-"""时间工具：获取本地或指定地区 / 城市 / 时区的时间。
+"""Time tool: get the current time for the local machine or a specified region / city / time zone.
 
-输入支持四类写法（大小写、空格不敏感）：
+Four input forms are supported (case- and space-insensitive):
 
-1. 本地：``local``、``本地``、``本机``、``系统时间`` 等；
-2. IANA 时区名：``Asia/Shanghai``、``UTC``、``America/New_York``；
-3. 常见城市 / 省份 / 国家的中英文名称：``北京``、``纽约``、``日本``；
-4. UTC 偏移：``UTC+8``、``GMT-5``、``+08:00``、``东八区``、``西五区``。
+1. Local: ``local`` and equivalent Chinese aliases;
+2. IANA time zone names: ``Asia/Shanghai``, ``UTC``, ``America/New_York``;
+3. Chinese or English names of common cities / provinces / countries;
+4. UTC offsets: ``UTC+8``, ``GMT-5``, ``+08:00``, and Chinese offset aliases.
 
-时区数据优先取标准库 :mod:`zoneinfo` 的 IANA 数据库；Windows 默认不带
-IANA 数据，需要在虚拟环境中安装 ``tzdata``（已写入 pyproject 依赖）。
-数据不可用时退回内置固定偏移表，并在结果里明确提示“未应用夏令时”。
+Time zone data comes from the standard library :mod:`zoneinfo` IANA database when
+available. Windows does not ship IANA data by default, so ``tzdata`` must be
+installed in the virtual environment (already declared in pyproject). When that
+data is unavailable, the built-in fixed-offset table is used and the result
+explicitly notes that daylight saving time is not applied.
 """
 
 from __future__ import annotations
@@ -29,13 +31,13 @@ from tools.errors import tool_error
 
 __all__ = ["get_current_time", "list_timezones"]
 
-_WEEKDAYS_ZH = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
+_WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
 # ---------------------------------------------------------------------------
-# 地区 / 城市 / 国家名 → IANA 时区
+# Region / city / country name → IANA time zone
 # ---------------------------------------------------------------------------
 _CITY_ALIASES: dict[str, str] = {
-    # ---- 中国 ----
+    # ---- China ----
     "中国": "Asia/Shanghai",
     "中国大陆": "Asia/Shanghai",
     "china": "Asia/Shanghai",
@@ -128,7 +130,7 @@ _CITY_ALIASES: dict[str, str] = {
     "nanchang": "Asia/Shanghai",
     "拉萨": "Asia/Shanghai",
     "lhasa": "Asia/Shanghai",
-    # 省级行政区（统一使用北京时间 UTC+8）
+    # Provincial-level regions (all use Beijing time, UTC+8)
     "广东": "Asia/Shanghai",
     "guangdong": "Asia/Shanghai",
     "江苏": "Asia/Shanghai",
@@ -195,7 +197,7 @@ _CITY_ALIASES: dict[str, str] = {
     "taiwan": "Asia/Taipei",
     "台北": "Asia/Taipei",
     "taipei": "Asia/Taipei",
-    # ---- 东亚 / 东南亚 ----
+    # ---- East Asia / Southeast Asia ----
     "日本": "Asia/Tokyo",
     "japan": "Asia/Tokyo",
     "东京": "Asia/Tokyo",
@@ -257,7 +259,7 @@ _CITY_ALIASES: dict[str, str] = {
     "phnompenh": "Asia/Phnom_Penh",
     "文莱": "Asia/Brunei",
     "brunei": "Asia/Brunei",
-    # ---- 南亚 / 中东 ----
+    # ---- South Asia / Middle East ----
     "印度": "Asia/Kolkata",
     "india": "Asia/Kolkata",
     "新德里": "Asia/Kolkata",
@@ -311,7 +313,7 @@ _CITY_ALIASES: dict[str, str] = {
     "turkey": "Europe/Istanbul",
     "伊斯坦布尔": "Europe/Istanbul",
     "istanbul": "Europe/Istanbul",
-    # ---- 欧洲 ----
+    # ---- Europe ----
     "英国": "Europe/London",
     "uk": "Europe/London",
     "england": "Europe/London",
@@ -426,7 +428,7 @@ _CITY_ALIASES: dict[str, str] = {
     "白俄罗斯": "Europe/Minsk",
     "明斯克": "Europe/Minsk",
     "minsk": "Europe/Minsk",
-    # ---- 美洲 ----
+    # ---- Americas ----
     "美国": "America/New_York",
     "usa": "America/New_York",
     "us": "America/New_York",
@@ -528,7 +530,7 @@ _CITY_ALIASES: dict[str, str] = {
     "哥伦比亚": "America/Bogota",
     "波哥大": "America/Bogota",
     "bogota": "America/Bogota",
-    # ---- 非洲 ----
+    # ---- Africa ----
     "埃及": "Africa/Cairo",
     "开罗": "Africa/Cairo",
     "cairo": "Africa/Cairo",
@@ -550,7 +552,7 @@ _CITY_ALIASES: dict[str, str] = {
     "埃塞俄比亚": "Africa/Addis_Ababa",
     "亚的斯亚贝巴": "Africa/Addis_Ababa",
     "addisababa": "Africa/Addis_Ababa",
-    # ---- 大洋洲 ----
+    # ---- Oceania ----
     "澳大利亚": "Australia/Sydney",
     "澳洲": "Australia/Sydney",
     "australia": "Australia/Sydney",
@@ -578,7 +580,7 @@ _CITY_ALIASES: dict[str, str] = {
     "wellington": "Pacific/Auckland",
     "斐济": "Pacific/Fiji",
     "fiji": "Pacific/Fiji",
-    # ---- 世界时 ----
+    # ---- Universal time ----
     "utc": "UTC",
     "gmt": "UTC",
     "zulu": "UTC",
@@ -589,22 +591,23 @@ _CITY_ALIASES: dict[str, str] = {
     "格林威治时间": "UTC",
 }
 
-# 某些别名需要额外提醒（键为别名，值为附加说明）
+# Some aliases need an extra note (key: alias, value: additional explanation)
 _ALIAS_NOTES: dict[str, str] = {
-    "美国": "美国横跨多个时区，默认按东部时间（America/New_York）处理；查询西部请用“洛杉矶”或“美国西部”。",
-    "usa": "美国横跨多个时区，默认按东部时间（America/New_York）处理；查询西部请用“洛杉矶”或“美国西部”。",
-    "us": "美国横跨多个时区，默认按东部时间（America/New_York）处理；查询西部请用“洛杉矶”或“美国西部”。",
-    "america": "美国横跨多个时区，默认按东部时间（America/New_York）处理；查询西部请用“洛杉矶”或“美国西部”。",
-    "unitedstates": "美国横跨多个时区，默认按东部时间（America/New_York）处理；查询西部请用“洛杉矶”或“美国西部”。",
-    "新疆": "新疆常用 UTC+6 的乌鲁木齐时间；如需北京时间请用“北京”或“Asia/Shanghai”。",
-    "xinjiang": "新疆常用 UTC+6 的乌鲁木齐时间；如需北京时间请用“北京”或“Asia/Shanghai”。",
-    "乌鲁木齐": "乌鲁木齐使用 UTC+6；如需北京时间请用“北京”或“Asia/Shanghai”。",
-    "urumqi": "乌鲁木齐使用 UTC+6；如需北京时间请用“北京”或“Asia/Shanghai”。",
+    "美国": "The United States spans multiple time zones and defaults to Eastern Time (America/New_York); for the West Coast use \"洛杉矶\" or \"美国西部\".",
+    "usa": "The United States spans multiple time zones and defaults to Eastern Time (America/New_York); for the West Coast use \"洛杉矶\" or \"美国西部\".",
+    "us": "The United States spans multiple time zones and defaults to Eastern Time (America/New_York); for the West Coast use \"洛杉矶\" or \"美国西部\".",
+    "america": "The United States spans multiple time zones and defaults to Eastern Time (America/New_York); for the West Coast use \"洛杉矶\" or \"美国西部\".",
+    "unitedstates": "The United States spans multiple time zones and defaults to Eastern Time (America/New_York); for the West Coast use \"洛杉矶\" or \"美国西部\".",
+    "新疆": "Xinjiang commonly uses UTC+6 Urumqi time; for Beijing time use \"北京\" or Asia/Shanghai.",
+    "xinjiang": "Xinjiang commonly uses UTC+6 Urumqi time; for Beijing time use \"北京\" or Asia/Shanghai.",
+    "乌鲁木齐": "Urumqi uses UTC+6; for Beijing time use \"北京\" or Asia/Shanghai.",
+    "urumqi": "Urumqi uses UTC+6; for Beijing time use \"北京\" or Asia/Shanghai.",
 }
 
 # ---------------------------------------------------------------------------
-# 无 tzdata 时的固定偏移表（小时, 是否实行夏令时）
-# 仅在标准库拿不到 IANA 数据时兜底使用，结果里会标注“未应用夏令时”。
+# Fixed-offset table used when tzdata is missing (hours, observes DST)
+# Only a fallback when the standard library cannot load IANA data; results are
+# annotated with "daylight saving time not applied".
 # ---------------------------------------------------------------------------
 _FALLBACK_OFFSETS: dict[str, tuple[float, bool]] = {
     "UTC": (0.0, False),
@@ -700,7 +703,7 @@ _FALLBACK_OFFSETS: dict[str, tuple[float, bool]] = {
     "Australia/Hobart": (10.0, True),
 }
 
-# 本地时间的写法
+# Local-time spellings
 _LOCAL_NAMES = {
     "local",
     "localtime",
@@ -746,7 +749,7 @@ _CN_DIGITS = {
 _MAX_OFFSET_HOURS = 14
 _LIST_LIMIT = 40
 
-# list_timezones 允许用大洲关键词做粗过滤
+# list_timezones allows coarse filtering by continent keyword
 _CONTINENT_KEYWORDS: dict[str, tuple[str, ...]] = {
     "亚洲": ("asia/",),
     "欧洲": ("europe/",),
@@ -761,7 +764,7 @@ _CONTINENT_KEYWORDS: dict[str, tuple[str, ...]] = {
 
 
 class _UnknownZone(ValueError):
-    """输入无法解析为时区时抛出，携带候选建议所需的信息。"""
+    """Raised when the input cannot be parsed as a time zone; carries the data needed for candidate suggestions."""
 
     def __init__(self, requested: str, extra: str = "") -> None:
         super().__init__(requested)
@@ -771,7 +774,7 @@ class _UnknownZone(ValueError):
 
 @dataclass(frozen=True)
 class _ResolvedZone:
-    """解析结果：时区对象 + 展示用的名称/别名/提示。"""
+    """Resolution result: time zone object plus display name, alias, and notes."""
 
     tz: tzinfo
     label: str
@@ -781,13 +784,13 @@ class _ResolvedZone:
 
 
 def _norm(text: str) -> str:
-    """归一化：去掉空白、连字符、引号、斜线等，便于宽松匹配。"""
+    """Normalize by removing whitespace, hyphens, quotes, and slashes for lenient matching."""
     return _STRIP_CHARS.sub("", text or "").lower()
 
 
 @lru_cache(maxsize=1)
 def _tzdata_available() -> bool:
-    """标准库是否能读到 IANA 时区数据（Linux/macOS 自带，Windows 需 tzdata）。"""
+    """Whether the standard library can read IANA time zone data (built in on Linux/macOS; Windows needs tzdata)."""
     for key in ("UTC", "Asia/Shanghai"):
         try:
             ZoneInfo(key)
@@ -798,16 +801,17 @@ def _tzdata_available() -> bool:
 
 @lru_cache(maxsize=1)
 def _iana_index() -> dict[str, str]:
-    """小写 IANA 时区名 → 官方大小写写法。
+    """Lowercase IANA time zone name → official capitalization.
 
-    同时收录内置固定偏移表里的名字，这样即使机器上没有 tzdata，
-    ``asia/shanghai`` 这类大小写不一致的写法也能正确识别。
+    Names from the built-in fixed-offset table are indexed as well, so that
+    inconsistently cased forms such as ``asia/shanghai`` are recognized even when
+    the machine has no tzdata.
     """
     index: dict[str, str] = {}
     try:
         for name in available_timezones():
             index.setdefault(name.lower(), name)
-    except Exception:  # pragma: no cover - 极端环境下避免导入即崩
+    except Exception:  # pragma: no cover - avoid crashing at import time in extreme environments
         pass
     for name in _FALLBACK_OFFSETS:
         index.setdefault(name.lower(), name)
@@ -816,7 +820,7 @@ def _iana_index() -> dict[str, str]:
 
 @lru_cache(maxsize=1)
 def _alias_index() -> dict[str, tuple[str, str]]:
-    """归一化别名 → (原始写法, IANA 时区名)。"""
+    """Normalized alias → (original spelling, IANA time zone name)."""
     index: dict[str, tuple[str, str]] = {}
     for alias, zone in _CITY_ALIASES.items():
         index.setdefault(_norm(alias), (alias, zone))
@@ -824,7 +828,7 @@ def _alias_index() -> dict[str, tuple[str, str]]:
 
 
 def _parse_offset(text: str) -> tzinfo | None:
-    """解析 UTC+8 / GMT-5 / +08:00 / 东八区 这类固定偏移写法。"""
+    """Parse fixed-offset forms such as UTC+8, GMT-5, +08:00, or a Chinese offset alias."""
     raw = text.strip()
 
     match = _CN_OFFSET_RE.match(raw)
@@ -847,10 +851,10 @@ def _parse_offset(text: str) -> tzinfo | None:
 
 
 def _zone_for(zone_name: str) -> tuple[tzinfo | None, str | None]:
-    """按 IANA 名称取时区；没有数据时退回固定偏移表。
+    """Look up a time zone by IANA name, falling back to the fixed-offset table when no data is available.
 
     Returns:
-        ``(tzinfo 或 None, 附加说明)``。
+        ``(tzinfo or None, extra note)``.
     """
     if _tzdata_available():
         try:
@@ -866,28 +870,30 @@ def _zone_for(zone_name: str) -> tuple[tzinfo | None, str | None]:
     note: str | None = None
     if observes_dst:
         note = (
-            "本机缺少 IANA 时区数据库（tzdata），已按内置标准时间计算，"
-            "该地区实行夏令时，结果可能相差 1 小时；执行 `uv sync` 安装 tzdata 后可获得精确结果。"
+            "The IANA time zone database (tzdata) is missing on this machine, so the "
+            "built-in standard-time offset was used; this region observes daylight "
+            "saving time, so the result may be off by 1 hour. Run `uv sync` to install "
+            "tzdata for an exact result."
         )
     return timezone(timedelta(hours=hours)), note
 
 
 def _resolve(requested: str) -> _ResolvedZone:
-    """把用户输入解析成带名称与提示的时区。"""
+    """Resolve user input into a time zone with a display name and notes."""
     raw = (requested or "").strip()
     if not raw:
-        raise _UnknownZone(raw or "", "请提供地区、IANA 时区名或 UTC 偏移。")
+        raise _UnknownZone(raw or "", "Please provide a region, IANA time zone name, or UTC offset.")
 
-    # 1) 本地时间
+    # 1) Local time
     if _norm(raw) in _NORMALIZED_LOCAL:
         now = datetime.now().astimezone()
         try:
             dst_active = bool(_time.daylight and _time.localtime().tm_isdst > 0)
-        except Exception:  # pragma: no cover - 某些平台拿不到夏令时信息
+        except Exception:  # pragma: no cover - some platforms do not expose DST information
             dst_active = None
-        return _ResolvedZone(now.tzinfo, "本地时间", dst_hint=dst_active)
+        return _ResolvedZone(now.tzinfo, "Local time", dst_hint=dst_active)
 
-    # 2) UTC 偏移写法
+    # 2) UTC offset forms
     offset_tz = _parse_offset(raw)
     if offset_tz is not None:
         offset = offset_tz.utcoffset(None) or timedelta(0)
@@ -896,19 +902,19 @@ def _resolve(requested: str) -> _ResolvedZone:
         hours, minutes = divmod(abs(total_minutes), 60)
         return _ResolvedZone(offset_tz, f"UTC{sign}{hours:02d}:{minutes:02d}")
 
-    # 3) 城市 / 省份 / 国家别名
+    # 3) City / province / country aliases
     alias_hit = _alias_index().get(_norm(raw))
     if alias_hit is not None:
         alias, zone_name = alias_hit
         tz, note = _zone_for(zone_name)
         if tz is None:
-            raise _UnknownZone(raw, f"缺少 {zone_name} 的时区数据，请安装 tzdata 后重试。")
+            raise _UnknownZone(raw, f"Missing time zone data for {zone_name}; install tzdata and retry.")
         notes = tuple(
             text for text in (_ALIAS_NOTES.get(alias), note) if text
         )
         return _ResolvedZone(tz, zone_name, alias, notes)
 
-    # 4) IANA 时区名（大小写、空格不敏感）
+    # 4) IANA time zone name (case- and space-insensitive)
     iana = _iana_index()
     canonical = iana.get(raw.lower(), "") or iana.get(raw.replace(" ", "_").lower(), "")
     if canonical:
@@ -916,7 +922,7 @@ def _resolve(requested: str) -> _ResolvedZone:
         if tz is not None:
             return _ResolvedZone(tz, canonical, None, tuple(text for text in (note,) if text))
 
-    # 5) 兜底：IANA 名不在索引里（通常是没有 tzdata），仍试一次
+    # 5) Fallback: IANA name not in the index (usually no tzdata); still try once
     if "/" in raw:
         tz, note = _zone_for(raw)
         if tz is not None:
@@ -924,12 +930,12 @@ def _resolve(requested: str) -> _ResolvedZone:
 
     extra = ""
     if not _tzdata_available():
-        extra = "本机缺少 IANA 时区数据库（tzdata），内置表只覆盖常用地区。"
+        extra = "The IANA time zone database (tzdata) is missing on this machine; the built-in table only covers common regions."
     raise _UnknownZone(raw, extra)
 
 
 def _suggestions(text: str, limit: int = 5) -> list[str]:
-    """给出相近的地区 / 时区候选项，帮助 Agent 自我纠正。"""
+    """Return nearby region / time zone candidates to help the agent self-correct."""
     normalized = _norm(text)
     if not normalized or len(normalized) < 2:
         return []
@@ -940,14 +946,15 @@ def _suggestions(text: str, limit: int = 5) -> list[str]:
         if len(alias_norm) < 2 or alias_norm == normalized:
             continue
         if alias_norm in normalized or normalized in alias_norm:
-            entry = f"{alias}（{zone}）"
+            entry = f"{alias} ({zone})"
             if entry not in found:
                 found.append(entry)
             if len(found) >= limit:
                 return found
 
     pool = list(_CITY_ALIASES) + list(_iana_index().values())
-    # 中文短名只差一个字时相似度约 0.5，短输入放宽匹配阈值
+    # A one-character difference between short Chinese names scores about 0.5,
+    # so relax the threshold for short inputs.
     cutoff = 0.5 if len(normalized) <= 3 else 0.6
     scored: list[tuple[float, int, int, str]] = []
     seen: set[str] = set()
@@ -958,13 +965,14 @@ def _suggestions(text: str, limit: int = 5) -> list[str]:
         score = difflib.SequenceMatcher(None, text, candidate).ratio()
         if score < cutoff:
             continue
-        # 分数相同时优先长度接近、且在别名表中靠前（通常是更常用的写法）的候选
+        # On a tie, prefer candidates closer in length and earlier in the alias
+        # table (usually the more common spelling).
         scored.append((score, -abs(len(candidate) - len(text)), -order, candidate))
     scored.sort(reverse=True)
 
     for _, _, _, candidate in scored:
         zone = _CITY_ALIASES.get(candidate)
-        entry = f"{candidate}（{zone}）" if zone else candidate
+        entry = f"{candidate} ({zone})" if zone else candidate
         if entry not in found:
             found.append(entry)
         if len(found) >= limit:
@@ -976,23 +984,24 @@ def _error_message(requested: str, extra: str = "") -> str:
     if not (requested or "").strip():
         return tool_error(
             "zone_empty",
-            "请提供要查询的地区或时区。",
-            hint="例如 \"local\"（本地）、\"北京\"、\"Asia/Shanghai\" 或 \"UTC+8\"。",
+            "Provide the region or time zone to query.",
+            hint='"local" (本地), "北京", "Asia/Shanghai", or "UTC+8".',
         )
     hints = [
-        "支持 local/本地、IANA 时区名（Asia/Shanghai、UTC）、"
-        "常见城市或国家（北京、纽约、日本）、UTC 偏移（UTC+8、+08:00、东八区）。"
+        "Supports local/本地, IANA time zone names (Asia/Shanghai, UTC), "
+        "common cities or countries (北京, 纽约, 日本), and UTC offsets "
+        "(UTC+8, +08:00, 东八区)."
     ]
     suggestions = _suggestions(requested)
     if suggestions:
-        hints.append("相近的结果：" + "、".join(suggestions) + "。")
+        hints.append("Close matches: " + ", ".join(suggestions) + ".")
     if extra:
         hints.append(extra)
-    return tool_error("zone_unknown", f"无法识别时区/地区 {requested!r}。", hint=" ".join(hints))
+    return tool_error("zone_unknown", f"Unrecognized time zone/region {requested!r}.", hint=" ".join(hints))
 
 
 def _format(now: datetime, zone: _ResolvedZone) -> str:
-    """把时间格式化成对人和 Agent 都友好的多行文本。"""
+    """Format the time as multi-line text friendly to both humans and the agent."""
     offset = now.utcoffset() or timedelta(0)
     total_minutes = int(offset.total_seconds()) // 60
     sign = "+" if total_minutes >= 0 else "-"
@@ -1006,40 +1015,42 @@ def _format(now: datetime, zone: _ResolvedZone) -> str:
 
     tz_display = now.tzname() or ""
     if tz_display == offset_text or (tz_display == "UTC" and offset_text == "UTC+00:00"):
-        # 固定偏移时区（无 tzdata 兜底）的缩写就是 UTC±HH:MM，避免重复展示
+        # For fixed-offset zones (the no-tzdata fallback) the abbreviation already
+        # is UTC±HH:MM, so avoid showing it twice.
         tz_display = ""
-    tz_part = f"{tz_display}，" if tz_display else ""
+    tz_part = f"{tz_display}, " if tz_display else ""
 
     lines: list[str] = []
     if zone.alias and zone.alias != zone.label and _norm(zone.alias) not in _NORMALIZED_LOCAL:
-        lines.append(f"地区：{zone.alias} → {zone.label}")
+        lines.append(f"Location: {zone.alias} → {zone.label}")
     else:
-        lines.append(f"地区：{zone.label}")
-    lines.append(f"时间：{now.strftime('%Y-%m-%d %H:%M:%S')}（{_WEEKDAYS_ZH[now.weekday()]}）")
+        lines.append(f"Location: {zone.label}")
+    lines.append(f"Time: {now.strftime('%Y-%m-%d %H:%M:%S')} ({_WEEKDAYS[now.weekday()]})")
     lines.append(
-        f"时区：{tz_part}{offset_text}，夏令时：{'是' if dst_active else '否'}"
+        f"Time zone: {tz_part}{offset_text}, DST: {'yes' if dst_active else 'no'}"
     )
-    lines.append(f"ISO 8601：{now.isoformat(timespec='seconds')}")
-    lines.append(f"Unix 时间戳：{int(now.timestamp())}")
+    lines.append(f"ISO 8601: {now.isoformat(timespec='seconds')}")
+    lines.append(f"Unix timestamp: {int(now.timestamp())}")
     for note in zone.notes:
-        lines.append(f"注意：{note}")
+        lines.append(f"Note: {note}")
     return "\n".join(lines)
 
 
 @tool
 def get_current_time(timezone_name: str = "local") -> str:
-    """获取指定地区 / 时区或本地的当前时间。
+    """Get the current time for a specified region / time zone or for the local machine.
 
     Args:
-        timezone_name: 要查询的地区或时区，默认 "local" 表示本机时间。
-            也可以传 IANA 时区名（"Asia/Shanghai"、"UTC"），
-            常见城市或国家的中英文名称（"北京"、"纽约"、"日本"），
-            或 UTC 偏移（"UTC+8"、"+08:00"、"东八区"）。
+        timezone_name: Region or time zone to query; defaults to "local" for the
+            local machine time. Also accepts IANA time zone names ("Asia/Shanghai",
+            "UTC"), Chinese or English names of common cities or countries, or
+            UTC offsets ("UTC+8", "+08:00", or a Chinese offset alias).
 
     Returns:
-        多行文本，包含地区/时区、日期时间、星期、时区缩写与 UTC 偏移、
-        是否夏令时、ISO 8601 文本和 Unix 时间戳；无法识别时返回以
-        "Error:" 开头的提示（含相近候选）。
+        Multi-line text with the region/time zone, date and time, weekday, time
+        zone abbreviation and UTC offset, DST flag, ISO 8601 text, and Unix
+        timestamp. When the input cannot be recognized, returns a message
+        starting with "Error:" (including nearby candidates).
     """
     try:
         zone = _resolve(timezone_name)
@@ -1048,21 +1059,21 @@ def get_current_time(timezone_name: str = "local") -> str:
 
     try:
         now = datetime.now(zone.tz)
-    except Exception as exc:  # 兜底，避免 Agent 因未捕获异常崩溃
-        return tool_error("time_failed", f"获取时间失败（{type(exc).__name__}: {exc}）。")
+    except Exception as exc:  # fallback: do not crash the agent with an uncaught exception
+        return tool_error("time_failed", f"Failed to get the time ({type(exc).__name__}: {exc}).")
     return _format(now, zone)
 
 
 @tool
 def list_timezones(keyword: str = "") -> str:
-    """查询支持的地区名称及其对应的 IANA 时区，可按关键词过滤。
+    """List supported region names and their IANA time zones, optionally filtered by keyword.
 
     Args:
-        keyword: 过滤关键词，例如 "美国"、"欧洲"、"Asia/"、"上海"；
-            留空时列出常用地区示例。
+        keyword: Filter keyword such as "United States", "Europe", "Asia/", or a
+            Chinese region name; leave empty to list common region examples.
 
     Returns:
-        每行一个“地区 → IANA 时区”，并附数据源与用法提示。
+        One "region → IANA time zone" pair per line, plus the data source and usage hint.
     """
     text = (keyword or "").strip()
     needle = _norm(text)
@@ -1089,19 +1100,19 @@ def list_timezones(keyword: str = "") -> str:
             matches.append(entry)
 
     source = (
-        "已加载 IANA 时区数据库（tzdata）"
+        "IANA time zone database (tzdata) loaded"
         if _tzdata_available()
-        else "未检测到 tzdata（Windows 需运行 `uv sync`），仅内置常用时区可用"
+        else "tzdata not detected (run `uv sync` on Windows); only built-in common time zones are available"
     )
     if not matches:
         return tool_error(
             "no_match",
-            f"未找到与 {text!r} 匹配的地区或时区。",
-            hint="可尝试国家/城市名（美国、东京）或 IANA 前缀（Asia/、Europe/）。",
+            f"No region or time zone matched {text!r}.",
+            hint="Try a country/city name (美国, 东京) or an IANA prefix (Asia/, Europe/).",
         )
 
-    header = f"数据源：{source}。共 {len(_CITY_ALIASES)} 个地区别名，匹配 {total} 项"
+    header = f"Data source: {source}. {len(_CITY_ALIASES)} region aliases in total, {total} matched"
     if total > len(matches):
-        header += f"，以下为前 {len(matches)} 项"
-    hint = '用法：get_current_time(timezone_name="Asia/Shanghai")，或直接传城市名如 "上海"。'
+        header += f"; showing the first {len(matches)}"
+    hint = 'Usage: get_current_time(timezone_name="Asia/Shanghai"), or pass a city name such as "上海".'
     return "\n".join([header, *matches, hint])

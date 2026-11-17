@@ -1,5 +1,5 @@
 # tests/download_test.py
-"""download_file 的测试：二进制落盘、覆盖策略与 SSRF/路径边界。"""
+"""download_file tests: binary persistence, overwrite policy, and SSRF/path boundaries."""
 
 import shutil
 import threading
@@ -77,12 +77,12 @@ class DownloadTest(unittest.TestCase):
 
     def test_downloads_binary(self):
         text = self.tool().invoke({"url": self.url("/file.bin"), "path": "data/file.bin"})
-        self.assertIn("已下载", text)
+        self.assertIn("Downloaded:", text)
         self.assertEqual((self.root / "data" / "file.bin").read_bytes(), b"\x00\x01binary-data")
 
     def test_follows_redirect(self):
         text = self.tool().invoke({"url": self.url("/redirect"), "path": "r.bin"})
-        self.assertIn("已下载", text)
+        self.assertIn("Downloaded:", text)
         self.assertTrue((self.root / "r.bin").exists())
 
     def test_refuses_overwrite_without_flag(self):
@@ -98,14 +98,14 @@ class DownloadTest(unittest.TestCase):
         text = self.tool().invoke(
             {"url": self.url("/file.bin"), "path": "keep.bin", "overwrite": True}
         )
-        self.assertIn("已下载", text)
+        self.assertIn("Downloaded:", text)
         self.assertEqual(target.read_bytes(), b"\x00\x01binary-data")
 
     def test_respects_size_limit(self):
         text = self.tool({"DOWNLOAD_ALLOW_PRIVATE": "true", "DOWNLOAD_MAX_BYTES": "10000"}).invoke(
             {"url": self.url("/file.bin"), "path": "ok.bin"}
         )
-        self.assertIn("已下载", text)
+        self.assertIn("Downloaded:", text)
 
     def test_private_host_blocked_by_default(self):
         text = self.tool({"DOWNLOAD_ALLOW_PRIVATE": "false"}).invoke(

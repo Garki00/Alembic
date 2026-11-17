@@ -1,5 +1,5 @@
 # tests/atomic_edit_test.py
-"""原子批量编辑工具：成功、失败回滚、唯一匹配与读后写。"""
+"""Atomic batch editing tool: success, rollback on failure, unique matching, and read-before-write."""
 
 import os
 import shutil
@@ -56,7 +56,7 @@ class AtomicEditTest(unittest.TestCase):
             {"path": "b.txt", "old_string": "blue", "new_string": "BLUE"},
         ])
 
-        self.assertIn("已原子编辑：2 个文件，4 处替换", result)
+        self.assertIn("Atomically edited 2 file(s) with 4 replacement(s)", result)
         self.assertEqual(
             (self.root / "a.html").read_text(encoding="utf-8"),
             "<div>ONE</div>\n<p>TWO</p>\n",
@@ -97,7 +97,7 @@ class AtomicEditTest(unittest.TestCase):
             {"path": "a.html", "old_string": "x", "new_string": "y", "replace_all": True},
         ])
 
-        self.assertIn("2 处替换", result)
+        self.assertIn("2 replacement(s)", result)
         self.assertEqual((self.root / "a.html").read_text(encoding="utf-8"), "y\ny\n")
 
     def test_read_is_required(self):

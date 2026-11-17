@@ -1,5 +1,5 @@
 # tests/processes_test.py
-"""后台进程工具的测试：启动、日志、列表、停止与边界。"""
+"""Background process tool tests: start, logs, list, stop, and boundaries."""
 
 import shutil
 import sys
@@ -45,8 +45,8 @@ class ProcessToolsTest(unittest.TestCase):
         )
         command = f'"{sys.executable}" -u job.py'
         text = self.tools["start_process"].invoke({"command": command})
-        self.assertIn("已启动后台进程", text)
-        process_id = text.split("：", 1)[1].splitlines()[0].strip()
+        self.assertIn("Started background process:", text)
+        process_id = text.split(": ", 1)[1].splitlines()[0].strip()
         return process_id
 
     def wait_for_ready(self, process_id: str) -> str:
@@ -62,26 +62,26 @@ class ProcessToolsTest(unittest.TestCase):
     def test_start_read_list_stop(self):
         process_id = self.start_job()
         log = self.wait_for_ready(process_id)
-        self.assertIn("运行中", log)
+        self.assertIn("running", log)
         self.assertIn("job.py", log)
 
         listing = self.tools["list_processes"].invoke({})
         self.assertIn(process_id, listing)
-        self.assertIn("运行中", listing)
+        self.assertIn("running", listing)
 
         stopped = self.tools["stop_process"].invoke({"process_id": process_id})
-        self.assertIn("已停止进程", stopped)
+        self.assertIn("Stopped process:", stopped)
         self.assertFalse(self.manager.get(process_id).running)
 
         again = self.tools["stop_process"].invoke({"process_id": process_id})
-        self.assertIn("已经退出", again)
+        self.assertIn("already exited", again)
 
     def test_wait_process_for_pattern(self):
         process_id = self.start_job()
         text = self.tools["wait_process"].invoke(
             {"process_id": process_id, "timeout": 10, "pattern": "ready"}
         )
-        self.assertIn("命中：ready", text)
+        self.assertIn("Matched: ready", text)
         self.tools["stop_process"].invoke({"process_id": process_id})
 
     def test_wait_process_timeout_reports_running(self):
@@ -90,8 +90,8 @@ class ProcessToolsTest(unittest.TestCase):
         text = self.tools["wait_process"].invoke(
             {"process_id": process_id, "timeout": 1, "pattern": "never-appears"}
         )
-        self.assertIn("等待超时", text)
-        self.assertIn("运行中", text)
+        self.assertIn("Wait timed out", text)
+        self.assertIn("running", text)
         self.tools["stop_process"].invoke({"process_id": process_id})
 
     def test_unknown_process(self):

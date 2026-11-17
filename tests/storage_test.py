@@ -1,5 +1,5 @@
 # tests/storage_test.py
-"""用户级数据目录与一次性迁移。"""
+"""User-level data directory and one-time migration."""
 
 import shutil
 import sys

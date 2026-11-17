@@ -1,5 +1,5 @@
 # tests/documents_test.py
-"""文档读取工具的测试：Office 抽取、分段与错误契约。"""
+"""Document reading tool tests: Office extraction, chunking, and error contracts."""
 
 import datetime
 import shutil
@@ -20,7 +20,7 @@ def make_root() -> Path:
 
 
 def write_simple_pdf(path: Path, text: str = "Hello PDF") -> None:
-    """写一个最小可解析的 PDF，用于验证文本抽取（不依赖 reportlab）。"""
+    """Writes a minimal parseable PDF to validate text extraction (without reportlab)."""
     content = f"BT /F1 24 Tf 72 100 Td ({text}) Tj ET".encode()
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -85,7 +85,7 @@ class DocumentsTest(unittest.TestCase):
         workbook.close()
 
         text = self.tool.invoke({"path": "a.xlsx"})
-        self.assertIn("工作表：数据", text)
+        self.assertIn("Sheet: 数据", text)
         self.assertIn("姓名\t数量\t日期\t启用", text)
         self.assertIn("苹果\t3\t2026-11-07\tTRUE", text)
 
@@ -101,15 +101,15 @@ class DocumentsTest(unittest.TestCase):
 
         text = self.tool.invoke({"path": "a.pptx"})
         self.assertIn("PowerPoint", text)
-        self.assertIn("第 1 页", text)
+        self.assertIn("Page 1", text)
         self.assertIn("封面", text)
         self.assertIn("第一页内容", text)
-        self.assertIn("[备注] 演讲备注", text)
+        self.assertIn("[Notes] 演讲备注", text)
 
     def test_text_offset_and_limit(self):
         (self.root / "notes.txt").write_text("0123456789" * 10, encoding="utf-8")
         text = self.tool.invoke({"path": "notes.txt", "offset": 10, "limit": 20})
-        self.assertIn("共 100 字符", text)
+        self.assertIn("100 characters total", text)
         self.assertIn("01234567890123456789", text)
         self.assertIn("offset=30", text)
 
@@ -122,7 +122,7 @@ class DocumentsTest(unittest.TestCase):
         write_simple_pdf(self.root / "hello.pdf", "Hello PDF")
         text = self.tool.invoke({"path": "hello.pdf"})
         self.assertIn("PDF", text)
-        self.assertIn("第 1 页", text)
+        self.assertIn("Page 1", text)
         self.assertIn("Hello PDF", text)
 
     def test_blank_pdf_is_reported_as_empty(self):

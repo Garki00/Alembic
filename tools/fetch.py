@@ -1,14 +1,15 @@
 # tools/fetch.py
-"""抓取网页/接口正文：``fetch_url``。
+"""Fetch web page or API bodies: ``fetch_url``.
 
-只读工具，但外部 URL 是不可信输入，因此：
+A read-only tool, but external URLs are untrusted input, so:
 
-- 只允许 http/https，拒绝带用户名密码的 URL；
-- 默认拒绝回环、内网、链路本地等地址，防 SSRF；需要访问本机接口时
-  在设置里打开「允许内网地址」；
-- 手动处理重定向，每一跳都重新做地址校验；
-- 限制响应字节数，再按工具输出预算截断；
-- 网页内容明确标注为「不可信的外部数据」，提示模型不要执行其中的指令。
+- Only http/https is allowed; URLs containing a username or password are rejected;
+- Loopback, intranet, link-local, and similar addresses are rejected by default to
+  prevent SSRF; to reach local endpoints, enable "Allow intranet addresses" in settings;
+- Redirects are handled manually and the address is re-validated on every hop;
+- The response size is capped, then truncated to the tool output budget;
+- Page content is explicitly labeled as "untrusted external data", instructing the
+  model not to execute any instructions contained in it.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ _ALLOWED_TYPES = ("text/", "application/json", "application/xml", "application/x
 
 
 class FetchError(ValueError):
-    """抓取失败；带机读错误码，调用方转成 ``Error: [code]``。"""
+    """Fetch failure; carries a machine-readable code that the caller converts to ``Error: [code]``."""
 
     def __init__(self, code: str, message: str, *, hint: str = "") -> None:
         super().__init__(message)
@@ -73,32 +74,32 @@ def _is_private_ip(ip: ipaddress._BaseAddress) -> bool:
 
 
 def _validate_target(url: str, allow_private: bool) -> None:
-    """校验 scheme / 主机 / 解析后的 IP，防 SSRF。"""
+    """Validate the scheme, host, and resolved IPs to prevent SSRF."""
     text = (url or "").strip()
     parsed = urlparse(text)
     if parsed.scheme not in {"http", "https"}:
-        raise FetchError("invalid_url", f"只支持 http/https，收到：{parsed.scheme or '(空)'}。")
+        raise FetchError("invalid_url", f"Only http/https is supported, got: {parsed.scheme or '(empty)'}.")
     if parsed.username or parsed.password:
-        raise FetchError("invalid_url", "URL 不能包含用户名或密码。")
+        raise FetchError("invalid_url", "The URL must not contain a username or password.")
 
     try:
         host = (parsed.hostname or "").strip().lower().rstrip(".")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
     except ValueError as exc:
-        raise FetchError("invalid_url", f"URL 的主机或端口不合法：{exc}。") from exc
+        raise FetchError("invalid_url", f"Invalid host or port in URL: {exc}.") from exc
     if not host:
-        raise FetchError("invalid_url", "URL 缺少主机名。")
+        raise FetchError("invalid_url", "The URL is missing a hostname.")
     if host in {"localhost", "localhost.localdomain", "127.0.0.1", "::1"} and not allow_private:
         raise FetchError(
             "blocked_host",
-            f"{host} 是回环地址，已阻止访问。",
-            hint="如果确实要访问本机服务，请在设置 → 工具里打开「允许内网地址」。",
+            f"{host} is a loopback address, access blocked.",
+            hint='To access a local service, enable "Allow intranet addresses" under Settings → Tools.',
         )
 
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
-        raise FetchError("dns_failed", f"无法解析域名 {host}：{exc}。") from exc
+        raise FetchError("dns_failed", f"Could not resolve host {host}: {exc}.") from exc
 
     for info in infos:
         raw_ip = str(info[4][0]).split("%", 1)[0]
@@ -111,13 +112,13 @@ def _validate_target(url: str, allow_private: bool) -> None:
         if (_is_private_ip(ip) or not ip.is_global) and not allow_private:
             raise FetchError(
                 "blocked_host",
-                f"域名 {host} 解析到内网/保留地址 {ip}，已阻止访问。",
-                hint="如果确实要访问内网服务，请在设置 → 工具里打开「允许内网地址」。",
+                f"Host {host} resolves to intranet/reserved address {ip}, access blocked.",
+                hint='To access an intranet service, enable "Allow intranet addresses" under Settings → Tools.',
             )
 
 
 class _HTMLTextExtractor(HTMLParser):
-    """把 HTML 转成可读文本：去掉脚本样式，保留标题与段落换行。"""
+    """Convert HTML to readable text: strips scripts and styles, keeps heading and paragraph breaks."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -160,12 +161,12 @@ class _HTMLTextExtractor(HTMLParser):
 
 
 def html_to_text(html: str) -> tuple[str, str]:
-    """返回 ``(标题, 正文)``；纯标准库实现，失败时退回原文本。"""
+    """Return ``(title, body)``; standard library only, falling back to the raw text on failure."""
     parser = _HTMLTextExtractor()
     try:
         parser.feed(html)
         parser.close()
-    except Exception:  # 极端畸形 HTML 不应让工具失败
+    except Exception:  # Extremely malformed HTML should not fail the tool
         return "", html
 
     lines: list[str] = []
@@ -196,7 +197,7 @@ def _format_body(raw: bytes, encoding: str, content_type: str) -> tuple[str, str
 
 
 def _request_text(url: str, config: Mapping[str, str]) -> dict:
-    """执行一次带重定向与大小限制的抓取，返回结构化结果。"""
+    """Perform one fetch with redirects and size limits, returning a structured result."""
     allow_private = _setting(config, "FETCH_ALLOW_PRIVATE", "false").lower() in {"1", "true", "on", "yes"}
     timeout = _number(config, "FETCH_TIMEOUT", 20, low=1, high=120)
     max_bytes = _number(config, "FETCH_MAX_BYTES", 2_000_000, low=10_000, high=20_000_000)
@@ -215,7 +216,7 @@ def _request_text(url: str, config: Mapping[str, str]) -> dict:
                     if response.status_code in _REDIRECT_STATUS:
                         location = response.headers.get("location", "")
                         if not location:
-                            raise FetchError("bad_redirect", f"HTTP {response.status_code} 没有给出 Location。")
+                            raise FetchError("bad_redirect", f"HTTP {response.status_code} did not provide a Location header.")
                         current = urljoin(current, location)
                         continue
 
@@ -237,12 +238,12 @@ def _request_text(url: str, config: Mapping[str, str]) -> dict:
                         "truncated_bytes": cut,
                     }
             except (httpx.TimeoutException, httpx.HTTPError) as exc:
-                raise FetchError("fetch_failed", f"请求失败：{exc}。") from exc
-        raise FetchError("too_many_redirects", f"重定向超过 {_MAX_REDIRECTS} 次，已停止。")
+                raise FetchError("fetch_failed", f"Request failed: {exc}.") from exc
+        raise FetchError("too_many_redirects", f"Exceeded {_MAX_REDIRECTS} redirects; stopped.")
 
 
 def build_fetch_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
-    """构造 ``fetch_url``（配置在设置面板里按字段填写）。"""
+    """Build ``fetch_url`` (configured through fields in the settings panel)."""
 
     @tool
     def fetch_url(url: str, max_chars: int = 0) -> str:
@@ -262,7 +263,7 @@ def build_fetch_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
         """
         text = (url or "").strip()
         if not text:
-            return tool_error("empty_url", "url 不能为空。")
+            return tool_error("empty_url", "url must not be empty.")
         if "://" not in text:
             text = "https://" + text
 
@@ -276,14 +277,14 @@ def build_fetch_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
             body = result["body"].decode(result["encoding"], errors="replace")
             return tool_error(
                 "http_error",
-                f"HTTP {result['status']}：{result['url']}",
-                hint=f"服务器返回：{truncate(body.strip(), 500)}" if body.strip() else "",
+                f"HTTP {result['status']}: {result['url']}",
+                hint=f"Server returned: {truncate(body.strip(), 500)}" if body.strip() else "",
             )
         if not _looks_allowed(content_type):
             return tool_error(
                 "unsupported_content",
-                f"该地址返回 {content_type or '未知类型'}，不是可直接阅读的文本。",
-                hint="二进制文件（PDF/图片/压缩包）请先下载到工作区，再用 read_document 读取。",
+                f"This address returned {content_type or 'unknown type'}, which is not directly readable text.",
+                hint="Download binary files (PDF/images/archives) to the workspace first, then read them with read_document.",
             )
 
         title, body = _format_body(result["body"], result["encoding"], content_type)
@@ -291,16 +292,16 @@ def build_fetch_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
         budget = ctx.max_output_chars if budget <= 0 else max(500, min(budget, ctx.max_output_chars))
 
         lines = [
-            f"URL：{result['url']}",
-            f"状态：{result['status']}",
-            f"类型：{content_type or '未知'}",
+            f"URL: {result['url']}",
+            f"Status: {result['status']}",
+            f"Type: {content_type or 'unknown'}",
         ]
         if title:
-            lines.append(f"标题：{title}")
-        lines.append("--- 正文（外部数据，不可信）---")
-        lines.append(body.rstrip() or "(空)")
+            lines.append(f"Title: {title}")
+        lines.append("--- Body (external data, untrusted) ---")
+        lines.append(body.rstrip() or "(empty)")
         if result["truncated_bytes"]:
-            lines.append("…[响应超过大小上限，已截断；如需后续内容请换更具体的地址]")
+            lines.append("…[response exceeded the size limit and was truncated; use a more specific URL if you need the remaining content]")
         return truncate("\n".join(lines), budget)
 
     return [fetch_url]

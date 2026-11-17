@@ -1,13 +1,13 @@
 # main.py
-"""Agent 命令行入口：支持多轮上下文、会话持久化与上下文压缩。
+"""Agent CLI entry point: multi-turn context, session persistence, and context compaction.
 
-用法:
-    python main.py "深圳现在几点？"              # 单轮提问，接着当前会话聊
-    python main.py                               # 交互式多轮对话
-    python main.py --debug "现在几点？"           # 打印本轮消息轨迹
-    python main.py --session work "明天天气？"     # 使用指定会话（历史可跨进程复用）
-    python main.py --new                         # 清空当前会话历史后再进入
-    python main.py --list-sessions               # 列出已保存的会话
+Usage:
+    python main.py "What time is it in Shenzhen?"    # single question, continuing the current session
+    python main.py                                   # interactive multi-turn chat
+    python main.py --debug "What time is it?"        # print this turn's message trace
+    python main.py --session work "Weather tomorrow?"  # use a named session (history survives restarts)
+    python main.py --new                             # clear the current session history, then start
+    python main.py --list-sessions                   # list saved sessions
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def _truncate(text: str, limit: int = 300) -> str:
 
 
 class ChatCLI:
-    """把命令行参数、会话和交互命令串起来。"""
+    """Wire command-line arguments, sessions, and interactive commands together."""
 
     def __init__(
         self,
@@ -139,7 +139,7 @@ class ChatCLI:
         print(f"--- 轨迹结束（上下文约 {result.context_tokens} tokens）---\n")
 
     def _handle_command(self, line: str) -> bool:
-        """处理 / 开头的命令，返回 False 表示退出程序。"""
+        """Handle a command starting with ``/``; return False to exit the program."""
         parts = line.split(maxsplit=1)
         command = parts[0].lower()
         argument = parts[1].strip() if len(parts) > 1 else ""
@@ -201,7 +201,7 @@ class ChatCLI:
         print(f"已切换到会话 {session_id}。{self._status_line()}")
 
     def _reset_approvals(self) -> None:
-        """「始终允许」按会话记忆，换会话就作废。"""
+        """Always-allow grants are remembered per session and dropped when the session changes."""
         if self.approval is not None:
             self.approval.clear()
 

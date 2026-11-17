@@ -1,5 +1,5 @@
 # tests/registry_test.py
-"""工具注册表与错误契约的测试：单一来源、装配、注入。"""
+"""Tool registry and error contract tests: single source, assembly, and injection."""
 
 import unittest
 from pathlib import Path
@@ -51,7 +51,7 @@ class RegistryTest(unittest.TestCase):
         self.assertIs(store_specs, TOOL_SPECS)
 
     def test_run_command_defaults_on_but_gated(self):
-        """审批机制上线后默认开启；风险等级仍是 exec，执行前会被拦下来问人。"""
+        """Enabled by default after approval was introduced; the risk level is still exec, so execution is intercepted to ask the user first."""
         self.assertIn("run_command", default_enabled_names())
         self.assertTrue(TOOL_SPECS["run_command"].default_enabled)
         self.assertEqual(TOOL_SPECS["run_command"].risk, "exec")
@@ -133,7 +133,7 @@ class WeatherConfigTest(unittest.TestCase):
 
 
 class RuntimeAssemblyTest(unittest.TestCase):
-    """装配真实 Agent：能提前暴露工具 schema 非法之类的问题。"""
+    """Assembles a real Agent, which surfaces issues such as invalid tool schemas early."""
 
     def test_agent_assembles_with_all_tools(self):
         from config.store import ModelConfig
@@ -160,19 +160,19 @@ class ErrorContractTest(unittest.TestCase):
         self.assertTrue(is_error(text))
 
     def test_success_is_not_error(self):
-        self.assertFalse(is_error("退出码：0（成功）"))
+        self.assertFalse(is_error("Exit code: 0 (succeeded)"))
 
     def test_truncate_keeps_head_or_tail(self):
         text = "a" * 100 + "TAIL-END"
 
         head = truncate(text, 60)
         self.assertTrue(head.startswith("a"))
-        self.assertIn("已截断", head)
+        self.assertIn("truncated", head)
         self.assertNotIn("TAIL-END", head)
 
         tail = truncate(text, 60, keep_tail=True)
         self.assertIn("TAIL-END", tail)
-        self.assertIn("已截断", tail)
+        self.assertIn("truncated", tail)
 
     def test_truncate_passthrough(self):
         self.assertEqual(truncate("short", 100), "short")

@@ -1,5 +1,5 @@
 # tests/command_policy_test.py
-"""命令策略测试：不可恢复命令直接拒绝，危险但可恢复的命令带上原因。"""
+"""Command policy tests: unrecoverable commands are rejected outright; dangerous but recoverable ones carry a reason."""
 
 import unittest
 
