@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import PanelToggle from './PanelToggle.vue'
 import { useChatStore } from '../stores/chat'
 import { useInspectorStore } from '../stores/inspector'
 import { useProcessStore } from '../stores/processes'
@@ -41,15 +42,11 @@ const path = computed(() => workspace.activeWorkspace?.path || '')
     >
       {{ processes.items.length }}个后台任务
     </button>
-    <button
-      type="button"
-      class="icon-btn topbar-inspector"
-      :class="{ active: inspector.open }"
-      aria-label="侧边栏"
-      title="侧边栏"
-      @click="inspector.toggle()"
-    >
-      ▥
-    </button>
+    <PanelToggle
+      class="topbar-inspector"
+      side="right"
+      :open="inspector.open"
+      @toggle="inspector.toggle()"
+    />
   </header>
 </template>

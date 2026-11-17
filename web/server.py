@@ -7,6 +7,7 @@ Startup:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import queue
@@ -695,11 +696,20 @@ def create_app(
     # ---- 工作区文件浏览（右侧边栏） ----
     _SKIP_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".tmp", ".idea", ".alembic"}
     _UNSUPPORTED_SUFFIXES = {
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg",
+        ".bmp", ".ico",
         ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
         ".zip", ".7z", ".rar", ".gz", ".tar", ".exe", ".dll", ".so",
         ".woff", ".woff2", ".ttf", ".otf", ".mp3", ".mp4", ".mov",
     }
+    _IMAGE_SUFFIXES = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+    }
+    _IMAGE_LIMIT = 8_000_000
 
     def _workspace_root(workspace_id: str | None) -> Path:
         _, root = resolve_workspace(workspace_id, None)
@@ -763,6 +773,32 @@ def create_app(
         binary = b"\x00" in sample or suffix in _UNSUPPORTED_SUFFIXES
         name = target.name
         markdown = suffix in {".md", ".markdown", ".mdx"} or name.lower().startswith("readme")
+        image_mime = _IMAGE_SUFFIXES.get(suffix)
+        if image_mime:
+            if size > _IMAGE_LIMIT:
+                return {
+                    "path": display_path(root, target),
+                    "name": name,
+                    "size": size,
+                    "supported": False,
+                    "kind": "unsupported",
+                    "content": "",
+                    "truncated": False,
+                    "reason": "图片过大，暂不支持预览",
+                }
+            try:
+                payload = base64.b64encode(target.read_bytes()).decode("ascii")
+            except OSError as exc:
+                raise HTTPException(400, f"无法读取文件：{exc}") from exc
+            return {
+                "path": display_path(root, target),
+                "name": name,
+                "size": size,
+                "supported": True,
+                "kind": "image",
+                "content": f"data:{image_mime};base64,{payload}",
+                "truncated": False,
+            }
         if binary:
             return {
                 "path": display_path(root, target),

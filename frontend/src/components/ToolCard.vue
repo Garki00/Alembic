@@ -5,12 +5,16 @@ import { errorMessage } from '../api/client'
 import { useUiStore } from '../stores/ui'
 import { useWorkspaceStore } from '../stores/workspace'
 
-const props = defineProps<{ tool: ToolInfo }>()
+const props = withDefaults(
+  defineProps<{ tool: ToolInfo; view?: 'grid' | 'list' }>(),
+  { view: 'grid' },
+)
 const store = useWorkspaceStore()
 const ui = useUiStore()
 
 const values = reactive<Record<string, string>>({})
 const saving = ref(false)
+const expanded = ref(false)
 
 for (const field of props.tool.fields) {
   values[field.key] = field.secret ? '' : field.value
@@ -34,6 +38,17 @@ function riskLabel(risk: string): string {
 function setSwitch(key: string, event: Event): void {
   const input = event.target as HTMLInputElement
   values[key] = input.checked ? 'true' : 'false'
+}
+
+function toggleExpanded(): void {
+  expanded.value = !expanded.value
+}
+
+function onCardClick(event: MouseEvent): void {
+  if (props.view !== 'grid') return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('button, input, select, textarea, label, a, details, summary')) return
+  toggleExpanded()
 }
 
 async function toggleEnabled(event: Event): Promise<void> {
@@ -76,7 +91,37 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
 </script>
 
 <template>
-  <div class="tool-card" :data-name="tool.name">
+  <div
+    class="tool-card"
+    :class="[`tool-card-${view}`, { expanded }]"
+    :data-name="tool.name"
+    @click="onCardClick"
+  >
+    <button
+      v-if="view === 'grid'"
+      type="button"
+      class="tool-expand"
+      :aria-expanded="expanded"
+      :title="expanded ? '收起设置' : '展开设置'"
+      @click.stop="toggleExpanded"
+    >
+      <svg
+        class="tool-expand-icon"
+        :class="{ open: expanded }"
+        viewBox="0 0 16 16"
+        aria-hidden="true"
+      >
+        <path
+          d="M4.5 6.5 8 10l3.5-3.5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+    </button>
+
     <div class="tool-head">
       <div>
         <div class="tool-title">
@@ -85,94 +130,110 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
         <p class="tool-desc">{{ tool.description }}</p>
         <p class="tool-meta">
           <span class="risk" :class="`risk-${tool.risk}`">风险：{{ riskLabel(tool.risk) }}</span>
-          <code v-for="name in tool.tool_names" :key="name" class="tool-name">{{ name }}</code>
+          <template v-if="view === 'list'">
+            <code v-for="name in tool.tool_names" :key="name" class="tool-name">{{ name }}</code>
+          </template>
         </p>
       </div>
-      <label class="switch">
+      <label v-if="view === 'list'" class="switch" @click.stop>
         <input type="checkbox" :checked="tool.enabled" @change="toggleEnabled" />
         <span class="track"></span>
         {{ tool.enabled ? '已启用' : '已禁用' }}
       </label>
     </div>
 
-    <template v-if="tool.fields.length">
-      <div class="tool-fields">
-        <label
-          v-for="field in tool.fields"
-          :key="field.key"
-          class="field"
-          :class="{ 'span-2': span2(field) }"
-        >
-          <span>
-            {{ field.label }}
-            <em v-if="field.required" class="req" title="必填">*</em>
-          </span>
+    <div v-if="view === 'grid'" class="tool-grid-foot">
+      <span class="tool-state">{{ tool.enabled ? '已启用' : '已禁用' }}</span>
+      <label class="switch" @click.stop>
+        <input type="checkbox" :checked="tool.enabled" @change="toggleEnabled" />
+        <span class="track"></span>
+      </label>
+    </div>
 
-          <select v-if="field.kind === 'select'" v-model="values[field.key]">
-            <option value="">（未设置）</option>
-            <option
-              v-for="option in field.options"
-              :key="option.value"
-              :value="option.value"
-            >
-              {{ option.label }}
-            </option>
-          </select>
-
-          <input
-            v-else-if="field.kind === 'switch'"
-            type="checkbox"
-            class="field-switch"
-            :checked="values[field.key] === 'true'"
-            @change="setSwitch(field.key, $event)"
-          />
-
-          <input
-            v-else-if="field.kind === 'number'"
-            v-model="values[field.key]"
-            type="number"
-            step="any"
-            :placeholder="field.placeholder"
-            autocomplete="off"
-          />
-
-          <textarea
-            v-else-if="field.multiline"
-            v-model="values[field.key]"
-            :placeholder="placeholderFor(field)"
-            autocomplete="off"
-          ></textarea>
-
-          <input
-            v-else
-            v-model="values[field.key]"
-            :type="field.secret ? 'password' : 'text'"
-            :placeholder="placeholderFor(field)"
-            autocomplete="off"
-          />
-
-          <span
-            v-if="field.secret"
-            class="field-status"
-            :class="{ empty: !field.value_set }"
+    <div v-if="view === 'list' || expanded" class="tool-details" @click.stop>
+      <div v-if="view === 'grid'" class="tool-includes">
+        <span class="tool-includes-label">包含工具</span>
+        <code v-for="name in tool.tool_names" :key="name" class="tool-name">{{ name }}</code>
+      </div>
+      <template v-if="tool.fields.length">
+        <div class="tool-fields">
+          <label
+            v-for="field in tool.fields"
+            :key="field.key"
+            class="field"
+            :class="{ 'span-2': span2(field) }"
           >
-            {{ field.value_set ? `已配置 · ${field.hint}` : '未配置' }}
-            <button
-              v-if="field.value_set"
-              type="button"
-              class="link-btn"
-              @click.prevent="clearSecret(field)"
+            <span>
+              {{ field.label }}
+              <em v-if="field.required" class="req" title="必填">*</em>
+            </span>
+
+            <select v-if="field.kind === 'select'" v-model="values[field.key]">
+              <option value="">（未设置）</option>
+              <option
+                v-for="option in field.options"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+
+            <input
+              v-else-if="field.kind === 'switch'"
+              type="checkbox"
+              class="field-switch"
+              :checked="values[field.key] === 'true'"
+              @change="setSwitch(field.key, $event)"
+            />
+
+            <input
+              v-else-if="field.kind === 'number'"
+              v-model="values[field.key]"
+              type="number"
+              step="any"
+              :placeholder="field.placeholder"
+              autocomplete="off"
+            />
+
+            <textarea
+              v-else-if="field.multiline"
+              v-model="values[field.key]"
+              :placeholder="placeholderFor(field)"
+              autocomplete="off"
+            ></textarea>
+
+            <input
+              v-else
+              v-model="values[field.key]"
+              :type="field.secret ? 'password' : 'text'"
+              :placeholder="placeholderFor(field)"
+              autocomplete="off"
+            />
+
+            <span
+              v-if="field.secret"
+              class="field-status"
+              :class="{ empty: !field.value_set }"
             >
-              清除
-            </button>
-          </span>
-        </label>
-      </div>
-      <div class="tool-foot">
-        <button type="button" class="btn-mini" :disabled="saving" @click="save">
-          {{ saving ? '保存中…' : '保存参数' }}
-        </button>
-      </div>
-    </template>
+              {{ field.value_set ? `已配置 · ${field.hint}` : '未配置' }}
+              <button
+                v-if="field.value_set"
+                type="button"
+                class="link-btn"
+                @click.prevent="clearSecret(field)"
+              >
+                清除
+              </button>
+            </span>
+          </label>
+        </div>
+        <div class="tool-foot">
+          <button type="button" class="btn-mini" :disabled="saving" @click="save">
+            {{ saving ? '保存中…' : '保存参数' }}
+          </button>
+        </div>
+      </template>
+    </div>
   </div>
 </template>

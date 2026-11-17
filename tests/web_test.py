@@ -334,10 +334,11 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertEqual(preview.json()["kind"], "markdown")
         self.assertIn("# 标题", preview.json()["content"])
 
-        unsupported = self.client.get("/api/workspace/file", params={"path": "binary.png"})
-        self.assertEqual(unsupported.status_code, 200)
-        self.assertFalse(unsupported.json()["supported"])
-        self.assertEqual(unsupported.json()["kind"], "unsupported")
+        image = self.client.get("/api/workspace/file", params={"path": "binary.png"})
+        self.assertEqual(image.status_code, 200)
+        self.assertTrue(image.json()["supported"])
+        self.assertEqual(image.json()["kind"], "image")
+        self.assertTrue(image.json()["content"].startswith("data:image/png;base64,"))
 
     def test_delete_workspace_removes_its_sessions(self):
         from agents.context import SessionMeta

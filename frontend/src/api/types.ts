@@ -141,7 +141,7 @@ export interface WorkspaceFilePreview {
   name: string
   size: number
   supported: boolean
-  kind: 'text' | 'markdown' | 'unsupported'
+  kind: 'text' | 'markdown' | 'image' | 'unsupported'
   content: string
   truncated: boolean
   reason?: string

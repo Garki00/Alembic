@@ -7,6 +7,7 @@ import ChatTranscript from './components/ChatTranscript.vue'
 import GlobalTooltip from './components/GlobalTooltip.vue'
 import InspectorSidebar from './components/InspectorSidebar.vue'
 import OnboardingModal from './components/OnboardingModal.vue'
+import PanelToggle from './components/PanelToggle.vue'
 import ProcessPanel from './components/ProcessPanel.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ToastHost from './components/ToastHost.vue'
@@ -98,20 +99,32 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="app"
-    :class="{ 'sidebar-open': ui.sidebarOpen, 'inspector-open': inspector.open }"
+    :class="{
+      'sidebar-open': ui.sidebarOpen,
+      'sidebar-collapsed': ui.sidebarCollapsed,
+      'inspector-open': inspector.open,
+    }"
     :style="{
       '--sidebar-width': `${ui.sidebarWidth}px`,
       '--inspector-width': `${inspector.width}px`,
     }"
   >
     <AppSidebar />
+    <PanelToggle
+      class="sidebar-toggle"
+      side="left"
+      :open="!ui.sidebarCollapsed"
+      @toggle="ui.toggleSidebarCollapsed()"
+    />
     <main class="main">
       <ChatTopbar />
       <ProcessPanel v-if="processes.panelOpen" />
       <ChatTranscript />
       <ChatComposer />
     </main>
-    <InspectorSidebar v-if="inspector.open" />
+    <Transition name="pane">
+      <InspectorSidebar v-if="inspector.open" />
+    </Transition>
   </div>
 
   <div

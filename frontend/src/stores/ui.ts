@@ -21,6 +21,7 @@ let toastTimer: number | undefined
 export const useUiStore = defineStore('ui', {
   state: () => ({
     sidebarOpen: false,
+    sidebarCollapsed: false,
     sidebarWidth: storedWidth(SIDEBAR_WIDTH_KEY, 272, SIDEBAR_MIN, SIDEBAR_MAX),
     search: '',
     expanded: {} as Record<string, boolean>,
@@ -43,6 +44,10 @@ export const useUiStore = defineStore('ui', {
       } catch (_) {
         // 隐私模式下 localStorage 可能不可用；缩放仍然生效
       }
+    },
+
+    toggleSidebarCollapsed(): void {
+      this.sidebarCollapsed = !this.sidebarCollapsed
     },
 
     isExpanded(workspaceId: string): boolean {

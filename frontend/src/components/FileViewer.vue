@@ -171,6 +171,9 @@ function openFileLink(event: MouseEvent): void {
       <p v-if="diffNote" class="file-diff-note">{{ diffNote }}</p>
       <DiffView :rows="diffRows" />
     </div>
+    <div v-else-if="file && file.kind === 'image'" class="file-image">
+      <img :src="file.content" :alt="file.name" />
+    </div>
     <div v-else-if="file && !file.supported" class="file-unsupported">
       <strong>不支持预览</strong>
       <span>{{ file.reason || '该格式暂不支持预览' }}</span>
