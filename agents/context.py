@@ -90,6 +90,11 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _now_ms() -> int:
+    """Epoch milliseconds for per-message timestamps."""
+    return int(datetime.now().timestamp() * 1000)
+
+
 def message_text(message: Any) -> str:
     """Return the plain text of a message (supports both ``str`` and content blocks)."""
     content = getattr(message, "content", "")
@@ -969,6 +974,8 @@ class ChatSession:
         message = HumanMessage(content=text)
         if internal:
             message.additional_kwargs["alembic_internal"] = True
+        # 记录发送时间：前端用它显示消息时间与「用时」。
+        message.additional_kwargs["alembic_time"] = _now_ms()
         self.messages.append(message)
         self.display_messages.append(message)
         return self._maybe_compact()
@@ -988,6 +995,12 @@ class ChatSession:
         # 前缀缓存从被改写的位置起全部失效，还会在每轮重复截断同一条消息。
         new_messages = messages[len(history):] if len(messages) >= len(history) else []
         new_messages = cap_tool_outputs(new_messages, self.max_tool_output_tokens)
+        # 本轮产生的消息补一个完成时间，前端据此显示「已完成，用时…」和结束时间。
+        finish_ms = _now_ms()
+        for message in new_messages:
+            kwargs = getattr(message, "additional_kwargs", None)
+            if isinstance(kwargs, dict) and "alembic_time" not in kwargs:
+                kwargs["alembic_time"] = finish_ms
         self.messages = [*history, *new_messages]
         if new_messages:
             # 模型上下文可能刚被压缩，但用户可见的原文始终按增量追加。

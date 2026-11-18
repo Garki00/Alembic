@@ -51,6 +51,8 @@ export interface UserTurn {
   id: string
   content: string
   attachments?: UserAttachment[]
+  /** 发送时间（epoch 毫秒） */
+  createdAt?: number
 }
 
 export interface AssistantTurn {
@@ -66,6 +68,10 @@ export interface AssistantTurn {
   streaming: boolean
   stepsOpen: boolean
   stepsManual: boolean
+  /** 本轮开始时间（用户发出消息的时间） */
+  startedAt?: number
+  /** 本轮结束时间；流式过程中为空 */
+  finishedAt?: number
 }
 
 export interface NoteTurn {

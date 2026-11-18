@@ -1,0 +1,62 @@
+/*
+ * 对话区与输入区的布局。
+ *
+ * 输入区脱离网格流，浮在对话区底部：抬头向上增长，左右宽度与输入框一致，
+ * 对话滚动条因此可以从头到尾保持可见，消息位置也不会因滚动条出现而移动。
+ */
+
+.main {
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+}
+
+.transcript {
+    /* 滚动条始终占位：消息左右位置不随滚动条出现而改变 */
+    scrollbar-gutter: stable;
+    /* 给浮层输入区留出空间，最后一条消息能滚到它上面 */
+    padding-bottom: calc(var(--composer-dock-height, 190px) + 18px);
+}
+
+.composer-dock {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 30;
+}
+
+.composer-dock > * {
+    pointer-events: auto;
+}
+
+.composer {
+    position: relative;
+    width: min(780px, calc(100% - 56px));
+    margin: 0;
+    /* 上侧不留内边距：浮层上边界与输入框上边界齐平 */
+    padding: 0 0 14px;
+    border-top: 0;
+    background: var(--paper);
+}
+
+.composer-request {
+    display: block;
+    max-height: none;
+    overflow: visible;
+}
+
+.composer-request .approval-card,
+.composer-request .question-card {
+    width: 100%;
+    max-width: 780px;
+    margin: 0 auto 8px;
+}
+
+/* 消息宽度与输入框（去掉圆角后的内容宽度）对齐 */
+.message {
+    max-width: 780px;
+    padding: 0 10px;
+}

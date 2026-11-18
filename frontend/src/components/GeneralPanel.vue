@@ -6,6 +6,7 @@ import type {
   PermissionMode,
   Preferences,
   TerminalKind,
+  ThemeMode,
   TranscriptViewMode,
 } from '../api/types'
 import { errorMessage } from '../api/client'
@@ -14,6 +15,7 @@ import {
   LINK_TARGETS,
   PERMISSION_MODES,
   TERMINALS,
+  THEMES,
   TRANSCRIPT_MODES,
 } from '../lib/preferences'
 import { useUiStore } from '../stores/ui'
@@ -60,6 +62,14 @@ async function save(patch: Partial<Preferences>, message: string): Promise<boole
   } catch (error) {
     ui.showToast(errorMessage(error), true)
     return false
+  }
+}
+
+async function setTheme(event: Event): Promise<void> {
+  const element = event.target as HTMLSelectElement
+  const value = element.value as ThemeMode
+  if (!(await save({ theme: value }, '外观已更新'))) {
+    element.value = store.preferences.theme
   }
 }
 
@@ -219,6 +229,23 @@ async function setDeveloperTools(event: Event): Promise<void> {
     <div class="settings-group">
       <div class="settings-group-title">显示与链接</div>
       <div class="general-list">
+        <div class="general-row">
+          <div class="general-text">
+            <div class="general-title">外观</div>
+            <div class="general-desc">界面配色；跟随系统会随系统深浅色自动切换</div>
+          </div>
+          <div class="general-control">
+            <select class="general-select" :value="preferences.theme || 'light'" @change="setTheme">
+              <option v-for="theme in THEMES" :key="theme.value" :value="theme.value">
+                {{ theme.label }}
+              </option>
+            </select>
+            <div class="general-hint">
+              {{ THEMES.find((theme) => theme.value === (preferences.theme || 'light'))?.hint }}
+            </div>
+          </div>
+        </div>
+
         <div class="general-row">
           <div class="general-text">
             <div class="general-title">工作步骤展示</div>

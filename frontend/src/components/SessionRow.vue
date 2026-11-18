@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import type { SessionSummary } from '../api/types'
 import { errorMessage } from '../api/client'
 import { relativeTime } from '../lib/time'
-import { useChatStore } from '../stores/chat'
+import { useChatStore, type SessionStatus } from '../stores/chat'
 import { useUiStore } from '../stores/ui'
 import { useWorkspaceStore } from '../stores/workspace'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -15,6 +15,7 @@ const props = defineProps<{
   archived?: boolean
   draggable?: boolean
   dropHint?: 'before' | 'after' | ''
+  status?: SessionStatus | null
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +29,24 @@ const emit = defineEmits<{
 const store = useWorkspaceStore()
 const chat = useChatStore()
 const ui = useUiStore()
+
+// 侧栏状态：等待审批/选择优先于「运行中」
+const statusKind = computed(() => {
+  const status = props.status
+  if (!status) return ''
+  if (status.approval) return 'approval'
+  if (status.question) return 'question'
+  if (status.running) return 'running'
+  return ''
+})
+const statusTitle = computed(() => {
+  switch (statusKind.value) {
+    case 'running': return '正在运行'
+    case 'approval': return '等待审批'
+    case 'question': return '等待选择'
+    default: return ''
+  }
+})
 
 const menuOpen = ref(false)
 const confirming = ref(false)
@@ -210,6 +229,37 @@ onBeforeUnmount(() => window.clearTimeout(marqueeTimer))
     @dragend="onDragEnd"
     @drop="onDrop"
   >
+    <span v-if="statusKind" class="session-status" :class="statusKind" :title="statusTitle">
+      <svg v-if="statusKind === 'running'" class="spin" viewBox="0 0 16 16" aria-hidden="true">
+        <circle
+          cx="8"
+          cy="8"
+          r="5.2"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-dasharray="19 14"
+        />
+      </svg>
+      <svg v-else-if="statusKind === 'approval'" viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.8" fill="none" stroke="currentColor" stroke-width="1.3" />
+        <path d="M8 4.9v3.9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        <circle cx="8" cy="11.2" r="0.9" fill="currentColor" />
+      </svg>
+      <svg v-else viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.8" fill="none" stroke="currentColor" stroke-width="1.3" />
+        <path
+          d="M6.4 6.3a1.7 1.7 0 1 1 2.4 1.6c-.5.2-.7.6-.7 1.1v.3"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.3"
+          stroke-linecap="round"
+        />
+        <circle cx="8" cy="11.2" r="0.9" fill="currentColor" />
+      </svg>
+    </span>
+
     <input
       v-if="renaming"
       ref="renameInput"
@@ -273,16 +323,103 @@ onBeforeUnmount(() => window.clearTimeout(marqueeTimer))
     >
       <template v-if="!archived">
         <button type="button" class="session-menu-item" @click="togglePin">
-          {{ pinned ? '取消置顶' : '置顶对话' }}
+          <svg class="menu-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M9.6 2.2 13.8 6.4l-1.6.4-2.6 2.6-.3 2.5-1.6 1.6-2.1-2.1-3 3-.6-.6 3-3-2.1-2.1 1.6-1.6 2.5-.3 2.6-2.6.4-1.6Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.1"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span>{{ pinned ? '取消置顶' : '置顶对话' }}</span>
         </button>
-        <button type="button" class="session-menu-item" @click="startRename">重命名</button>
-        <button type="button" class="session-menu-item" @click="branch">分支对话</button>
-        <button type="button" class="session-menu-item" @click="archive">归档对话</button>
-        <button type="button" class="session-menu-item danger" @click="remove">删除对话</button>
+        <button type="button" class="session-menu-item" @click="startRename">
+          <svg class="menu-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M10.4 2.9 13.1 5.6 5.9 12.8 2.9 13.1l.3-3z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+            <path d="m9.2 4.1 2.7 2.7" fill="none" stroke="currentColor" stroke-width="1.1" />
+          </svg>
+          <span>重命名</span>
+        </button>
+        <button type="button" class="session-menu-item" @click="branch">
+          <svg class="menu-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="4.6" cy="3.6" r="1.6" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <circle cx="4.6" cy="12.4" r="1.6" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <circle cx="11.4" cy="6.4" r="1.6" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <path
+              d="M4.6 5.2v5.6M11.4 8v0.6c0 1.4-1.1 2.4-2.4 2.4H6.2"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linecap="round"
+            />
+          </svg>
+          <span>分支对话</span>
+        </button>
+        <button type="button" class="session-menu-item" @click="archive">
+          <svg class="menu-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="2.4" y="3.2" width="11.2" height="2.6" rx="0.7" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <path
+              d="M3.4 5.8v6.1c0 .6.5 1.1 1.1 1.1h7c.6 0 1.1-.5 1.1-1.1V5.8"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+            <path d="M6.4 8.2h3.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+          </svg>
+          <span>归档对话</span>
+        </button>
+        <button type="button" class="session-menu-item danger" @click="remove">
+          <svg class="menu-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3.4 4.6h9.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+            <path
+              d="M5.2 4.6V3.4c0-.5.4-.9.9-.9h3.8c.5 0 .9.4.9.9v1.2M4.6 4.6l.6 8c0 .5.4.8.9.8h4.8c.5 0 .9-.3.9-.8l.6-8"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+            <path d="M6.8 6.8v4.4M9.2 6.8v4.4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+          </svg>
+          <span>删除对话</span>
+        </button>
       </template>
       <template v-else>
-        <button type="button" class="session-menu-item" @click="unarchive">取消归档</button>
-        <button type="button" class="session-menu-item danger" @click="remove">删除对话</button>
+        <button type="button" class="session-menu-item" @click="unarchive">
+          <svg class="menu-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="2.4" y="3.2" width="11.2" height="2.6" rx="0.7" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <path
+              d="M3.4 5.8v6.1c0 .6.5 1.1 1.1 1.1h7c.6 0 1.1-.5 1.1-1.1V5.8"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+            <path d="M8 12V8.2M6.4 9.6 8 8l1.6 1.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <span>取消归档</span>
+        </button>
+        <button type="button" class="session-menu-item danger" @click="remove">
+          <svg class="menu-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3.4 4.6h9.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+            <path
+              d="M5.2 4.6V3.4c0-.5.4-.9.9-.9h3.8c.5 0 .9.4.9.9v1.2M4.6 4.6l.6 8c0 .5.4.8.9.8h4.8c.5 0 .9-.3.9-.8l.6-8"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+            <path d="M6.8 6.8v4.4M9.2 6.8v4.4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+          </svg>
+          <span>删除对话</span>
+        </button>
       </template>
     </FloatingMenu>
 

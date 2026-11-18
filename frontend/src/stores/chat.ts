@@ -33,6 +33,33 @@ interface SendOptions {
   processId?: string
 }
 
+/** 切走的对话在内存里的实时状态：包含正在流式输出的那一条。 */
+export interface LiveSession {
+  messages: ChatTurn[]
+  turns: number
+  steps: number
+  contextTokens: number
+  contextMax: number
+  todos: TodoItem[]
+  pendingContinuations: ProcessInfo[]
+  streaming: boolean
+  cacheReadTokens: number
+  cachePromptTokens: number
+  cacheHitRate: number | null
+  cacheRequests: number
+  turnCacheReadTokens: number
+  turnPromptTokens: number
+  turnHitRate: number | null
+  turnAttempts: number
+}
+
+/** 侧栏状态图标：运行中 / 等待审批 / 等待选择。 */
+export interface SessionStatus {
+  running: boolean
+  approval: boolean
+  question: boolean
+}
+
 // 当前正在写入的消息上下文。用户切换会话时递增，旧流的事件就不会污染新会话。
 let activeStream = 0
 let abortController: AbortController | null = null
@@ -79,6 +106,7 @@ function addThought(assistant: AssistantTurn, text: string): void {
 function mapHistory(items: HistoryMessage[]): ChatTurn[] {
   const turns: ChatTurn[] = []
   let assistant: AssistantTurn | null = null
+  let lastUserTime: number | undefined
 
   const splitAttachmentBlock = (content: string): {
     text: string
@@ -111,13 +139,20 @@ function mapHistory(items: HistoryMessage[]): ChatTurn[] {
         id: newId('user'),
         content: parsed.text,
         attachments: parsed.attachments,
+        createdAt: message.time,
       })
+      lastUserTime = message.time
       continue
     }
     if (message.role === 'assistant') {
       if (!assistant) {
         assistant = createAssistantTurn()
+        assistant.startedAt = lastUserTime
         turns.push(assistant)
+      }
+      if (message.time) {
+        assistant.startedAt = assistant.startedAt ?? lastUserTime
+        assistant.finishedAt = message.time
       }
       if (message.reasoning?.trim()) {
         addThought(assistant, message.reasoning)
@@ -187,6 +222,7 @@ function mapHistory(items: HistoryMessage[]): ChatTurn[] {
 export const useChatStore = defineStore('chat', {
   state: () => ({
     sessionId: null as string | null,
+    draftWorkspaceId: null as string | null,
     messages: [] as ChatTurn[],
     streaming: false,
     contextTokens: 0,
@@ -206,6 +242,12 @@ export const useChatStore = defineStore('chat', {
     streamTick: 0,
     todos: [] as TodoItem[],
     pendingContinuations: [] as ProcessInfo[],
+    // 正在流式输出的会话（全局同时只允许一个）
+    runningSessionId: null as string | null,
+    // 切走的会话的实时状态，回来时直接还原，避免再去拉不完整的服务端历史
+    liveSessions: {} as Record<string, LiveSession>,
+    // 侧栏状态图标
+    sessionStatus: {} as Record<string, SessionStatus>,
   }),
 
   getters: {
@@ -218,6 +260,14 @@ export const useChatStore = defineStore('chat', {
     },
     turnCachePercent(state): number | null {
       return state.turnHitRate === null ? null : Math.round(state.turnHitRate * 1000) / 10
+    },
+    /** 全局是否还有一轮在跑（可能不在当前对话里） */
+    busy(state): boolean {
+      return state.runningSessionId !== null
+    },
+    /** 某个对话当前该显示的状态图标 */
+    statusOf(state) {
+      return (sessionId: string): SessionStatus | null => state.sessionStatus[sessionId] ?? null
     },
     contextPercent(state): number {
       if (!state.contextMax || state.contextMax <= 0) return 0
@@ -325,15 +375,103 @@ export const useChatStore = defineStore('chat', {
       abortController?.abort()
     },
 
+    /** 把当前会话的实时状态存起来（只在运行中或有待审批/待选择时保留）。 */
+    stashLive(): void {
+      const sessionId = this.sessionId
+      if (!sessionId) return
+      const hasPending = this.messages.some((turn) => (
+        turn.kind === 'assistant'
+        && (turn.approvals.some((item) => item.status === 'pending')
+          || turn.questions.some((item) => item.status === 'pending'))
+      ))
+      if (!this.streaming && !hasPending && this.runningSessionId !== sessionId) {
+        delete this.liveSessions[sessionId]
+        return
+      }
+      this.liveSessions[sessionId] = {
+        messages: this.messages,
+        turns: this.turns,
+        steps: this.steps,
+        contextTokens: this.contextTokens,
+        contextMax: this.contextMax,
+        todos: this.todos,
+        pendingContinuations: this.pendingContinuations,
+        streaming: this.streaming,
+        cacheReadTokens: this.cacheReadTokens,
+        cachePromptTokens: this.cachePromptTokens,
+        cacheHitRate: this.cacheHitRate,
+        cacheRequests: this.cacheRequests,
+        turnCacheReadTokens: this.turnCacheReadTokens,
+        turnPromptTokens: this.turnPromptTokens,
+        turnHitRate: this.turnHitRate,
+        turnAttempts: this.turnAttempts,
+      }
+    },
+
+    /** 还原切走前的实时状态。 */
+    applyLive(live: LiveSession): void {
+      this.messages = live.messages
+      this.turns = live.turns
+      this.steps = live.steps
+      this.contextTokens = live.contextTokens
+      this.contextMax = live.contextMax
+      this.todos = live.todos
+      this.pendingContinuations = live.pendingContinuations
+      this.streaming = live.streaming
+      this.cacheReadTokens = live.cacheReadTokens
+      this.cachePromptTokens = live.cachePromptTokens
+      this.cacheHitRate = live.cacheHitRate
+      this.cacheRequests = live.cacheRequests
+      this.turnCacheReadTokens = live.turnCacheReadTokens
+      this.turnPromptTokens = live.turnPromptTokens
+      this.turnHitRate = live.turnHitRate
+      this.turnAttempts = live.turnAttempts
+    },
+
+    /** 重新计算侧栏状态；没有状态时删除条目，图标随之消失。 */
+    syncStatus(sessionId: string): void {
+      const live = this.liveSessions[sessionId]
+      const messages = sessionId === this.sessionId ? this.messages : live?.messages
+      if (!messages) {
+        delete this.sessionStatus[sessionId]
+        return
+      }
+      let running = false
+      let approval = false
+      let question = false
+      for (const turn of messages) {
+        if (turn.kind !== 'assistant') continue
+        if (turn.streaming) running = true
+        if (turn.approvals.some((item) => item.status === 'pending')) approval = true
+        if (turn.questions.some((item) => item.status === 'pending')) question = true
+      }
+      if (!running && !approval && !question) {
+        delete this.sessionStatus[sessionId]
+        return
+      }
+      this.sessionStatus[sessionId] = { running, approval, question }
+    },
+
     async openSession(sessionId: string): Promise<void> {
-      this.stopStreamOnly()
-      activeStream += 1
-      this.streaming = false
+      // 正在运行的流不随切换中止：先把当前会话的实时状态存起来。
+      this.stashLive()
+      // 未发消息的新对话占位保留：打开别的对话不会把它清掉。
       this.sessionId = sessionId
+      const live = this.liveSessions[sessionId]
+      if (live) {
+        this.applyLive(live)
+        // 已经跑完的快照用完就丢，下次重新拉服务端历史
+        if (!live.streaming) delete this.liveSessions[sessionId]
+        this.bump()
+        return
+      }
+      this.streaming = false
       try {
         const data = await api<HistoryData>(
           `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
         )
+        // 拉取期间用户又切走了：这次结果作废，别覆盖当前对话
+        if (this.sessionId !== sessionId) return
         this.messages = mapHistory(data.messages || [])
         this.turns = data.turns || 0
         this.setContext(data.tokens, data.max_tokens)
@@ -343,11 +481,12 @@ export const useChatStore = defineStore('chat', {
           const todos = await api<TodosData>(
             `/api/sessions/${encodeURIComponent(sessionId)}/todos`,
           )
-          this.todos = todos.items || []
+          if (this.sessionId === sessionId) this.todos = todos.items || []
         } catch (_) {
-          this.todos = []
+          if (this.sessionId === sessionId) this.todos = []
         }
       } catch (error) {
+        if (this.sessionId !== sessionId) return
         this.messages = []
         this.turns = 0
         this.steps = 0
@@ -358,13 +497,14 @@ export const useChatStore = defineStore('chat', {
         this.bump()
         throw error
       }
-      this.bump()
+      if (this.sessionId === sessionId) this.bump()
     },
 
     async newSession(workspaceId: string): Promise<void> {
       this.stopStreamOnly()
       activeStream += 1
       this.streaming = false
+      this.draftWorkspaceId = null
       const workspace = useWorkspaceStore()
       const session = await workspace.createSession(workspaceId)
       this.sessionId = session.id
@@ -379,9 +519,27 @@ export const useChatStore = defineStore('chat', {
       this.bump()
     },
 
+    /**
+     * 开始一个「还没发消息」的新对话。
+     *
+     * 全局只保留一个占位：同一个工作区重复点击不会再产生新行；点到别的工作区
+     * 就把占位搬过去。真正落库要等用户发出第一条消息。
+     */
+    startDraft(workspaceId: string): void {
+      if (!workspaceId) return
+      if (this.draftWorkspaceId === workspaceId && !this.sessionId) return
+      // 正在跑的会话先把实时状态存下来，切到新对话不等于取消它
+      this.stashLive()
+      this.sessionId = null
+      this.draftWorkspaceId = workspaceId
+      this.streaming = false
+      this.resetConversation()
+    },
+
     async send(message: string, workspaceId?: string, options: SendOptions = {}): Promise<void> {
       const text = message.trim()
-      if (!text || this.streaming) return
+      // 同一时刻只跑一轮：哪怕它属于另一个对话（切走后仍在跑）
+      if (!text || this.streaming || this.runningSessionId) return
 
       const ui = useUiStore()
       const workspace = useWorkspaceStore()
@@ -397,6 +555,7 @@ export const useChatStore = defineStore('chat', {
         try {
           const session = await workspace.createSession(workspaceId)
           this.sessionId = session.id
+          this.draftWorkspaceId = null
         } catch (error) {
           ui.showToast(errorMessage(error), true)
           return
@@ -405,6 +564,7 @@ export const useChatStore = defineStore('chat', {
 
       // 先把消息推进响应式数组，再从数组里取回代理对象；
       // 直接改 createAssistantTurn() 返回的原始对象不会触发 Vue 更新。
+      const startedAt = Date.now()
       if (options.internal) {
         if (!this.sessionId) return
         this.messages.push({
@@ -418,16 +578,32 @@ export const useChatStore = defineStore('chat', {
           id: newId('user'),
           content: text,
           attachments: options.attachments || [],
+          createdAt: startedAt,
         })
       }
       this.messages.push(createAssistantTurn())
       const assistant = this.messages[this.messages.length - 1] as AssistantTurn
+      assistant.startedAt = startedAt
       assistant.streaming = true
       this.streaming = true
+      // 记录本轮属于哪个会话：切换对话时流继续跑，事件仍然写回这里。
+      const streamSessionId = this.sessionId
+      if (streamSessionId) {
+        this.runningSessionId = streamSessionId
+        this.syncStatus(streamSessionId)
+      }
       this.bump()
 
       const streamId = ++activeStream
       const isCurrent = () => streamId === activeStream
+      // 用户可能已经切到别的对话：状态要么写进当前会话，要么写进它自己的快照。
+      const isActive = () => this.sessionId === streamSessionId
+      const liveState = () => (streamSessionId ? this.liveSessions[streamSessionId] : undefined)
+      const note = (text: string) => {
+        const item = { kind: 'note' as const, id: newId('note'), text }
+        if (isActive()) this.messages.push(item)
+        else liveState()?.messages.push(item)
+      }
 
       let finalText = ''
       let frame = 0
@@ -465,7 +641,11 @@ export const useChatStore = defineStore('chat', {
             switch (event) {
               case 'meta': {
                 const sid = String(data.session_id || '')
-                if (!this.sessionId && sid) this.sessionId = sid
+                if (!this.sessionId && sid) {
+                  this.sessionId = sid
+                  this.draftWorkspaceId = null
+                }
+                if (sid) this.runningSessionId = sid
                 break
               }
               case 'delta': {
@@ -560,6 +740,7 @@ export const useChatStore = defineStore('chat', {
                   status: 'pending',
                   submitting: false,
                 })
+                if (streamSessionId) this.syncStatus(streamSessionId)
                 this.bump()
                 break
               }
@@ -568,6 +749,7 @@ export const useChatStore = defineStore('chat', {
                 const approval = assistant.approvals.find((item) => item.id === id)
                 if (approval) {
                   approval.status = 'expired'
+                  if (streamSessionId) this.syncStatus(streamSessionId)
                   this.bump()
                 }
                 break
@@ -581,6 +763,7 @@ export const useChatStore = defineStore('chat', {
                   answer: '',
                   submitting: false,
                 })
+                if (streamSessionId) this.syncStatus(streamSessionId)
                 this.bump()
                 break
               }
@@ -589,32 +772,41 @@ export const useChatStore = defineStore('chat', {
                 const question = assistant.questions.find((item) => item.id === id)
                 if (question) {
                   question.status = 'expired'
+                  if (streamSessionId) this.syncStatus(streamSessionId)
                   this.bump()
                 }
                 break
               }
               case 'todo': {
-                this.todos = (data.items as TodoItem[]) || []
+                const items = (data.items as TodoItem[]) || []
+                if (isActive()) this.todos = items
+                else {
+                  const live = liveState()
+                  if (live) live.todos = items
+                }
                 this.bump()
                 break
               }
               case 'compacted': {
-                this.messages.push({
-                  kind: 'note',
-                  id: newId('note'),
-                  text: '上下文已自动压缩，较早的对话折叠为摘要',
-                })
+                note('上下文已自动压缩，较早的对话折叠为摘要')
                 this.bump()
                 break
               }
               case 'done': {
                 const done = data as unknown as ChatDoneEvent
                 if (done.text !== undefined) finalText = done.text
-                if (done.session_id) this.sessionId = done.session_id
-                this.turns = done.turns ?? this.turns
-                this.setContext(done.tokens, done.max_tokens)
-                this.setUsage(done.session_usage)
-                this.setTurnUsage(done.usage)
+                if (done.session_id && !this.sessionId) this.sessionId = done.session_id
+                const live = liveState()
+                if (isActive()) {
+                  this.turns = done.turns ?? this.turns
+                  this.setContext(done.tokens, done.max_tokens)
+                  this.setUsage(done.session_usage)
+                  this.setTurnUsage(done.usage)
+                } else if (live) {
+                  live.turns = done.turns ?? live.turns
+                  if (typeof done.tokens === 'number') live.contextTokens = done.tokens
+                  if (typeof done.max_tokens === 'number') live.contextMax = done.max_tokens
+                }
                 const livePrefs = workspace.preferences
                 if (
                   livePrefs.transcript_view !== 'verbose'
@@ -640,7 +832,7 @@ export const useChatStore = defineStore('chat', {
           for (const question of assistant.questions) {
             if (question.status === 'pending') question.status = 'expired'
           }
-          this.messages.push({ kind: 'note', id: newId('note'), text: '已停止生成' })
+          note('已停止生成')
         } else {
           const message = errorMessage(error)
           assistant.error = `出错了：${message}`
@@ -658,16 +850,34 @@ export const useChatStore = defineStore('chat', {
           }
           flush()
           assistant.streaming = false
-          this.streaming = false
+          assistant.finishedAt = assistant.finishedAt ?? Date.now()
+          // 只有当前正在看这个会话时才动它的界面状态
+          if (isActive()) this.streaming = false
+          const live = liveState()
+          if (live) live.streaming = false
+          if (this.runningSessionId === streamSessionId) this.runningSessionId = null
+          if (streamSessionId) this.syncStatus(streamSessionId)
           abortController = null
           this.bump()
-          window.setTimeout(() => { void this.drainContinuations() }, 0)
+          // 后台任务续跑只属于这个会话，切走了就不要在别的对话里发
+          if (isActive()) {
+            window.setTimeout(() => { void this.drainContinuations() }, 0)
+          }
         }
       }
     },
 
     queueProcessContinuation(record: ProcessInfo): void {
-      if (!record.notify || !record.session_id || record.session_id !== this.sessionId) return
+      if (!record.notify || !record.session_id) return
+      if (record.session_id !== this.sessionId) {
+        // 会话在后台跑完：记到它自己的待续列表里，切回去再续跑
+        const live = this.liveSessions[record.session_id]
+        if (!live) return
+        if (!live.pendingContinuations.some((item) => item.id === record.id)) {
+          live.pendingContinuations.push(record)
+        }
+        return
+      }
       if (this.pendingContinuations.some((item) => item.id === record.id)) return
       this.pendingContinuations.push(record)
       if (!this.streaming) void this.drainContinuations()
@@ -746,6 +956,7 @@ export const useChatStore = defineStore('chat', {
           body: { decision },
         })
         approval.status = decision === 'deny' ? 'denied' : decision
+        if (this.sessionId) this.syncStatus(this.sessionId)
         if (decision === 'always') ui.showToast('本会话内将自动允许同类操作')
       } catch (error) {
         ui.showToast(errorMessage(error), true)
@@ -765,6 +976,7 @@ export const useChatStore = defineStore('chat', {
         })
         question.answer = answer
         question.status = 'answered'
+        if (this.sessionId) this.syncStatus(this.sessionId)
       } catch (error) {
         ui.showToast(errorMessage(error), true)
       } finally {
@@ -779,6 +991,7 @@ export const useChatStore = defineStore('chat', {
         method: 'DELETE',
       })
       const cleared = data.cleared || 0
+      if (this.sessionId) this.syncStatus(this.sessionId)
       ui.showToast(cleared ? `已清除 ${cleared} 条授权` : '本会话没有可清除的授权')
       return cleared
     },

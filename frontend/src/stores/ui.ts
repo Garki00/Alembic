@@ -39,6 +39,10 @@ export const useUiStore = defineStore('ui', {
     // 欢迎页的推荐问题通过它把文本塞进输入框
     composerDraft: '',
     composerFocusTick: 0,
+    // 只聚焦、不写入草稿（点「新对话」占位时用）
+    composerFocusOnly: 0,
+    // 每个对话各自的输入框草稿：切换对话再回来时内容还在
+    composerDrafts: {} as Record<string, string>,
   }),
 
   actions: {
@@ -110,6 +114,10 @@ export const useUiStore = defineStore('ui', {
     setComposerDraft(text: string): void {
       this.composerDraft = text
       this.composerFocusTick += 1
+    },
+
+    focusComposer(): void {
+      this.composerFocusOnly += 1
     },
 
     closeOverlays(): void {

@@ -26,7 +26,7 @@ $userListKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\Spec
 $appHome = if ($env:ALEMBIC_HOME) { $env:ALEMBIC_HOME } else { Join-Path $env:APPDATA "Alembic" }
 $usersFile = Join-Path (Join-Path $appHome "data") "sandbox-users.json"
 # setup-sandbox.ps1 使用的账户名，作为读不到配置文件时的兜底
-$defaultUsers = @("AlembicSandboxOffline", "AlembicSandboxOnline")
+$defaultUsers = @("AlembicSbxOffline", "AlembicSbxOnline")
 
 function Test-Admin {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()

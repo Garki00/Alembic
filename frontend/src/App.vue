@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppSidebar from './components/AppSidebar.vue'
 import ChatComposer from './components/ChatComposer.vue'
 import ChatTopbar from './components/ChatTopbar.vue'
@@ -13,6 +13,7 @@ import SettingsModal from './components/SettingsModal.vue'
 import ToastHost from './components/ToastHost.vue'
 import WorkspaceModal from './components/WorkspaceModal.vue'
 import { errorMessage } from './api/client'
+import { applyTheme, watchSystemTheme } from './lib/theme'
 import { useChatStore } from './stores/chat'
 import { useInspectorStore } from './stores/inspector'
 import { useProcessStore } from './stores/processes'
@@ -26,6 +27,17 @@ const inspector = useInspectorStore()
 const processes = useProcessStore()
 
 const bootError = ref('')
+const mainEl = ref<HTMLElement | null>(null)
+const composerDock = ref<HTMLElement | null>(null)
+let dockObserver: ResizeObserver | null = null
+let stopSystemThemeWatch: (() => void) | null = null
+
+// 外观：偏好里的 light / dark / system 直接映射到 <html data-theme>
+applyTheme(workspace.preferences?.theme)
+watch(
+  () => workspace.preferences?.theme,
+  (mode) => { applyTheme(mode) },
+)
 
 function applyDeepLink(): void {
   const hash = window.location.hash.replace('#', '')
@@ -90,12 +102,25 @@ function onKeydown(event: KeyboardEvent): void {
 
 onMounted(() => {
   document.addEventListener('keydown', onKeydown)
+  // 跟随系统时，系统切换深浅色要立刻生效
+  stopSystemThemeWatch = watchSystemTheme(() => applyTheme(workspace.preferences?.theme))
+  // 输入区浮在对话区底部：把它的高度写进 CSS 变量，滚动区据此留出底部空间
+  if (composerDock.value && typeof ResizeObserver !== 'undefined') {
+    dockObserver = new ResizeObserver(() => {
+      const height = composerDock.value?.offsetHeight ?? 0
+      mainEl.value?.style.setProperty('--composer-dock-height', `${height}px`)
+    })
+    dockObserver.observe(composerDock.value)
+  }
   processes.init()
   void initialize()
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown)
+  dockObserver?.disconnect()
+  dockObserver = null
+  stopSystemThemeWatch?.()
   processes.disconnectEvents()
 })
 </script>
@@ -120,11 +145,13 @@ onBeforeUnmount(() => {
       :open="!ui.sidebarCollapsed"
       @toggle="ui.toggleSidebarCollapsed()"
     />
-    <main class="main">
+    <main ref="mainEl" class="main">
       <ChatTopbar />
       <ProcessPanel v-if="processes.panelOpen" />
       <ChatTranscript />
-      <ChatComposer />
+      <div ref="composerDock" class="composer-dock">
+        <ChatComposer />
+      </div>
     </main>
     <Transition name="pane">
       <InspectorSidebar v-if="inspector.open" />

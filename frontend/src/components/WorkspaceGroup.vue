@@ -15,6 +15,8 @@ const props = defineProps<{
   totalCount: number
   dropId?: string
   dropBefore?: boolean
+  /** 这个工作区里是否有一个还没发消息的新对话占位 */
+  draft?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -75,12 +77,23 @@ async function finishRename(save: boolean): Promise<void> {
 
 async function addChat(): Promise<void> {
   ui.expanded[props.workspace.id] = true
-  try {
-    await chat.newSession(props.workspace.id)
-    ui.sidebarOpen = false
-  } catch (error) {
-    ui.showToast(errorMessage(error), true)
+  if (store.activeWorkspaceId !== props.workspace.id) {
+    void store.activateWorkspace(props.workspace.id)
   }
+  // 只创建「未发消息的新对话」占位，不落库；发第一条消息时才真正建会话。
+  chat.startDraft(props.workspace.id)
+  ui.sidebarOpen = false
+  ui.focusComposer()
+}
+
+function openDraft(): void {
+  ui.expanded[props.workspace.id] = true
+  if (store.activeWorkspaceId !== props.workspace.id) {
+    void store.activateWorkspace(props.workspace.id)
+  }
+  // 已经在别的对话里时，点占位回到「新对话」视图（不会新建会话）
+  chat.startDraft(props.workspace.id)
+  ui.focusComposer()
 }
 
 function removeWorkspace(): void {
@@ -154,7 +167,18 @@ function forwardDragOver(id: string, before: boolean): void {
     </FloatingMenu>
 
     <div v-show="expanded()" class="ws-sessions">
-      <p v-if="!sessions.length" class="ws-session-empty">
+      <button
+        v-if="draft"
+        type="button"
+        class="session-item draft"
+        :class="{ active: !chat.sessionId }"
+        title="新对话（发送第一条消息后才会保存）"
+        @click="openDraft"
+      >
+        <span class="session-draft-dot" aria-hidden="true"></span>
+        <span class="session-title">新对话</span>
+      </button>
+      <p v-if="!sessions.length && !draft" class="ws-session-empty">
         {{ ui.search ? '没有匹配的对话' : '还没有对话' }}
       </p>
       <SessionRow
@@ -162,6 +186,7 @@ function forwardDragOver(id: string, before: boolean): void {
         :key="session.id"
         :session="session"
         :active="session.id === chat.sessionId"
+        :status="chat.statusOf(session.id)"
         draggable
         :drop-hint="dropId === session.id ? (dropBefore ? 'before' : 'after') : ''"
         @select="emit('session-select', session)"

@@ -50,9 +50,11 @@ const menuProvider = computed(
 )
 const menuModels = computed(() => menuProvider.value?.models ?? [])
 const canSend = computed(
-  () => !chat.streaming && Boolean(draft.value.trim() || attachments.value.length),
+  () => !chat.busy && Boolean(draft.value.trim() || attachments.value.length),
 )
 /** 有没有真正可用的模型：没有时发送不会真正发出，只提示去配置。 */
+/** 有审批或提问时，输入区换成请求卡片，底部状态行保持不变 */
+const showRequest = computed(() => Boolean(chat.pendingApproval || chat.pendingQuestion))
 const hasModel = computed(() => Boolean(workspace.activeModel) && workspace.hasProvider)
 const noModelHint = ref(false)
 let noModelTimer: number | undefined
@@ -323,6 +325,22 @@ watch(
   },
 )
 
+// 只聚焦：点侧栏的「新对话」占位时不清空已经打好的内容
+watch(
+  () => ui.composerFocusOnly,
+  () => { void nextTick(() => textarea.value?.focus()) },
+)
+
+// 草稿按对话保存：切走时存下当前内容，切回时恢复。
+const draftKey = computed(() => chat.sessionId || `draft:${chat.draftWorkspaceId || 'none'}`)
+let lastDraftKey = draftKey.value
+watch(draftKey, (next) => {
+  ui.composerDrafts[lastDraftKey] = draft.value
+  lastDraftKey = next
+  draft.value = ui.composerDrafts[next] ?? ''
+  void nextTick(() => resize())
+})
+
 watch(
   () => chat.streaming,
   (busy) => {
@@ -360,22 +378,25 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    v-if="workspace.activeWorkspace && (chat.pendingApproval || chat.pendingQuestion)"
-    class="composer composer-request"
+  <form
+    v-if="workspace.activeWorkspace"
+    class="composer"
+    :class="{ 'composer-request': showRequest }"
+    @submit.prevent="send"
   >
-    <ApprovalCard
-      v-if="chat.pendingApproval"
-      :approval="chat.pendingApproval"
-      @decide="decideApproval"
-    />
-    <QuestionCard
-      v-if="chat.pendingQuestion"
-      :question="chat.pendingQuestion"
-      @answer="answerQuestion"
-    />
-  </div>
-  <form v-else-if="workspace.activeWorkspace" class="composer" @submit.prevent="send">
+    <template v-if="showRequest">
+      <ApprovalCard
+        v-if="chat.pendingApproval"
+        :approval="chat.pendingApproval"
+        @decide="decideApproval"
+      />
+      <QuestionCard
+        v-if="chat.pendingQuestion"
+        :question="chat.pendingQuestion"
+        @answer="answerQuestion"
+      />
+    </template>
+    <template v-else>
     <input
       ref="fileInput"
       type="file"
@@ -425,7 +446,7 @@ onBeforeUnmount(() => {
         rows="1"
         placeholder="输入消息，Enter 发送"
         autocomplete="off"
-        :disabled="chat.streaming || !workspace.activeWorkspace"
+        :disabled="chat.busy || !workspace.activeWorkspace"
         @input="resize"
         @keydown="onKeydown"
       ></textarea>
@@ -581,16 +602,19 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="composer-hint">
-      <Transition name="hint-fade" mode="out-in">
-        <span v-if="noModelHint" key="alert" class="composer-hint-alert" role="status">
-          无可用模型，请先在「设置 → 供应商」里添加供应商与模型
-        </span>
-        <span v-else key="tip">Shift + Enter 换行</span>
-      </Transition>
-    </div>
+    </template>
 
-    <div class="composer-status">
+    <div class="composer-meta">
+      <div v-if="!showRequest" class="composer-hint">
+        <Transition name="hint-fade" mode="out-in">
+          <span v-if="noModelHint" key="alert" class="composer-hint-alert" role="status">
+            无可用模型，请先在「设置 → 供应商」里添加供应商与模型
+          </span>
+          <span v-else key="tip">Shift + Enter 换行</span>
+        </Transition>
+      </div>
+
+      <div class="composer-status">
       <div
         v-if="chat.cacheKnown"
         class="cache-stat"
@@ -664,6 +688,7 @@ onBeforeUnmount(() => {
           </svg>
           <span class="context-ring-label">{{ chat.contextPercent }}%</span>
         </span>
+      </div>
       </div>
     </div>
   </form>

@@ -31,6 +31,7 @@ class PreferencesStoreTest(unittest.TestCase):
         self.assertEqual(
             self.store.get(),
             {
+                "theme": "light",
                 "transcript_view": "detailed",
                 "collapse_timing": "completion",
                 "permission_mode": "workspace_write",
@@ -39,6 +40,12 @@ class PreferencesStoreTest(unittest.TestCase):
                 "developer_tools": False,
             },
         )
+
+    def test_theme_accepts_dark_and_system(self):
+        self.assertEqual(self.store.update({"theme": "dark"})["theme"], "dark")
+        self.assertEqual(self.store.update({"theme": "system"})["theme"], "system")
+        with self.assertRaises(ValueError):
+            self.store.update({"theme": "neon"})
 
     def test_legacy_read_only_migrates_to_approval_all(self):
         (self.tmp / "preferences.json").write_text(

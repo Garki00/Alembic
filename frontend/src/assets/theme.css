@@ -1,0 +1,130 @@
+/*
+ * 深色主题：只在 <html data-theme="dark"> 时生效。
+ *
+ * main.css 里的浅色变量和少量半透明白底在这里被覆盖；选择器与 main.css
+ * 一一对应，改样式时两边一起看。
+ */
+
+html[data-theme='dark'] {
+    color-scheme: dark;
+    --paper: #121714;
+    --paper-deep: #182019;
+    --card: #1c2420;
+    --ink: #e6ece1;
+    --muted: #a9b6a1;
+    --soft: #7f8b78;
+    --mint: #27352c;
+    --mint-deep: #2f4636;
+    --emerald: #63b98c;
+    --emerald-deep: #8ad3aa;
+    --border: #2c3830;
+    --border-soft: #232d26;
+    --danger: #e09280;
+    --danger-bg: #3a2621;
+    --danger-border: #5a3b33;
+    --danger-strong: #f0a894;
+    --surface-tint: #1f2823;
+    --hover-bg: #232d27;
+    --accent-border: #3d5546;
+    --accent-border-soft: #33463a;
+    --accent-focus: #4e7a5f;
+    --accent-text: #a9c3a5;
+    --accent-text-soft: #8aa886;
+    --on-emerald: #0f1512;
+    --scroll-thumb: #33403a;
+    --shadow: 0 22px 48px -28px rgba(0, 0, 0, 0.75);
+}
+
+/* 背景里仍然是浅色的部分 */
+html[data-theme='dark'] .composer {
+    background: linear-gradient(to top, var(--paper) 55%, rgba(18, 23, 20, 0.9));
+}
+html[data-theme='dark'] .process-row.open { background: rgba(35, 45, 39, 0.75); }
+html[data-theme='dark'] .message-attachment,
+html[data-theme='dark'] .approval-detail,
+html[data-theme='dark'] .work-steps,
+html[data-theme='dark'] .model-advanced-panel { background: rgba(28, 36, 32, 0.72); }
+html[data-theme='dark'] .prose tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.03); }
+html[data-theme='dark'] .process-command-block { background: #161d18; }
+html[data-theme='dark'] .toast { background: var(--card); color: var(--ink); }
+html[data-theme='dark'] .switch .track::after { background: #e6ece1; }
+
+/* 焦点光晕、浅色悬停底 */
+html[data-theme='dark'] .question-free textarea:focus,
+html[data-theme='dark'] .general-select:focus,
+html[data-theme='dark'] .composer-shell:focus-within { box-shadow: 0 0 0 3px rgba(99, 185, 140, 0.18); }
+html[data-theme='dark'] .new-chat-btn:hover,
+html[data-theme='dark'] .workspace-option:hover,
+html[data-theme='dark'] .workspace-add:hover,
+html[data-theme='dark'] .process-summary:hover,
+html[data-theme='dark'] .code-work-head:hover,
+html[data-theme='dark'] .workspace-trigger.open,
+html[data-theme='dark'] .cache-meter[aria-expanded='true'],
+html[data-theme='dark'] .cache-meter.warm,
+html[data-theme='dark'] .dir-row:hover,
+html[data-theme='dark'] .workspace-browser .dir-row:hover { background: var(--hover-bg); }
+html[data-theme='dark'] .suggestion:hover,
+html[data-theme='dark'] .model-switch:hover,
+html[data-theme='dark'] .btn-ghost:hover,
+html[data-theme='dark'] .thinking-switch:hover,
+html[data-theme='dark'] .inspector-option:hover { background: var(--surface-tint); }
+
+/* 图标与次要文字：深色下用更亮的绿 */
+html[data-theme='dark'] .brand .sun-icon,
+html[data-theme='dark'] .sun-icon,
+html[data-theme='dark'] .welcome .sun,
+html[data-theme='dark'] .welcome-sun,
+html[data-theme='dark'] .work-step.thought .work-step-label,
+html[data-theme='dark'] .workspace-browser .dir-icon { color: var(--accent-text-soft); }
+html[data-theme='dark'] .suggestion,
+html[data-theme='dark'] .workspace-trigger,
+html[data-theme='dark'] .workspace-add,
+html[data-theme='dark'] .tool-chip.result { color: var(--accent-text); }
+html[data-theme='dark'] .workspace-add:hover { color: var(--emerald-deep); }
+html[data-theme='dark'] .tool-chip.result { background: var(--surface-tint); border-color: var(--accent-border-soft); }
+html[data-theme='dark'] .workspace-browser .dir-row:hover { border-color: var(--accent-border-soft); }
+html[data-theme='dark'] .tool-card-grid:hover,
+html[data-theme='dark'] .provider-option:hover { border-color: var(--accent-border-soft); }
+
+/* 代码块与表格在深色下不能是亮底 */
+html[data-theme='dark'] .prose pre,
+html[data-theme='dark'] .prose code { background: #161d18; }
+html[data-theme='dark'] .prose pre { border-color: var(--border-soft); }
+
+/* 其余仍写死浅色底的面板 */
+html[data-theme='dark'] .process-command-block { background: #161d18; }
+html[data-theme='dark'] .process-output { background: #141b16; }
+html[data-theme='dark'] .workspace-option.active { background: var(--mint); }
+html[data-theme='dark'] .no-provider { background: #1f1b14; border-color: #4a3d28; }
+html[data-theme='dark'] .no-provider-title { color: #d8c39a; }
+html[data-theme='dark'] .tool-chip.result {
+    background: var(--surface-tint);
+    border-color: var(--accent-border-soft);
+    color: var(--accent-text);
+}
+html[data-theme='dark'] .approval-reason { background: #201b14; }
+html[data-theme='dark'] .code-work,
+html[data-theme='dark'] .code-block,
+html[data-theme='dark'] .code-result,
+html[data-theme='dark'] .code-block.diff { background: #161d18; }
+html[data-theme='dark'] .tab:hover { background: var(--hover-bg); }
+html[data-theme='dark'] .tool-meta .risk-write { background: var(--surface-tint); }
+html[data-theme='dark'] .workspace-add:hover { color: var(--emerald-deep); }
+
+/* Diff（消息里的预览与右侧文件差异）：行底色改成低饱和深色，文字保持亮色 */
+html[data-theme='dark'] .diff-view {
+    background: var(--card);
+    color: var(--ink);
+}
+html[data-theme='dark'] .diff-hover { background: var(--card); }
+html[data-theme='dark'] .diff-row.add { background: rgba(99, 185, 140, 0.16); }
+html[data-theme='dark'] .diff-row.remove { background: rgba(224, 146, 128, 0.16); }
+html[data-theme='dark'] .diff-row { color: var(--ink); }
+html[data-theme='dark'] .diff-row.gap { background: var(--paper-deep); color: var(--soft); }
+html[data-theme='dark'] .diff-row .diff-text { color: var(--ink); }
+html[data-theme='dark'] .diff-row.gap .diff-text { color: var(--soft); }
+html[data-theme='dark'] .file-diff-note { background: var(--paper-deep); }
+html[data-theme='dark'] .code-work { border-color: var(--border); }
+
+/* 滚动条 */
+html[data-theme='dark'] ::-webkit-scrollbar-thumb { background: var(--scroll-thumb); }

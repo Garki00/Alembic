@@ -3,8 +3,15 @@ import type {
   LinkTarget,
   PermissionMode,
   TerminalKind,
+  ThemeMode,
   TranscriptViewMode,
 } from '../api/types'
+
+export const THEMES: Array<{ value: ThemeMode; label: string; hint: string }> = [
+  { value: 'light', label: '浅色', hint: '纸白与薄荷绿' },
+  { value: 'dark', label: '深色', hint: '深绿底色 + 亮色文字' },
+  { value: 'system', label: '跟随系统', hint: '随系统外观自动切换' },
+]
 
 export interface TranscriptModeOption {
   value: TranscriptViewMode

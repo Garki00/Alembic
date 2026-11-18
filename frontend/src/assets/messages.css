@@ -1,0 +1,77 @@
+/*
+ * 消息时间与复制按钮。
+ *
+ * 单独一个文件，避免和 main.css 的大段样式互相影响；跟随两套主题的变量。
+ */
+
+/* 运行状态：工作步骤上方 */
+.turn-timing {
+    margin: 0 0 6px;
+    color: var(--soft);
+    font: 10px var(--mono);
+    letter-spacing: 0.02em;
+}
+
+/* 回答底部：复制按钮 + 结束时间 */
+.turn-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    min-height: 24px;
+}
+
+.turn-time,
+.user-time {
+    color: var(--soft);
+    font: 10px var(--mono);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+
+/* 无边框图形按钮：底色与所在对话一致，悬停时加深 */
+.icon-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--soft);
+    opacity: 0.85;
+    transition: background 140ms ease, color 140ms ease, opacity 140ms ease;
+}
+
+.icon-action:hover {
+    background: var(--hover-bg);
+    color: var(--ink);
+    opacity: 1;
+}
+
+.icon-action svg {
+    width: 14px;
+    height: 14px;
+    display: block;
+}
+
+/* 用户消息：时间与复制按钮平时隐藏，悬停在整条消息上时出现 */
+.user-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    opacity: 0;
+    transition: opacity 140ms ease;
+}
+
+.message.user:hover .user-meta,
+.user-meta:focus-within {
+    opacity: 1;
+}
+
+/* 深色下用户气泡使用亮色文字 */
+html[data-theme='dark'] .message.user .bubble {
+    color: #f3f6ee;
+}

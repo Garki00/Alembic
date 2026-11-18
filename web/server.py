@@ -32,7 +32,14 @@ from agents.approval import (
     permission_tools,
     tool_risks,
 )
-from agents.context import ChatSession, SessionStore, context_tokens, message_text, reasoning_text
+from agents.context import (
+    ChatSession,
+    SessionMeta,
+    SessionStore,
+    context_tokens,
+    message_text,
+    reasoning_text,
+)
 from agents.usage import SessionUsage
 from config.settings import settings
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
@@ -147,6 +154,7 @@ class AnswerPayload(BaseModel):
 
 
 class PreferencesPayload(BaseModel):
+    theme: str | None = None
     transcript_view: str | None = None
     collapse_timing: str | None = None
     permission_mode: str | None = None
@@ -257,8 +265,13 @@ def _serialize_messages(messages: Iterable[Any]) -> list[dict[str, Any]]:
     for message in messages:
         role = role_map.get(getattr(message, "type", ""), getattr(message, "type", "unknown"))
         item: dict[str, Any] = {"role": role, "content": message_text(message)}
-        if getattr(message, "additional_kwargs", {}).get("alembic_internal"):
-            item["internal"] = True
+        kwargs = getattr(message, "additional_kwargs", None)
+        if isinstance(kwargs, dict):
+            if kwargs.get("alembic_internal"):
+                item["internal"] = True
+            time_ms = kwargs.get("alembic_time")
+            if isinstance(time_ms, int):
+                item["time"] = time_ms
         reasoning = reasoning_text(message)
         if reasoning:
             item["reasoning"] = reasoning
@@ -945,13 +958,20 @@ def create_app(
         session_id = (payload.id or "").strip() or _new_session_id()
         sessions.delete(session_id)
         app.state.todos.clear(session_id)
+        # 立即落一条空记录：第一轮对话还没结束就刷新页面时，会话不会凭空消失。
+        # 标题留空，第一轮结束后仍会按老逻辑自动生成。
+        meta = SessionMeta(
+            session_id=session_id,
+            workspace_id=payload.workspace_id.strip(),
+        )
+        sessions.save(session_id, [], meta)
         return {
             "session": {
                 "id": session_id,
                 "title": "新对话",
                 "turns": 0,
                 "messages": 0,
-                "updated_at": "",
+                "updated_at": meta.updated_at,
                 "compactions": 0,
                 "workspace_id": payload.workspace_id.strip(),
             }

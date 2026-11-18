@@ -1157,11 +1157,13 @@ COLLAPSE_TIMINGS = ("completion", "next_input")
 PERMISSION_MODES = ("read_only", "approval_all", "workspace_write", "full_access")
 TERMINAL_CHOICES = ("powershell", "cmd", "gitbash", "wsl")
 LINK_TARGETS = ("sidebar", "browser")
+THEME_MODES = ("light", "dark", "system")
 DEFAULT_TRANSCRIPT_VIEW = "detailed"
 DEFAULT_COLLAPSE_TIMING = "completion"
 DEFAULT_PERMISSION_MODE = "workspace_write"
 DEFAULT_TERMINAL = "powershell"
 DEFAULT_LINK_TARGET = "sidebar"
+DEFAULT_THEME = "light"
 PREFERENCES_VERSION = 2
 
 
@@ -1192,7 +1194,11 @@ def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
     developer = data.get("developer_tools", False)
     if isinstance(developer, str):
         developer = developer.strip().lower() in {"1", "true", "on", "yes"}
+    theme = str(data.get("theme") or DEFAULT_THEME).strip().lower()
+    if theme not in THEME_MODES:
+        theme = DEFAULT_THEME
     return {
+        "theme": theme,
         "transcript_view": mode,
         "collapse_timing": timing,
         "permission_mode": permission,
@@ -1217,6 +1223,7 @@ class PreferencesStore:
             self.file.load(
                 {
                     "version": PREFERENCES_VERSION,
+                    "theme": DEFAULT_THEME,
                     "transcript_view": DEFAULT_TRANSCRIPT_VIEW,
                     "collapse_timing": DEFAULT_COLLAPSE_TIMING,
                     "permission_mode": DEFAULT_PERMISSION_MODE,
@@ -1229,6 +1236,11 @@ class PreferencesStore:
 
     def update(self, patch: Mapping[str, Any]) -> dict[str, Any]:
         current = self.get()
+        if "theme" in patch:
+            theme = str(patch["theme"]).strip().lower()
+            if theme not in THEME_MODES:
+                raise ValueError("theme 只能是 light / dark / system")
+            current["theme"] = theme
         if "transcript_view" in patch:
             mode = str(patch["transcript_view"]).strip().lower()
             if mode not in TRANSCRIPT_VIEW_MODES:

@@ -1,0 +1,50 @@
+/*
+ * 侧栏对话状态：运行中转圈，等待审批 / 等待选择用提示图标。
+ * 颜色取主题变量，浅色深色都能用。
+ */
+
+.session-status {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--soft);
+}
+
+.session-status svg {
+    width: 12px;
+    height: 12px;
+    display: block;
+}
+
+.session-status.running { color: var(--emerald); }
+.session-status.approval { color: var(--danger); }
+.session-status.question { color: var(--accent-text); }
+
+.session-status .spin {
+    animation: session-status-spin 900ms linear infinite;
+    transform-origin: 50% 50%;
+}
+
+@keyframes session-status-spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .session-status .spin { animation-duration: 2400ms; }
+}
+
+/* 对话标题在行内垂直居中（行高由 .session-item 统一控制） */
+.session-title-wrap {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.session-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    line-height: 1.4;
+}

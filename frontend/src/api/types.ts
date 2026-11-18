@@ -190,6 +190,7 @@ export type CollapseTiming = 'completion' | 'next_input'
 export type PermissionMode = 'read_only' | 'approval_all' | 'workspace_write' | 'full_access'
 export type TerminalKind = 'powershell' | 'cmd' | 'gitbash' | 'wsl'
 export type LinkTarget = 'sidebar' | 'browser'
+export type ThemeMode = 'light' | 'dark' | 'system'
 
 export interface TerminalInfo {
   value: TerminalKind
@@ -199,6 +200,7 @@ export interface TerminalInfo {
 }
 
 export interface Preferences {
+  theme: ThemeMode
   transcript_view: TranscriptViewMode
   collapse_timing: CollapseTiming
   permission_mode: PermissionMode
@@ -210,6 +212,8 @@ export interface Preferences {
 export interface HistoryMessage {
   role: 'user' | 'assistant' | 'tool' | 'system' | string
   content: string
+  /** 消息时间（epoch 毫秒），仅新版本会话记录 */
+  time?: number
   reasoning?: string
   tool_calls?: Array<{ id?: string; name: string; args: Record<string, unknown> }>
   tool_name?: string

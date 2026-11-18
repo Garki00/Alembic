@@ -43,6 +43,7 @@ onMounted(() => { void nextTick(() => scrollToBottom(true)) })
         v-if="turn.kind === 'user'"
         :content="turn.content"
         :attachments="turn.attachments"
+        :created-at="turn.createdAt"
       />
       <AssistantMessage v-else-if="turn.kind === 'assistant'" :turn="turn" />
       <div v-else class="system-note">{{ turn.text }}</div>

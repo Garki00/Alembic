@@ -119,6 +119,33 @@ function openSession(session: SessionSummary): void {
     .catch((error) => { ui.showToast(errorMessage(error), true) })
 }
 
+/** 在当前选中的工作区开一个还没落库的「新对话」占位。 */
+function newChat(): void {
+  const target = workspace.activeWorkspace?.id || ''
+  if (!target) {
+    ui.openWorkspaceModal()
+    return
+  }
+  ui.expanded[target] = true
+  chat.startDraft(target)
+  ui.sidebarOpen = false
+  ui.focusComposer()
+}
+
+function openDraft(): void {
+  const target = chat.draftWorkspaceId
+  if (target) {
+    ui.expanded[target] = true
+    if (workspace.activeWorkspaceId !== target) void workspace.activateWorkspace(target)
+    chat.startDraft(target)
+  }
+  ui.focusComposer()
+}
+
+function isDraftWorkspace(workspaceId: string): boolean {
+  return chat.draftWorkspaceId === workspaceId
+}
+
 function openSearch(): void {
   ui.searchOpen = true
   void nextTick(() => searchInput.value?.focus())
@@ -205,6 +232,25 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
     </div>
 
     <div class="sidebar-inner">
+      <button
+        type="button"
+        class="new-chat-btn"
+        title="在当前工作区新建对话"
+        @click="newChat"
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M13.4 7.6a5.4 5.4 0 0 1-5.4 5.4H4.6L2.2 14.2l.6-2.4A5.4 5.4 0 1 1 13.4 7.6Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.25"
+            stroke-linejoin="round"
+          />
+          <path d="M8 5.6v4.2M5.9 7.7h4.2" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+        </svg>
+        <span>新对话</span>
+      </button>
+
       <div ref="toolbar" class="ws-toolbar">
         <Transition name="ws-search" mode="out-in">
           <div v-if="ui.searchOpen" key="search" class="ws-search-box">
@@ -309,11 +355,23 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
 
         <template v-if="ui.sessionGrouping === 'flat'">
           <div class="flat-list">
+            <button
+              v-if="chat.draftWorkspaceId"
+              type="button"
+              class="session-item draft"
+              :class="{ active: !chat.sessionId }"
+              title="新对话（发送第一条消息后才会保存）"
+              @click="openDraft"
+            >
+              <span class="session-draft-dot" aria-hidden="true"></span>
+              <span class="session-title">新对话</span>
+            </button>
             <SessionRow
               v-for="session in flatSessions"
               :key="session.id"
               :session="session"
               :active="session.id === chat.sessionId"
+              :status="chat.statusOf(session.id)"
               draggable
               :drop-hint="dragOverId === session.id ? (dragOverBefore ? 'before' : 'after') : ''"
               @select="openSession(session)"
@@ -331,6 +389,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
             :workspace="group.workspace"
             :sessions="group.sessions"
             :total-count="group.total"
+            :draft="isDraftWorkspace(group.workspace.id)"
             :drop-id="dragOverId"
             :drop-before="dragOverBefore"
             @session-select="openSession"
@@ -353,6 +412,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
               :key="session.id"
               :session="session"
               :active="session.id === chat.sessionId"
+              :status="chat.statusOf(session.id)"
               archived
             />
           </div>
