@@ -53,7 +53,11 @@ async function initialize(): Promise<void> {
       return
     }
 
-    const first = workspace.sessions[0]
+    // 只自动打开还能在工作区列表里找到的会话：配置被重置后会残留一些指向已删除
+    // 工作区的会话，它们不在侧栏里，绝不能凭空出现在对话区。
+    const first = workspace.sessions.find(
+      (item) => !item.workspace_id || workspace.workspaces.some((ws) => ws.id === item.workspace_id),
+    )
     if (first) {
       const target = first.workspace_id || workspace.workspaces[0]?.id || ''
       if (target) {
@@ -139,7 +143,7 @@ onBeforeUnmount(() => {
     <button type="button" class="btn-mini" @click="initialize">重试</button>
   </div>
 
-  <OnboardingModal v-if="workspace.ready && workspace.needsSetup" />
+  <OnboardingModal v-if="workspace.ready && workspace.firstRun" />
   <SettingsModal v-else-if="ui.settingsOpen" />
   <WorkspaceModal v-if="ui.workspaceModalOpen" />
   <GlobalTooltip />

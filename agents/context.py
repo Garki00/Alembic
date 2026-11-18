@@ -290,6 +290,9 @@ class SessionMeta:
     message_count: int = 0
     last_compaction_turn: int = 0
     workspace_id: str = ""
+    #: 会话所属工作区的目录。工作区配置丢失（例如重置配置）时用它把工作区恢复回来，
+    #: 否则会话会挂在一个已经不存在的工作区上：列表里看不见，却又能被打开。
+    workspace_path: str = ""
     title: str = ""
     pinned: bool = False
     archived: bool = False
@@ -325,6 +328,7 @@ class SessionStore:
                 message_count=len(messages),
                 last_compaction_turn=int(payload.get("last_compaction_turn", 0)),
                 workspace_id=str(payload.get("workspace_id", "")),
+                workspace_path=str(payload.get("workspace_path", "")),
                 title=str(payload.get("title", "")),
                 pinned=bool(payload.get("pinned", False)),
                 archived=bool(payload.get("archived", False)),
@@ -371,6 +375,7 @@ class SessionStore:
             "message_count": len(visible),
             "last_compaction_turn": meta.last_compaction_turn,
             "workspace_id": meta.workspace_id,
+            "workspace_path": meta.workspace_path,
             "title": meta.title,
             "pinned": meta.pinned,
             "archived": meta.archived,
@@ -399,6 +404,37 @@ class SessionStore:
             return False
         except OSError as exc:
             logger.warning("删除会话 %s 失败：%s", session_id, exc)
+            return False
+
+    def update_workspace(
+        self,
+        session_id: str,
+        workspace_id: str,
+        workspace_path: str = "",
+    ) -> bool:
+        """Rewrite only the workspace fields of a stored session.
+
+        Recovery uses this to re-attach a session to the workspace that now owns
+        its directory, without touching the message history.
+        """
+        path = self.path(session_id)
+        if not path.exists():
+            return False
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("修复会话 %s 的工作区失败：%s", session_id, exc)
+            return False
+        payload["workspace_id"] = workspace_id
+        if workspace_path:
+            payload["workspace_path"] = workspace_path
+        try:
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+            return True
+        except OSError as exc:
+            logger.warning("写入会话 %s 的工作区失败：%s", session_id, exc)
             return False
 
     def duplicate(self, session_id: str, new_id: str, title: str) -> SessionMeta | None:
@@ -450,6 +486,7 @@ class SessionStore:
                     compactions=int(payload.get("compactions", 0)),
                     message_count=int(payload.get("message_count", 0)),
                     workspace_id=str(payload.get("workspace_id", "")),
+                    workspace_path=str(payload.get("workspace_path", "")),
                     title=str(payload.get("title", "")),
                     pinned=bool(payload.get("pinned", False)),
                     archived=bool(payload.get("archived", False)),
@@ -592,6 +629,7 @@ class ChatSession:
         trigger_ratio: float | None = None,
         max_tool_output_tokens: int | None = None,
         workspace_id: str = "",
+        workspace_path: str = "",
         hydrate: bool = True,
     ) -> None:
         self.agent = agent
@@ -628,6 +666,8 @@ class ChatSession:
         # 工作区归属以调用方为准（会话文件里的旧值可能为空）
         if workspace_id:
             self.meta.workspace_id = workspace_id
+        if workspace_path:
+            self.meta.workspace_path = workspace_path
 
     # ---- 查询 ----
     def __len__(self) -> int:

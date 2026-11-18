@@ -100,14 +100,16 @@ npm run preview     # 4173 端口预览，/api 仍代理到后端
 
 ### 2.1 初始化向导
 
-数据目录里还没有可用供应商时，首次打开会显示初始化向导：
+数据目录里还没有供应商配置文件时才会显示初始化向导（也就是只在第一次启动出现）：
 
 1. **供应商与模型**：以图标卡片列出深度求索（DeepSeek）、OpenAI、Anthropic Claude、阿里云千问、硅基流动和自定义供应商。选择模板会自动填入 Base URL；在同一个供应商下可以添加一个或多个模型。也可以点「从上游获取」读取 `{base_url}/models`：标准接口通常只返回模型 ID，OpenRouter 等会额外提供上下文长度、最大输出、图片/推理能力，前端会一并填入；没有能力字段时使用本地模型家族默认值。
 2. **工作步骤与终端**：选择工作步骤展示档位、收起时机，以及命令工具默认使用的终端。这些选项与「设置 → 通用」一致。
 
+向导底部有「暂时跳过（暂不设置）」，点了就直接进入界面，之后再从「设置 → 供应商」补上即可；跳过与否都不影响后面重新配置。
+
 保存后供应商会出现在「设置 → 供应商」中。初始化完成不会自动创建工作区：对话区会显示「选择一个工作区」的提示，选择或添加目录后才出现输入框。在没有任何对话的工作区里直接输入并发送，会自动创建一条新对话。
 
-如果 `.env` 或当前终端里已经同时设置了 `DEEPSEEK_API_KEY` 与 `MODEL_NAME`，首次启动会自动生成一个供应商并跳过向导。需要重新查看向导时，见[重置配置](#83-重置配置)。
+向导只认「配置文件在不在」：配置文件已经存在、但供应商被删光时不会再弹向导，而是在对话区显示「当前没有可用的供应商」和「立刻设置」按钮。如果 `.env` 或当前终端里已经同时设置了 `DEEPSEEK_API_KEY` 与 `MODEL_NAME`，首次启动会自动生成一个供应商并跳过向导。需要重新查看向导时，见[重置配置](#83-重置配置)。
 
 ### 2.2 工作区与对话
 
@@ -122,6 +124,8 @@ npm run preview     # 4173 端口预览，/api 仍代理到后端
 - 对话标题由模型根据首轮对话生成短标题；失败或没有可用模型时回退首条内容前 40 字。
 
 对话区支持流式输出、Markdown 渲染、上下文占用提示和停止生成。停止生成会中断当前轮的前台命令，并停止当前会话正在运行的后台任务；其他会话的后台任务不受影响。工具调用与模型思考会按实际顺序显示为工作步骤；命令执行期间会实时显示输出。一轮结束且存在文件改动时，独立卡片汇总修改了多少个文件、总新增 / 删除行数，点击文件名可以在右侧栏以 Diff View 打开，悬停文件名可以看到改动预览。
+
+空对话页顶部显示「工作目录：」加当前路径，点路径会展开工作区卡片：已列出的工作区都可以直接点击切换，底部「添加工作区」打开添加工作区的卡片。没有可用供应商时，这一位置改为显示「当前没有可用的供应商」和「立刻设置」按钮，原来的推荐问题不再显示；此时输入框仍可正常打字，但发送按钮呈不可用状态，点击（或按 Enter）不会发出请求，只在输入框下方提示「无可用模型」。
 
 ### 2.3 模型切换与推理等级
 
@@ -518,6 +522,7 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 命令不会以桌面用户身份直接执行。Windows 后端为命令创建独立的低权限本地用户，并通过 ACL、Job Object 和按用户匹配的 Windows Firewall 约束：
 
 - 首次使用需要以管理员身份运行一次 `scripts\setup-sandbox.ps1`；它创建 `AlembicSandboxOffline` / `AlembicSandboxOnline` 两个标准用户、防火墙规则和 DPAPI 保护的凭据文件。
+- 这两个账户默认从登录 / 切换用户界面隐藏（`SpecialAccounts\UserList` 里写 0），避免误登录和暴露面；`runas`、`LogonUser`、`CreateProcessWithLogonW` 仍然可以正常使用它们。恢复显示用 `scripts\hide-sandbox-users.ps1 -Show`，初始化时想保持显示用 `setup-sandbox.ps1 -Visible`。
 - 应用日常运行不需要管理员权限，也不以管理员身份运行。
 - 工作区授予沙盒用户 `Modify`；应用数据目录、`.ssh` / `.aws` / `.kube` / `.gnupg` / `.docker`、`.netrc` / `.npmrc` / `.pypirc`、私钥和工作区 `.env` 加 deny ACE。
 - 子进程自动加入 Job Object；停止生成、超时、客户端断开都会结束整个进程树。
@@ -534,6 +539,11 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 # 管理员 PowerShell，在仓库根目录执行一次
 .\scripts\setup-sandbox.ps1
 .\scripts\setup-sandbox.ps1 -Verify
+.\scripts\setup-sandbox.ps1 -Visible     # 初始化但不隐藏沙盒账户
+# 登录界面显示/隐藏沙盒账户（不影响沙盒本身）
+.\scripts\hide-sandbox-users.ps1
+.\scripts\hide-sandbox-users.ps1 -Show
+.\scripts\hide-sandbox-users.ps1 -Verify
 # 卸载
 .\scripts\setup-sandbox.ps1 -Uninstall
 ```
@@ -678,6 +688,7 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 ```
 
 - 默认保留 `memory/`；`-IncludeSessions` 会一起清空会话历史。
+- 因为 `data/workspace.json` 也在被删的 `data/` 里，重置后工作区列表会消失，但会话历史还在。新版本的会话文件会记录所属工作区路径，后端启动时据此把工作区补回来，对话会重新出现在侧栏；升级前创建的旧会话没有这条路径，无法自动恢复，只能重新添加目录（旧会话文件仍留在 `memory/` 里）。
 - `-Backup` 的备份包含 API Key，请妥善保管。
 - 执行前请停止后端 / 前端，避免运行中的进程把配置重新写回。
 - `-KeepRepoSeed` 可保留仓库里的示例 `data/`（以及带 `-IncludeSessions` 时的 `memory/`）。
@@ -757,6 +768,7 @@ frontend/
 scripts/
   dev.ps1 dev.cmd       一键启动开发环境
   setup-sandbox.ps1     管理员一次性初始化命令沙盒
+  hide-sandbox-users.ps1 隐藏/恢复沙盒账户在登录界面的显示
   verify-sandbox.ps1    校验沙盒用户、防火墙与配置
   reset-config.ps1      重置配置
 desktop/                Electron 外壳（暂未适配当前前端）

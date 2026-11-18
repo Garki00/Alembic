@@ -490,6 +490,14 @@ class ModelStore:
         self.file.save(data)
         return True
 
+    def config_exists(self) -> bool:
+        """Whether a provider configuration file already exists (False on a first launch).
+
+        ``ensure_saved`` creates the file on the first bootstrap, so this must be read
+        before that call to tell a genuine first launch from a later one.
+        """
+        return self.file.path.exists()
+
     def ensure_saved(self) -> None:
         """Write the default configuration on first run so users can edit or back it up directly."""
         if not self.file.path.exists():
@@ -986,7 +994,13 @@ class WorkspaceStore:
         self.file.save(data)
         return True
 
-    def add(self, path: str, name: str = "") -> Workspace:
+    def add(self, path: str, name: str = "", workspace_id: str = "") -> Workspace:
+        """Add a workspace.
+
+        ``workspace_id`` lets a caller adopt a specific id. Recovery uses it to
+        re-create a workspace that a session still points at, so the conversation
+        becomes visible again instead of dangling on an unknown workspace.
+        """
         target = _resolve(path)
         if not target.is_dir():
             raise ValueError(f"目录不存在：{target}")
@@ -994,9 +1008,12 @@ class WorkspaceStore:
         data = self._load()
         if any(item.get("path") == str(target) for item in data.get("workspaces", [])):
             raise ValueError("该目录已经添加过了")
-
+        taken = {str(item.get("id") or "") for item in data.get("workspaces", [])}
+        adopted = (workspace_id or "").strip()
+        if adopted and adopted in taken:
+            raise ValueError("该工作区 ID 已存在")
         workspace = Workspace(
-            id=f"ws-{uuid.uuid4().hex[:8]}",
+            id=adopted or f"ws-{uuid.uuid4().hex[:8]}",
             name=self._clean_name(name) or target.name or str(target),
             path=str(target),
         )

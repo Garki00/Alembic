@@ -128,6 +128,15 @@ class WebWorkspaceTest(unittest.TestCase):
         self.assertEqual(data["workspaces"], [])
         self.assertEqual(data["active_workspace_id"], "")
 
+    def test_first_run_is_true_only_until_the_config_file_exists(self):
+        # 第一次关闭前没有任何配置文件：初始化向导应当出现
+        self.assertTrue(self.client.get("/api/bootstrap").json()["first_run"])
+        # bootstrap 会把默认配置落盘，此后即使还没有可用供应商，也不再算首次启动
+        self.assertTrue((self.tmp / "data" / "models.json").exists())
+        data = self.client.get("/api/bootstrap").json()
+        self.assertFalse(data["first_run"])
+        self.assertTrue(data["needs_setup"])
+
     def test_tools_enabled_by_default(self):
         data = self.client.get("/api/bootstrap").json()
         states = {tool["name"]: tool["enabled"] for tool in data["tools"]}
@@ -162,6 +171,8 @@ class WebWorkspaceTest(unittest.TestCase):
         self.create_provider()
         data = self.client.get("/api/bootstrap").json()
         self.assertFalse(data["needs_setup"])
+        # 保存供应商之后不再是首次启动，向导不会再弹出来
+        self.assertFalse(data["first_run"])
         self.assertTrue(data["active_provider_id"])
         self.assertTrue(data["active_model_id"])
 
@@ -372,6 +383,114 @@ class WebWorkspaceTest(unittest.TestCase):
         result = self.client.delete(f"/api/workspaces/{workspace['id']}").json()
         self.assertEqual(result["removed_sessions"], 1)
         self.assertFalse(store.path("on-workspace").exists())
+
+    def test_bootstrap_restores_workspace_after_config_reset(self):
+        """重置配置只删配置，会话还在：再启动时按会话记录的工作区路径把工作区补回来。"""
+        from agents.context import SessionMeta
+
+        workspace = self.client.post(
+            "/api/workspaces", json={"path": str(self.tmp)}
+        ).json()["workspace"]
+        self.app.state.sessions.save(
+            "chat-kept",
+            [HumanMessage(content="你好")],
+            SessionMeta(
+                "chat-kept",
+                workspace_id=workspace["id"],
+                workspace_path=str(self.tmp),
+            ),
+        )
+        # 模拟 scripts/reset-config.ps1：配置目录里的工作区文件没了，会话文件还在
+        (self.tmp / "data" / "workspace.json").unlink()
+
+        restarted = TestClient(create_app(
+            data_dir=self.tmp / "data",
+            memory_dir=self.tmp / "memory",
+            runtime_factory=stub_factory,
+        ))
+        data = restarted.get("/api/bootstrap").json()
+        self.assertEqual([item["id"] for item in data["workspaces"]], [workspace["id"]])
+        self.assertEqual(data["workspaces"][0]["path"], str(self.tmp))
+        self.assertEqual([item["id"] for item in data["sessions"]], ["chat-kept"])
+
+    def test_restore_repoints_session_to_the_workspace_that_owns_its_path(self):
+        """重置后又重新添加了同一个目录：旧会话直接并到新工作区，而不是再造一个。"""
+        from agents.context import SessionMeta
+        from web.server import _restore_workspaces_from_sessions
+
+        workspace = self.client.post(
+            "/api/workspaces", json={"path": str(self.tmp)}
+        ).json()["workspace"]
+        store = self.app.state.sessions
+        store.save(
+            "chat-old",
+            [HumanMessage(content="你好")],
+            SessionMeta("chat-old", workspace_id="ws-gone", workspace_path=str(self.tmp)),
+        )
+
+        recovered = _restore_workspaces_from_sessions(store, self.app.state.workspaces)
+
+        self.assertEqual(recovered, 1)
+        _messages, meta = store.load("chat-old")
+        self.assertEqual(meta.workspace_id, workspace["id"])
+        # 不会因为同一目录再多出一个工作区
+        self.assertEqual(
+            [item["id"] for item in self.client.get("/api/bootstrap").json()["workspaces"]],
+            [workspace["id"]],
+        )
+
+    def test_restore_keeps_the_current_active_workspace(self):
+        """恢复工作区只补列表，不该把用户当前选中的工作区改掉。"""
+        from agents.context import SessionMeta
+        from web.server import _restore_workspaces_from_sessions
+
+        keep = self.tmp / "keep"
+        keep.mkdir()
+        first = self.client.post(
+            "/api/workspaces", json={"path": str(keep)}
+        ).json()["workspace"]
+        orphan_dir = self.tmp / "orphan"
+        orphan_dir.mkdir()
+        store = self.app.state.sessions
+        store.save(
+            "chat-orphan",
+            [HumanMessage(content="你好")],
+            SessionMeta(
+                "chat-orphan",
+                workspace_id="ws-orphan",
+                workspace_path=str(orphan_dir),
+            ),
+        )
+
+        _restore_workspaces_from_sessions(store, self.app.state.workspaces)
+
+        data = self.client.get("/api/bootstrap").json()
+        self.assertEqual(len(data["workspaces"]), 2)
+        self.assertEqual(data["active_workspace_id"], first["id"])
+
+    def test_restore_skips_sessions_without_a_usable_path(self):
+        from agents.context import SessionMeta
+        from config.store import WorkspaceStore
+        from web.server import _restore_workspaces_from_sessions
+
+        store = self.app.state.sessions
+        store.save(
+            "chat-lost",
+            [HumanMessage(content="你好")],
+            SessionMeta("chat-lost", workspace_id="ws-gone", workspace_path=""),
+        )
+        store.save(
+            "chat-missing-dir",
+            [HumanMessage(content="你好")],
+            SessionMeta(
+                "chat-missing-dir",
+                workspace_id="ws-gone-2",
+                workspace_path=str(self.tmp / "no-such-dir"),
+            ),
+        )
+        workspaces = WorkspaceStore(self.tmp / "data" / "restore.json")
+        self.assertEqual(_restore_workspaces_from_sessions(store, workspaces), 0)
+        self.assertEqual(workspaces.list(), [])
 
     # ---- 会话与对话 ----
     def test_chat_stream_events_and_history(self):

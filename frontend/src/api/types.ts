@@ -155,6 +155,8 @@ export interface BootstrapData {
   active_model_id: string
   active_model: ActiveModelInfo | null
   needs_setup: boolean
+  /** 第一次启动（供应商配置文件尚不存在）才为 true，用于决定是否弹出初始化向导。 */
+  first_run?: boolean
   tools: ToolInfo[]
   workspaces: WorkspaceInfo[]
   active_workspace_id: string

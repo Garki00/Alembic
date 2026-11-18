@@ -45,6 +45,11 @@ function back(): void {
   step.value = 1
 }
 
+/** 暂时跳过：不再显示向导，直接进入界面（对话页会提示配置供应商）。 */
+function skip(): void {
+  store.firstRun = false
+}
+
 async function finish(): Promise<void> {
   const payload = editor.value?.payload()
   if (!payload) {
@@ -57,7 +62,7 @@ async function finish(): Promise<void> {
   try {
     await store.saveProvider(payload)
     // 供应商保存成功就先关掉向导，避免偏好保存失败时重复创建
-    store.needsSetup = false
+    store.firstRun = false
     try {
       await store.savePreferences({
         transcript_view: transcriptView.value,
@@ -183,6 +188,15 @@ async function finish(): Promise<void> {
           <template v-else>准备就绪后即可开始对话。</template>
         </div>
         <div class="onboarding-actions">
+          <button
+            type="button"
+            class="btn-ghost onboarding-skip"
+            :disabled="saving"
+            title="暂不设置供应商，先进入界面"
+            @click="skip"
+          >
+            暂时跳过（暂不设置）
+          </button>
           <button v-if="step === 2" type="button" class="btn-ghost" @click="back">返回</button>
           <button
             v-if="step === 1"

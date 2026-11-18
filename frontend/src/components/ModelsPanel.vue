@@ -5,6 +5,7 @@ import { errorMessage } from '../api/client'
 import { providerName } from '../lib/providers'
 import { useUiStore } from '../stores/ui'
 import { useWorkspaceStore } from '../stores/workspace'
+import ConfirmDialog from './ConfirmDialog.vue'
 import ProviderEditor from './ProviderEditor.vue'
 import ProviderIcon from './ProviderIcon.vue'
 
@@ -14,6 +15,11 @@ const ui = useUiStore()
 const formOpen = ref(false)
 const editing = ref<ProviderInfo | null>(null)
 const saving = ref(false)
+
+const confirming = ref(false)
+const pending = ref<ProviderInfo | null>(null)
+const removing = ref(false)
+const removeError = ref('')
 
 function providerTitle(provider: ProviderInfo): string {
   return provider.name || providerName(provider.provider)
@@ -47,14 +53,33 @@ async function save(payload: ProviderPayload): Promise<void> {
   }
 }
 
-async function remove(provider: ProviderInfo): Promise<void> {
-  const count = provider.models.length
-  if (!window.confirm(`删除供应商「${providerTitle(provider)}」及其 ${count} 个模型？`)) return
+function remove(provider: ProviderInfo): void {
+  pending.value = provider
+  removeError.value = ''
+  confirming.value = true
+}
+
+function cancelRemove(): void {
+  if (removing.value) return
+  confirming.value = false
+  pending.value = null
+  removeError.value = ''
+}
+
+/** 与删除对话一致：确认卡片里完成删除，结果也回显在卡片/列表上，不再弹顶部提示。 */
+async function confirmRemove(): Promise<void> {
+  const provider = pending.value
+  if (!provider) return
+  removing.value = true
+  removeError.value = ''
   try {
     await store.deleteProvider(provider.id)
-    ui.showToast('供应商已删除')
+    confirming.value = false
+    pending.value = null
   } catch (error) {
-    ui.showToast(errorMessage(error), true)
+    removeError.value = errorMessage(error)
+  } finally {
+    removing.value = false
   }
 }
 </script>
@@ -108,5 +133,17 @@ async function remove(provider: ProviderInfo): Promise<void> {
         @cancel="closeForm"
       />
     </div>
+
+    <ConfirmDialog
+      :open="confirming"
+      title="删除供应商"
+      :message="pending
+        ? `删除供应商「${providerTitle(pending)}」及其 ${pending.models.length} 个模型？此操作不可恢复。`
+        : ''"
+      :busy="removing"
+      :error="removeError"
+      @cancel="cancelRemove"
+      @confirm="confirmRemove"
+    />
   </section>
 </template>

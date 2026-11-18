@@ -192,6 +192,51 @@ def _session_title(session_store: SessionStore, session_id: str, meta=None) -> s
     return "新对话"
 
 
+def _restore_workspaces_from_sessions(session_store: SessionStore, workspace_store) -> int:
+    """Re-attach sessions that point at a workspace the config no longer has.
+
+    Resetting the config directory leaves the session history in place while the
+    workspace list disappears. Such sessions would be invisible in the sidebar yet
+    still openable, so each one is recovered from the path recorded on the session:
+
+    - a directory that already has a workspace now owns the session, so the session
+      is re-pointed at it (the workspace may have been re-added with a new id);
+    - otherwise the workspace is re-created with the original id, and the session
+      attaches itself again.
+
+    Sessions without a recorded path cannot be recovered and stay untouched.
+
+    Returns the number of sessions that were re-attached or restored.
+    """
+    known = {workspace.id: workspace for workspace in workspace_store.list()}
+    by_path = {str(workspace.path): workspace for workspace in workspace_store.list()}
+    previous_active = workspace_store.active_id
+    recovered = 0
+    for meta in session_store.list_sessions():
+        if not meta.workspace_id or meta.workspace_id in known:
+            continue
+        path = str(getattr(meta, "workspace_path", "") or "").strip()
+        if not path or not Path(path).is_dir():
+            continue
+        owner = by_path.get(path)
+        if owner is not None:
+            # 同一个目录已经有工作区（重置后又重新添加过）：把会话并过去
+            if session_store.update_workspace(meta.session_id, owner.id, path):
+                recovered += 1
+            continue
+        try:
+            workspace = workspace_store.add(path, workspace_id=meta.workspace_id)
+        except ValueError:
+            continue
+        known[workspace.id] = workspace
+        by_path[workspace.path] = workspace
+        recovered += 1
+    # 恢复工作区不应该顺手改变用户当前选中的工作区
+    if previous_active and workspace_store.active_id != previous_active:
+        workspace_store.set_active(previous_active)
+    return recovered
+
+
 def _session_summary(session_store: SessionStore, meta) -> dict[str, Any]:
     return {
         "id": meta.session_id,
@@ -504,10 +549,16 @@ def create_app(
     # ---- 初始化数据 ----
     @app.get("/api/bootstrap")
     def bootstrap():
+        # 仅「第一次启动」才把初始化向导推给前端：判定依据是供应商配置文件是否已存在。
+        # 必须先取这个值，再调用 ensure_saved()，否则它会顺手把文件创建出来。
+        first_run = not models.config_exists()
         # 首次访问时把默认模型/工具配置落盘，方便用户查看与备份
         models.ensure_saved()
         tools.ensure_saved()
         workspaces.ensure_saved()
+        # 配置目录被重置后，会话仍在磁盘上：用会话里记录的工作区路径把工作区补回来，
+        # 否则这些对话会挂在不存在的工作区上——列表里看不见，却又会被自动打开。
+        _restore_workspaces_from_sessions(sessions, workspaces)
         active = models.active()
         return {
             "providers": [item.public() for item in models.providers()],
@@ -515,6 +566,7 @@ def create_app(
             "active_model_id": models.active_model_id,
             "active_model": active.public() if active else None,
             "needs_setup": models.needs_setup(),
+            "first_run": first_run,
             "tools": tools.public(),
             "workspaces": workspaces.state()["workspaces"],
             "active_workspace_id": workspaces.active_id,
@@ -1192,6 +1244,7 @@ def create_app(
             store=sessions,
             summarizer=summarizer,
             workspace_id=workspace_id,
+            workspace_path=workspace,
             model_context_window=model_cfg.context_length or None,
         )
 

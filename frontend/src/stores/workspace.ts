@@ -48,6 +48,7 @@ export const useWorkspaceStore = defineStore('workspace', {
     sandbox: null as SandboxStatus | null,
     sandboxConfig: null as SandboxConfig | null,
     needsSetup: false,
+    firstRun: false,
     ready: false,
   }),
 
@@ -66,6 +67,13 @@ export const useWorkspaceStore = defineStore('workspace', {
 
     activeModelInfo(state): ActiveModelInfo | null {
       return state.activeModel
+    },
+
+    /** 是否有真正可用的供应商（有密钥、有 Base URL、至少一个模型）。 */
+    hasProvider(state): boolean {
+      return state.providers.some(
+        (provider) => provider.api_key_set && Boolean(provider.base_url) && provider.models.length > 0,
+      )
     },
 
     sessionsOf(state) {
@@ -92,6 +100,7 @@ export const useWorkspaceStore = defineStore('workspace', {
       this.sandbox = data.sandbox || null
       this.sandboxConfig = data.sandbox_config || null
       this.needsSetup = Boolean(data.needs_setup)
+      this.firstRun = Boolean(data.first_run)
       this.ready = true
     },
 

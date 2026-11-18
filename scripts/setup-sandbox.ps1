@@ -1,9 +1,10 @@
-﻿# scripts/setup-sandbox.ps1
+# scripts/setup-sandbox.ps1
 # 一次性管理员初始化：创建两个专用低权限用户、防火墙规则和 App 可读的凭据文件。
 # 日常运行不需要管理员；应用本身不会以管理员身份运行。
 param(
     [switch]$Verify,
     [switch]$Uninstall,
+    [switch]$Visible,
     [int]$ProxyPort = 47831
 )
 
@@ -12,11 +13,31 @@ Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
 $offlineUser = "AlembicSandboxOffline"
 $onlineUser = "AlembicSandboxOnline"
 $rulePrefix = "AlembicSandbox"
+# Welcome 界面隐藏沙盒账户：值为 0 的账户不出现在登录/切换用户列表，
+# 但 runas / LogonUser / CreateProcessWithLogonW 仍然正常。
+$userListKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
 
 function Test-Admin {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Set-SandboxUserHidden([string]$name, [bool]$hidden) {
+    # 只处理本地账户；隐藏失败不应让整次初始化失败，沙盒本身照常可用。
+    if ($null -eq (Get-LocalUser -Name $name -ErrorAction SilentlyContinue)) { return }
+    try {
+        if ($hidden) {
+            if (-not (Test-Path -LiteralPath $userListKey)) {
+                New-Item -Path $userListKey -Force | Out-Null
+            }
+            New-ItemProperty -Path $userListKey -Name $name -PropertyType DWord -Value 0 -Force | Out-Null
+        } elseif (Test-Path -LiteralPath $userListKey) {
+            Remove-ItemProperty -Path $userListKey -Name $name -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Write-Warning "无法隐藏账户 $name：$($_.Exception.Message)"
+    }
 }
 
 if (-not (Test-Admin)) {
@@ -114,6 +135,7 @@ function New-SandboxUser([string]$name, [string]$password) {
 if ($Uninstall) {
     foreach ($name in @($offlineUser, $onlineUser)) {
         Remove-Rules $name
+        Set-SandboxUserHidden $name $false
         $existing = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
         if ($null -ne $existing) {
             Remove-LocalUser -Name $name
@@ -135,6 +157,14 @@ if ($Verify) {
                 throw "缺少防火墙规则：$rule"
             }
         }
+        $hidden = $null
+        if (Test-Path -LiteralPath $userListKey) {
+            $item = Get-ItemProperty -Path $userListKey -Name $name -ErrorAction SilentlyContinue
+            if ($null -ne $item) { $hidden = [int]$item.$name }
+        }
+        if ($hidden -ne 0) {
+            Write-Host "提示：$name 仍会出现在登录界面（可用 scripts\hide-sandbox-users.ps1 隐藏）。" -ForegroundColor Yellow
+        }
     }
     if (-not (Test-Path -LiteralPath $usersFile)) {
         throw "缺少 $usersFile"
@@ -148,6 +178,15 @@ $offlinePassword = New-RandomPassword
 $onlinePassword = New-RandomPassword
 New-SandboxUser $offlineUser $offlinePassword
 New-SandboxUser $onlineUser $onlinePassword
+# 默认把两个账户从登录/切换用户界面隐藏，降低误登录和暴露面；
+# 需要重新显示时运行 scripts\hide-sandbox-users.ps1 -Show，或用 -Visible 初始化。
+if (-not $Visible) {
+    Set-SandboxUserHidden $offlineUser $true
+    Set-SandboxUserHidden $onlineUser $true
+} else {
+    Set-SandboxUserHidden $offlineUser $false
+    Set-SandboxUserHidden $onlineUser $false
+}
 
 New-BlockRules $offlineUser
 New-BlockRules $onlineUser
@@ -198,5 +237,10 @@ Write-Host ""
 Write-Host "沙盒初始化完成。" -ForegroundColor Green
 Write-Host "  用户：$offlineUser / $onlineUser"
 Write-Host "  网络：offline 用户完全断网；allowlist 用户只能访问本机代理 $ProxyPort"
+if ($Visible) {
+    Write-Host "  登录界面：显示这两个账户（-Visible）"
+} else {
+    Write-Host "  登录界面：已隐藏这两个账户（恢复：scripts\hide-sandbox-users.ps1 -Show）"
+}
 Write-Host "  配置：$usersFile"
 Write-Host "  验证：scripts\setup-sandbox.ps1 -Verify"

@@ -52,6 +52,20 @@ const menuModels = computed(() => menuProvider.value?.models ?? [])
 const canSend = computed(
   () => !chat.streaming && Boolean(draft.value.trim() || attachments.value.length),
 )
+/** 有没有真正可用的模型：没有时发送不会真正发出，只提示去配置。 */
+const hasModel = computed(() => Boolean(workspace.activeModel) && workspace.hasProvider)
+const noModelHint = ref(false)
+let noModelTimer: number | undefined
+
+function flashNoModel(): void {
+  noModelHint.value = true
+  if (noModelTimer !== undefined) window.clearTimeout(noModelTimer)
+  noModelTimer = window.setTimeout(() => {
+    noModelHint.value = false
+    noModelTimer = undefined
+  }, 3200)
+}
+
 const contextTitle = computed(() => {
   if (!chat.contextMax) return '上下文用量'
   const source = chat.contextTokens > 0 ? '' : '（尚无 API 用量，暂为 0）'
@@ -99,6 +113,11 @@ function resize(): void {
 
 function send(): void {
   if (chat.streaming || !workspace.activeWorkspace) return
+  // 没有可用模型时不发请求，只在底部提示一次，避免报错弹窗打断输入
+  if (!hasModel.value) {
+    flashNoModel()
+    return
+  }
   const text = draft.value.trim() || (attachments.value.length ? '请查看这些附件。' : '')
   if (!text) return
   const files = [...attachments.value]
@@ -319,6 +338,14 @@ watch(
   },
 )
 
+// 模型补上之后立刻收起提示，不用等计时器
+watch(
+  () => hasModel.value,
+  (value) => {
+    if (value) noModelHint.value = false
+  },
+)
+
 onMounted(() => {
   document.addEventListener('click', onDocumentClick)
   document.addEventListener('keydown', onDocumentKeydown)
@@ -328,6 +355,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocumentClick)
   document.removeEventListener('keydown', onDocumentKeydown)
+  if (noModelTimer !== undefined) window.clearTimeout(noModelTimer)
 })
 </script>
 
@@ -531,9 +559,12 @@ onBeforeUnmount(() => {
           <button
             type="submit"
             class="composer-send"
-            :disabled="!canSend || !workspace.activeWorkspace"
+            :class="{ 'is-inactive': !canSend || !hasModel }"
+            :aria-disabled="!canSend || !hasModel"
             aria-label="发送"
-            :title="canSend ? '发送（Enter）' : '输入内容后可发送'"
+            :title="!hasModel
+              ? '当前没有可用的模型'
+              : canSend ? '发送（Enter）' : '输入内容后可发送'"
           >
             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
               <path
@@ -550,7 +581,14 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="composer-hint">Shift + Enter 换行</div>
+    <div class="composer-hint">
+      <Transition name="hint-fade" mode="out-in">
+        <span v-if="noModelHint" key="alert" class="composer-hint-alert" role="status">
+          无可用模型，请先在「设置 → 供应商」里添加供应商与模型
+        </span>
+        <span v-else key="tip">Shift + Enter 换行</span>
+      </Transition>
+    </div>
 
     <div class="composer-status">
       <div
