@@ -39,6 +39,12 @@ const attachments = ref<AttachmentInfo[]>([])
 const uploading = ref(false)
 const compacting = ref(false)
 const cacheOpen = ref(false)
+const formEl = ref<HTMLElement | null>(null)
+const shellEl = ref<HTMLElement | null>(null)
+const hintEl = ref<HTMLElement | null>(null)
+const statusEl = ref<HTMLElement | null>(null)
+const hintSuppressed = ref(false)
+let composerObserver: ResizeObserver | null = null
 
 const activeProvider = computed(() => workspace.activeProvider)
 const activeModelName = computed(
@@ -364,15 +370,65 @@ watch(
   },
 )
 
+/** Publish the floating composer's height so the transcript can reserve space. */
+function syncComposerHeight(): void {
+  const height = formEl.value?.offsetHeight ?? 0
+  document.documentElement.style.setProperty('--composer-height', `${Math.round(height)}px`)
+  // The blur sheet starts a little above the input shell and follows it when
+  // attachments or a request card change the layout.
+  const shell = shellEl.value
+  const sheetTop = shell ? Math.max(0, shell.offsetTop - 12) : 2
+  document.documentElement.style.setProperty('--composer-sheet-top', `${Math.round(sheetTop)}px`)
+}
+
+/** Fade the newline hint out before the centred status row can reach it. */
+function syncHintCollision(): void {
+  const hint = hintEl.value
+  const status = statusEl.value
+  if (!hint || !status || noModelHint.value) {
+    hintSuppressed.value = false
+    return
+  }
+  const gap = 14
+  const hintRight = hint.getBoundingClientRect().right
+  const statusLeft = status.getBoundingClientRect().left
+  hintSuppressed.value = hintRight + gap > statusLeft
+}
+
+function syncComposerLayout(): void {
+  syncComposerHeight()
+  syncHintCollision()
+}
+
+watch(
+  () => [chat.cacheKnown, chat.turns, chat.steps, chat.contextPercent, noModelHint.value],
+  () => { void nextTick(syncHintCollision) },
+)
+
+// The form is created only while a workspace is active; keep observing the
+// current element so the reserved height follows it.
+watch(formEl, (element) => {
+  composerObserver?.disconnect()
+  if (element && composerObserver) composerObserver.observe(element)
+  void nextTick(syncComposerLayout)
+})
+
 onMounted(() => {
   document.addEventListener('click', onDocumentClick)
   document.addEventListener('keydown', onDocumentKeydown)
   resize()
+  void nextTick(syncComposerLayout)
+  composerObserver = new ResizeObserver(() => syncComposerLayout())
+  if (formEl.value) composerObserver.observe(formEl.value)
+  window.addEventListener('resize', syncComposerLayout)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocumentClick)
   document.removeEventListener('keydown', onDocumentKeydown)
+  window.removeEventListener('resize', syncComposerLayout)
+  composerObserver?.disconnect()
+  document.documentElement.style.removeProperty('--composer-height')
   if (noModelTimer !== undefined) window.clearTimeout(noModelTimer)
 })
 </script>
@@ -380,6 +436,7 @@ onBeforeUnmount(() => {
 <template>
   <form
     v-if="workspace.activeWorkspace"
+    ref="formEl"
     class="composer"
     :class="{ 'composer-request': showRequest }"
     @submit.prevent="send"
@@ -438,7 +495,7 @@ onBeforeUnmount(() => {
         </button>
       </span>
     </div>
-    <div class="composer-shell">
+    <div class="composer-shell" ref="shellEl">
       <textarea
         id="input"
         ref="textarea"
@@ -605,7 +662,12 @@ onBeforeUnmount(() => {
     </template>
 
     <div class="composer-meta">
-      <div v-if="!showRequest" class="composer-hint">
+      <div
+        ref="hintEl"
+        v-if="!showRequest"
+        class="composer-hint"
+        :class="{ suppressed: hintSuppressed }"
+      >
         <Transition name="hint-fade" mode="out-in">
           <span v-if="noModelHint" key="alert" class="composer-hint-alert" role="status">
             无可用模型，请先在「设置 → 供应商」里添加供应商与模型
@@ -614,7 +676,7 @@ onBeforeUnmount(() => {
         </Transition>
       </div>
 
-      <div class="composer-status">
+      <div ref="statusEl" class="composer-status">
       <div
         v-if="chat.cacheKnown"
         class="cache-stat"

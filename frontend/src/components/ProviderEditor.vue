@@ -8,7 +8,8 @@ import type {
   ThinkingLevel,
 } from '../api/types'
 import { errorMessage } from '../api/client'
-import { providerOf } from '../lib/providers'
+import { providerOf, providerApiModes, providerBaseUrl, providerDefaultApiMode } from '../lib/providers'
+import type { ApiMode } from '../lib/providers'
 import {
   DEFAULT_THINKING_LEVELS,
   THINKING_OPTIONS,
@@ -70,12 +71,16 @@ function modelDefaults(model: string, provider: string) {
   else if (/(^|\W)(o1|o3|o4)(\W|$)/.test(text)) [context, output] = [200000, 100000]
   else if (text.includes('claude')) [context, output] = [200000, 64000]
   else if (text.includes('gemini')) [context, output] = [1048576, 8192]
+  else if (text.includes('grok')) [context, output] = [256000, 16384]
+  else if (text.includes('kimi') || text.includes('moonshot')) [context, output] = [256000, 16384]
+  else if (text.includes('minimax') || text.includes('abab')) [context, output] = [1000000, 32768]
+  else if (text.includes('doubao') || text.includes('ep-')) [context, output] = [256000, 16384]
   else if (text.includes('qwen')) [context, output] = [131072, 8192]
   else if (text.includes('deepseek')) [context, output] = [128000, 8192]
   else if (text.includes('glm')) [context, output] = [128000, 4096]
 
   const images = [
-    'gpt-4o', 'gpt-4.1', 'gpt-5', 'claude', 'gemini',
+    'gpt-4o', 'gpt-4.1', 'gpt-5', 'claude', 'gemini', 'grok',
     'vision', 'qwen-vl', 'qwen2.5-vl', 'vl-', 'omni', 'llava',
   ].some((token) => text.includes(token))
   return { context, output, images }
@@ -122,11 +127,19 @@ const form = reactive({
   provider: props.initial?.provider || 'deepseek',
   name: props.initial?.name || '',
   base_url: props.initial?.base_url || providerOf(props.initial?.provider || 'deepseek').baseUrl,
+  api_mode: (props.initial?.api_mode as ApiMode)
+    || providerDefaultApiMode(props.initial?.provider || 'deepseek'),
   api_key: '',
   models: (props.initial?.models || []).map(toRow) as ModelRow[],
 })
 
 const providerTemplate = computed(() => providerOf(form.provider))
+const apiModes = computed(() => providerApiModes(form.provider))
+const showApiMode = computed(() => apiModes.value.length > 1)
+const apiModeOptions: Array<{ value: ApiMode; label: string }> = [
+  { value: 'openai', label: 'OpenAI 兼容' },
+  { value: 'anthropic', label: 'Anthropic 兼容' },
+]
 const apiKeyPlaceholder = computed(() => (
   props.initial?.api_key_set ? `${props.initial.api_key_hint}（留空不修改）` : ''
 ))
@@ -136,7 +149,22 @@ const localError = ref('')
 function chooseProvider(provider: string): void {
   if (form.provider === provider) return
   form.provider = provider
-  form.base_url = providerOf(provider).baseUrl
+  const mode = providerDefaultApiMode(provider)
+  form.api_mode = mode
+  form.base_url = providerBaseUrl(provider, mode)
+}
+
+/** Switching the protocol swaps the default base URL, never a custom one. */
+function chooseApiMode(event: Event): void {
+  const element = event.target as HTMLSelectElement
+  const next = element.value as ApiMode
+  if (next === form.api_mode) return
+  const previousDefault = providerBaseUrl(form.provider, form.api_mode).replace(/\/+$/, '')
+  form.api_mode = next
+  const current = form.base_url.trim().replace(/\/+$/, '')
+  if (!current || current === previousDefault) {
+    form.base_url = providerBaseUrl(form.provider, next)
+  }
 }
 
 function addModel(): void {
@@ -270,6 +298,7 @@ function payload(): ProviderPayload | null {
     provider: form.provider,
     name: form.name.trim(),
     base_url: form.base_url.trim(),
+    api_mode: showApiMode.value ? form.api_mode : '',
     api_key: form.api_key.trim(),
     models,
   }
@@ -309,7 +338,15 @@ defineExpose({ validate, payload })
           autocomplete="new-password"
         />
       </label>
-      <label class="field span-2">
+      <label v-if="showApiMode" class="field">
+        <span>API 模式</span>
+        <select class="general-select" :value="form.api_mode" @change="chooseApiMode">
+          <option v-for="option in apiModeOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
+      </label>
+      <label class="field" :class="{ 'span-2': !showApiMode }">
         <span>Base URL <em class="req">*</em></span>
         <div class="inline">
           <input

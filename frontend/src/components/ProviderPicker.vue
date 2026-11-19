@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { PROVIDERS } from '../lib/providers'
+import { computed } from 'vue'
+import { PROVIDERS, providerOf } from '../lib/providers'
 import ProviderIcon from './ProviderIcon.vue'
 
-withDefaults(
+const props = withDefaults(
   defineProps<{ modelValue: string; compact?: boolean }>(),
   { compact: false },
 )
 
 const emit = defineEmits<{ (event: 'update:modelValue', value: string): void }>()
+
+/** Legacy ids (``claude``) resolve to the template that now owns them. */
+const currentId = computed(() => providerOf(props.modelValue).id)
 </script>
 
 <template>
@@ -17,7 +21,7 @@ const emit = defineEmits<{ (event: 'update:modelValue', value: string): void }>(
       :key="provider.id"
       type="button"
       class="provider-option"
-      :class="{ active: modelValue === provider.id }"
+      :class="{ active: currentId === provider.id }"
       :title="provider.hint"
       @click="emit('update:modelValue', provider.id)"
     >

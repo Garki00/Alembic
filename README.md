@@ -151,6 +151,7 @@ npm run preview     # 4173 端口预览，/api 仍代理到后端
 
 - 标签页可以打开工作区文件、Diff 和内置浏览器。手动新建的标签最多 3 个；从对话打开的文件或链接不占这个配额，标签总数上限为 10。
 - 工作区文件树可以预览文本与 Markdown：代码 / 文本左侧显示行号，Markdown 默认预览并可切换「原文」。
+- 预览不限于工作区：日志、进程输出等位于工作区之外的文件同样可以只读打开；凭据文件（`.ssh`、`.env`、私钥等）与应用数据目录仍然拒绝读取。
 - PNG / JPEG / GIF / WebP / SVG 图片可在侧边栏直接查看；单张上限 8 MB。
 - 从变更总结打开时进入 Diff View，显示增删行；整文件写入缺少旧内容时只显示新增内容。
 - 其他二进制与压缩包格式会明确提示不支持预览。
@@ -217,12 +218,20 @@ npm run preview     # 4173 端口预览，/api 仍代理到后端
 | --- | --- |
 | 深度求索（DeepSeek） | `https://api.deepseek.com` |
 | OpenAI | `https://api.openai.com/v1` |
-| Anthropic Claude | `https://api.anthropic.com/v1` |
+| Anthropic Claude | `https://api.anthropic.com` |
+| xAI | `https://api.x.ai/v1` |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| 月之暗面（Moonshot） | `https://api.moonshot.cn/v1` |
+| 智谱（GLM） | `https://open.bigmodel.cn/api/paas/v4` |
 | 阿里云千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| 火山引擎（方舟） | `https://ark.cn-beijing.volces.com/api/v3` |
+| MiniMax | `https://api.minimax.chat/v1` |
 | 硅基流动 | `https://api.siliconflow.cn/v1` |
 | 自定义供应商 | 自行填写 |
 
-所有供应商都通过 OpenAI 兼容的 `/chat/completions` 调用；Claude 使用 Anthropic 的兼容端点。自定义供应商必须填写 Base URL，新建供应商必须填写 API Key。
+除 Anthropic 外，所有供应商都通过 OpenAI 兼容的 `/chat/completions` 调用。Anthropic 使用原生 Messages API（`POST /v1/messages`），这样才能携带显式的缓存断点；旧配置里的 `claude` 供应商会自动走同一条原生路径。自定义供应商必须填写 Base URL，新建供应商必须填写 API Key。
+
+同时提供两种协议的供应商（DeepSeek、Anthropic、月之暗面、智谱、MiniMax 与自定义供应商）在编辑区有「API 模式」选项：选 OpenAI 兼容走 `/chat/completions`，选 Anthropic 兼容走 `/v1/messages` 并使用显式缓存断点。切换模式时，如果 Base URL 仍是当前协议的默认值，会自动换成另一种协议的默认地址；自己填过的地址不会被改写。其它供应商只提供 OpenAI 兼容协议，因此不显示该选项。
 
 模型字段：
 
@@ -270,14 +279,16 @@ Final Answer: ...
 
 - **多轮记忆**：每轮把历史（长会话先压缩）交给 Agent，追问和指代可以延续。
 - **token 统计**：优先使用模型 API 返回的 `usage`（包含系统提示词、工具 schema 与回复），拿不到时才退回本地字符估算。`/status` 会标明数据来源。
-- **压缩阈值**：默认按模型窗口推导；上下文长度优先取当前模型的高级设置，未设置时回退 `MODEL_CONTEXT_WINDOW`。历史超过 `MAX_CONTEXT_MESSAGES` 条消息时也会触发，`MAX_CONTEXT_TOKENS` 可以覆盖 token 阈值。
-- **压缩间隔**：两次自动压缩之间至少间隔 2 轮，避免压缩后立刻再次触发；若压缩后仍超阈值，会按 `COMPACTION_RETRIES` 再压一次并逐次减少保留条数。
-- **压缩方式（缓存友好）**：较早对话压缩成一条检查点消息（固定前言 + `<compacted-summary>` 摘要块），保留最近 `KEEP_RECENT_MESSAGES` 条消息。摘要请求不是一段孤立的新提示词，而是**逐字回放**当前会话的真实前缀——同样的系统提示词、同样的工具声明、同样的被遮蔽消息——再在末尾追加一条压缩指令。这样这次辅助调用本身就能命中提供方的前缀缓存，只有指令和摘要输出是新鲜 token；替换完成后，保留的尾部逐字不变，下一次请求也能从检查点之后继续复用缓存。摘要未能缩小上下文时保留原历史，不做无意义的替换。
+- **压缩阈值**：按当前模型的上下文窗口与输出上限推导，`COMPACT_TRIGGER_RATIO` 给出窗口占比，再扣掉「输出预留 + 余量」。余量随窗口缩放并设上限，小窗口不会被固定预留算成零或负数，大窗口也不会过早压缩。`MAX_CONTEXT_TOKENS` 可以覆盖推导结果；消息条数不再单独触发压缩。
+- **压缩间隔**：两次自动压缩之间至少间隔 2 轮，避免压缩后立刻再次触发；若压缩后仍超阈值，会按 `COMPACTION_RETRIES` 再压一次并逐次收紧保留预算。
+- **压缩方式（缓存友好）**：较早对话压缩成一条检查点消息（固定前言 + `<compacted-summary>` 摘要块），保留的尾部按 token 预算取（`COMPACT_RETAIN_RATIO`，默认可用窗口的 16%），并从一条用户消息开始。摘要请求不是一段孤立的新提示词，而是**逐字回放**当前会话的真实前缀——同样的系统提示词、同样的工具声明（按当前可见集）、同样的被遮蔽消息——再在末尾追加一条压缩指令。这样这次辅助调用本身就能命中提供方的前缀缓存，只有指令和摘要输出是新鲜 token；替换完成后，保留的尾部逐字不变，下一次请求也能从检查点之后继续复用缓存。摘要未能缩小上下文时保留原历史，不做无意义的替换。
+- **保留第一轮**：设置 → 通用 →「压缩选项」可选「默认」或「保留第一轮」。选后者时，第一轮问答按代码逐字保留，只压缩其后的内容；摘要请求也会把这段前缀回放出来，因此缓存命中范围从「系统提示词 + 工具」延长到「系统提示词 + 工具 + 第一轮原文」。
 - **先修剪再摘要**：压缩触发后，头部里超大的工具结果先在本地截断（不发起模型调用）；如果修剪后已回到阈值以内，就到此为止，既不花调用也不重写历史结构。
 - **溢出恢复**：提供方以 `CONTEXT_WINDOW_EXCEEDED` 类错误拒绝请求时，压缩头部并把同一请求重试一次；只在尚未向界面吐出任何内容时重试，避免重复输出。
 - **用户可见原文**：压缩只替换模型上下文；会话文件同时保存 `display_messages`，历史接口和界面仍显示完整问答原文，摘要只给模型看。
 - **工具输出预算**：单条工具结果超过 12000 tokens 会先截断再写入历史并留下标记，避免一次大输出撑爆窗口。截断只作用于**当轮新增**的工具结果，已进入历史的消息不会被改写——改写旧消息会让前缀缓存从被改写处起全部失效。
-- **缓存命中统计**：每轮从提供方的 `usage` 读取缓存桶（DeepSeek 的 `prompt_cache_hit_tokens`、OpenAI 的 `prompt_tokens_details.cached_tokens`、Anthropic 的 `cache_creation_input_tokens`），折算成「未缓存输入 / 缓存读取 / 缓存写入」三个桶，按轮汇总并累计到会话。只有本次所有模型请求都上报了缓存桶时才给出命中率，避免部分上报把比例算低；拿不到就显示为空而不是 0。
+- **缓存断点按模型适配**：缓存策略按**实际模型 ID** 判定，不看供应商模板或显示名称。显式缓存的模型（Claude）在系统提示词、第一轮结尾和请求结尾放置断点，最多 4 个；隐式缓存的模型（DeepSeek、OpenAI、xAI、Gemini、Moonshot、智谱、千问、方舟、MiniMax）不发送任何标记，只保证前缀稳定。
+- **缓存命中统计**：每轮从提供方的 `usage` 读取缓存桶（DeepSeek 的 `prompt_cache_hit_tokens`、OpenAI 的 `prompt_tokens_details.cached_tokens`、Anthropic 的 `cache_read_input_tokens` / `cache_creation_input_tokens`），折算成「未缓存输入 / 缓存读取 / 缓存写入」三个桶，按轮汇总并累计到会话。只有本次所有模型请求都上报了缓存桶时才给出命中率，避免部分上报把比例算低；拿不到就显示为空而不是 0。
 - **本地持久化**：会话历史保存在 `memory/<会话ID>.json`，进程重启或换终端后可以继续。文件里包含消息类型、工具调用参数与结果，以及累计用量（`usage`）。
 - **手动压缩**：输入区「＋ → 命令 → 压缩」或命令行 `/compact` 可以立即压缩；网页端同时刷新上下文占用圆环与缓存读数。
 - **运行保护**：模型调用失败自动重试；单轮模型调用数与工具调用数都有上限。
@@ -641,12 +652,17 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 | `DEEPSEEK_API_KEY` | （未设置） | 命令行模型 API Key；网页端也可以用初始化向导配置其他供应商 |
 | `TERMINAL_PREFERENCE` | `powershell` | 命令行默认终端 |
 | `AGENT_ENGINE` | `tool_calling` | `tool_calling` 使用模型原生工具调用；`react` 走文本 ReAct |
-| `MODEL_CONTEXT_WINDOW` | `200000` | 模型上下文窗口（token） |
-| `COMPACT_TRIGGER_RATIO` | `0.7` | 触发压缩的窗口占比 |
-| `COMPACT_RESERVE_TOKENS` | `12000` | 为回复与摘要请求预留的 token |
-| `MAX_CONTEXT_TOKENS` | `0` | 绝对阈值覆盖；`0` 表示按窗口比例推导 |
-| `MAX_CONTEXT_MESSAGES` | `60` | 触发压缩的消息条数阈值 |
-| `KEEP_RECENT_MESSAGES` | `12` | 压缩后保留的最近消息数 |
+| `MODEL_CONTEXT_WINDOW` | `200000` | 模型上下文窗口（token），模型高级设置里的上下文长度优先 |
+| `COMPACT_TRIGGER_RATIO` | `0.8` | 触发压缩的窗口占比上限 |
+| `COMPACT_MIN_TRIGGER_RATIO` | `0.35` | 触发阈值的下限占比，避免小窗口算出零或负数 |
+| `COMPACT_HEADROOM_TOKENS` | `65536` | 阈值之上保留的最大余量 |
+| `COMPACT_HEADROOM_RATIO` | `0.20` | 余量占可用窗口的比例（再按上项封顶） |
+| `COMPACT_RETAIN_RATIO` | `0.16` | 压缩后逐字保留的对话占可用窗口的比例 |
+| `COMPACT_MIN_RETAIN_TOKENS` | `1024` | 保留预算的下限 |
+| `COMPACT_OUTPUT_RESERVE_TOKENS` | `8192` | 模型未声明输出上限时用于预留的 token |
+| `COMPACT_RESERVE_TOKENS` | `12000` | 旧版固定预留；现在作为余量覆盖项，仅在显式传入时生效 |
+| `MAX_CONTEXT_TOKENS` | `0` | 绝对阈值覆盖；`0` 表示按窗口推导 |
+| `KEEP_RECENT_MESSAGES` | `12` | 显式传入 `keep_recent` 时改用消息条数保留（默认走 token 预算） |
 | `COMPACTION_RETRIES` | `1` | 压缩后仍超阈值时的额外尝试次数（0 表示只压一次） |
 | `COMPACT_SUMMARY_MAX_TOKENS` | `0` | 摘要请求的输出上限；`0` 表示不显式限制 |
 | `OVERFLOW_RECOVERY` | `1` | 上下文溢出错误后压缩并重试一次 |

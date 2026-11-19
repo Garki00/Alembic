@@ -568,7 +568,7 @@ run_command / start_process
    审批键拆分 delete/move。**
 9. **切换为原生 ReAct（`agents/react.py` + 英文 `prompts/react.py`），保留
    `AGENT_ENGINE=tool_calling` 回退；系统/摘要提示词改为英文；测试从 201 增至 284。**
-10. **通用设置（按 DSH 设计）：工作步骤展示四档、收起时机两项、代码工作视图开关；
+10. **通用设置：工作步骤展示四档、收起时机两项、代码工作视图开关；
     新增 `PreferencesStore` / `/api/preferences`，并补充 `tool_result` SSE 事件。**
 11. **项目改名 ALEMBIC：Python 包 `alembic`、前端/桌面/打包名称、API 标题、默认数据目录
     与 `ALEMBIC_*` 环境变量同步；旧 `SmartAgent` 数据目录与旧环境变量保留兼容。**

@@ -141,8 +141,9 @@ class ChatCLI:
         return (
             f"[会话 {stats['session_id']}] 已完成 {stats['turns']} 轮，"
             f"历史 {stats['messages']} 条消息，约 {stats['tokens']} tokens（{source}）；"
-            f"压缩阈值 {stats['max_tokens']} tokens / {stats['max_messages']} 条"
-            f"（窗口 {stats['model_context_window']}，预留 {stats['reserve_tokens']}）"
+            f"压缩阈值 {stats['max_tokens']} tokens，逐字保留 {stats['retain_tokens']} tokens"
+            f"（窗口 {stats['model_context_window']}，输出预留 {stats['output_reserve_tokens']}，"
+            f"余量 {stats['headroom_tokens']}）"
             f"{cache}"
         )
 
@@ -282,7 +283,7 @@ class ChatCLI:
             print("当前会话没有可用的摘要模型，无法压缩。")
             return
         try:
-            changed = self.session.compact()
+            changed = self.session.compact(force=True)
         except Exception as exc:
             print(f"[错误] 压缩失败: {exc}", file=sys.stderr)
             return

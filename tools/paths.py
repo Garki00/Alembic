@@ -177,6 +177,72 @@ def resolve_in_workspace(root: Path | None, raw: str, *, access: Access = "read"
     return target
 
 
+def _credential_reason(target: Path) -> str:
+    """Credential check that does not depend on a workspace root."""
+    parts = [part.lower() for part in target.parts[:-1]]
+    for part in parts:
+        if part in _SENSITIVE_READ_DIRS:
+            return f"protected credential directory {part}"
+    name = target.name.lower()
+    if name in _SENSITIVE_READ_DIRS:
+        return f"protected credential directory {name}"
+    if name == ".env" or (
+        name.startswith(".env.") and not any(name.endswith(s) for s in _ENV_TEMPLATE_SUFFIXES)
+    ):
+        return "environment variable file (may contain secrets)"
+    if name in _SENSITIVE_READ_NAMES or name.startswith(("id_rsa.", "id_ed25519.")):
+        return f"credential file {target.name}"
+    if target.suffix.lower() in _SENSITIVE_SUFFIXES:
+        return f"credential file {target.name}"
+    return ""
+
+
+def resolve_readable_path(raw: str, *, root: Path | None = None) -> Path:
+    """Resolve a path for the side-panel preview, including paths outside the workspace.
+
+    Read-only inspection of logs and diffs often points outside the workspace, so
+    containment is not required here. Credential files stay blocked, and the
+    application's ``data`` directory (provider keys, sessions) stays off-limits.
+
+    Raises:
+        WorkspacePathError: Invalid path or a protected target.
+    """
+    text = (raw or "").strip()
+    candidate = Path(text).expanduser() if text else Path(".")
+    if not candidate.is_absolute() and root is not None:
+        candidate = root / candidate
+
+    try:
+        target = candidate.resolve()
+    except OSError as exc:
+        raise WorkspacePathError(
+            "bad_path",
+            f"Cannot resolve path: {text or '.'} ({exc}).",
+        ) from exc
+
+    reason = _credential_reason(target)
+    if reason:
+        raise WorkspacePathError(
+            "protected_path",
+            f"Cannot access {reason}: {text or '.'}.",
+            hint="Manage credential files directly in the system.",
+        )
+
+    try:
+        from config.settings import settings
+
+        data_dir = Path(settings.data_dir).expanduser().resolve()
+    except (ImportError, OSError):
+        data_dir = None
+    if data_dir is not None and (target == data_dir or data_dir in target.parents):
+        raise WorkspacePathError(
+            "protected_path",
+            f"Cannot access the application data directory: {text or '.'}.",
+            hint="Provider keys and session files are not previewable.",
+        )
+    return target
+
+
 def display_path(root: Path | None, target: Path) -> str:
     """Convert an absolute path into a workspace-relative display name for reuse by the model."""
     if root is None:

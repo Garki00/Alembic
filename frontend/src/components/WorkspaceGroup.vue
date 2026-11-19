@@ -141,7 +141,6 @@ function forwardDragOver(id: string, before: boolean): void {
       />
       <span v-else class="ws-name" :title="workspace.path">{{ workspace.name }}</span>
 
-      <span class="ws-count">{{ totalCount || '' }}</span>
       <button
         type="button"
         class="ws-action"

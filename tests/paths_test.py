@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from tools.context import ToolContext
 from tools.files import build_file_read_tools, build_file_write_tools
-from tools.paths import WorkspacePathError, resolve_in_workspace
+from tools.paths import WorkspacePathError, resolve_in_workspace, resolve_readable_path
 
 
 def make_root() -> Path:
@@ -74,6 +74,35 @@ class ProtectedPathTest(unittest.TestCase):
 
         text = writes["write_file"].invoke({"path": ".env.local", "content": "A=1\n"})
         self.assertFalse(text.startswith("Error:"), text)
+
+
+class PreviewPathTest(unittest.TestCase):
+    """The side panel previews paths outside the workspace, without leaking secrets."""
+
+    def setUp(self):
+        self.root = make_root()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        (self.root / "src").mkdir()
+        (self.root / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+        (self.root / ".env").write_text("KEY=x\n", encoding="utf-8")
+        self.outside = make_root()
+        self.addCleanup(shutil.rmtree, self.outside, ignore_errors=True)
+        (self.outside / "run.log").write_text("log body\n", encoding="utf-8")
+        (self.outside / "id_rsa").write_text("PRIVATE", encoding="utf-8")
+
+    def test_outside_workspace_is_readable(self):
+        target = resolve_readable_path(str(self.outside / "run.log"), root=self.root)
+        self.assertEqual(target, (self.outside / "run.log").resolve())
+
+    def test_relative_path_still_resolves_inside_the_workspace(self):
+        target = resolve_readable_path("src/app.py", root=self.root)
+        self.assertEqual(target, (self.root / "src" / "app.py").resolve())
+
+    def test_credentials_are_still_blocked(self):
+        for name in (".env", str(self.outside / "id_rsa")):
+            with self.assertRaises(WorkspacePathError) as caught:
+                resolve_readable_path(name, root=self.root)
+            self.assertEqual(caught.exception.code, "protected_path", name)
 
 
 if __name__ == "__main__":

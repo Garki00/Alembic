@@ -73,3 +73,22 @@ export const LINK_TARGETS: Array<{ value: LinkTarget; label: string; hint: strin
   { value: 'sidebar', label: '应用内侧边栏', hint: '在右侧边栏打开' },
   { value: 'browser', label: '默认浏览器', hint: '在系统浏览器打开' },
 ]
+
+export type CompactionMode = 'default' | 'keep_first_turn'
+
+export const COMPACTION_MODES: Array<{
+  value: CompactionMode
+  label: string
+  hint: string
+}> = [
+  {
+    value: 'default',
+    label: '默认',
+    hint: '按上下文预算压缩较早的对话',
+  },
+  {
+    value: 'keep_first_turn',
+    label: '保留第一轮',
+    hint: '第一轮对话逐字保留，压缩其后的内容',
+  },
+]

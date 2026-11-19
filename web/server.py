@@ -36,13 +36,19 @@ from agents.context import (
     ChatSession,
     SessionMeta,
     SessionStore,
+    context_budget,
     context_tokens,
     message_text,
     reasoning_text,
 )
 from agents.usage import SessionUsage
 from config.settings import settings
-from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
+from tools.paths import (
+    WorkspacePathError,
+    display_path,
+    resolve_in_workspace,
+    resolve_readable_path,
+)
 from config.store import (
     AppPaths,
     ModelStore,
@@ -87,6 +93,8 @@ class ProviderPayload(BaseModel):
     name: str = ""
     base_url: str = ""
     api_key: str = ""
+    #: ``openai`` or ``anthropic``; empty keeps the provider's default protocol.
+    api_mode: str = ""
     models: list[ProviderModelPayload] | None = None
 
 
@@ -161,6 +169,7 @@ class PreferencesPayload(BaseModel):
     terminal: str | None = None
     link_target: str | None = None
     developer_tools: bool | None = None
+    compact_keep_first_turn: bool | None = None
 
 
 class SandboxConfigPayload(BaseModel):
@@ -348,15 +357,13 @@ def _new_session_id() -> str:
 
 
 def _context_limit(model_cfg=None) -> int:
-    """Context compaction threshold for the active model; prefer the model configuration's context length."""
+    """Context compaction trigger for the active model; prefer the model's own window."""
     if settings.max_context_tokens:
         return int(settings.max_context_tokens)
     window = int(getattr(model_cfg, "context_length", 0) or settings.model_context_window)
-    return max(
-        1,
-        int(window * settings.compact_trigger_ratio)
-        - settings.compact_reserve_tokens,
-    )
+    output = int(getattr(model_cfg, "max_output_tokens", 0) or 0) or None
+    trigger, _retain = context_budget(window, output)
+    return trigger
 
 
 def _safe_attachment_name(raw: str) -> str:
@@ -874,9 +881,15 @@ def create_app(
 
     @app.get("/api/workspace/file")
     def read_workspace_file(path: str, workspace_id: str | None = None):
-        root = _workspace_root(workspace_id)
         try:
-            target = resolve_in_workspace(root, path)
+            root = _workspace_root(workspace_id)
+        except HTTPException:
+            # An absolute path outside the workspace needs no workspace at all.
+            root = None
+        try:
+            # The side panel also previews paths outside the workspace (logs,
+            # diffs). Credential files and the app data directory stay blocked.
+            target = resolve_readable_path(path, root=root)
         except WorkspacePathError as exc:
             raise HTTPException(400, exc.message) from exc
         if not target.exists() or not target.is_file():
@@ -1080,9 +1093,11 @@ def create_app(
                 summarizer=summarizer,
                 workspace_id=meta.workspace_id,
                 model_context_window=model_cfg.context_length or None,
+                max_output_tokens=model_cfg.max_output_tokens or None,
+                keep_first_turn=bool(prefs.get("compact_keep_first_turn")),
                 hydrate=True,
             )
-            changed = session.compact()
+            changed = session.compact(force=True)
             stats = session.stats()
             return {
                 "compacted": changed,
@@ -1266,6 +1281,8 @@ def create_app(
             workspace_id=workspace_id,
             workspace_path=workspace,
             model_context_window=model_cfg.context_length or None,
+            max_output_tokens=model_cfg.max_output_tokens or None,
+            keep_first_turn=bool(prefs.get("compact_keep_first_turn")),
         )
 
         def run_turn() -> None:

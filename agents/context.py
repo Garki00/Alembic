@@ -45,13 +45,17 @@ from langchain_core.messages import (
 )
 
 from agents.compaction import (
+    COMPACTION_INSTRUCTION,
+    COMPACTION_INSTRUCTION_KEEP_FIRST,
     COMPACTION_PREAMBLE,
     TOOL_OUTPUT_TRUNCATED,
     checkpoint_message,
+    first_turn_end,
     is_checkpoint_text,
     is_context_overflow_error,
     prune_tool_messages,
     select_shadow_start,
+    select_shadow_start_by_budget,
 )
 from agents.usage import SessionUsage, TurnUsage, fold_turn_usage
 from config.settings import settings
@@ -504,16 +508,24 @@ class SessionStore:
 # ---------------------------------------------------------------------------
 # 上下文压缩
 # ---------------------------------------------------------------------------
-def _summarize(summarizer, messages: Sequence[BaseMessage]) -> str:
+def _summarize(summarizer, messages: Sequence[BaseMessage], prefix: Sequence[BaseMessage] = ()) -> str:
     """Ask the summarizer for a checkpoint body.
 
     A :class:`~agents.compaction.PrefixSummarizer` replays the live prefix
-    (system prompt, tool declarations, the exact shadowed messages) so the
-    auxiliary request is served from the provider's warm cache. Anything else
-    keeps the legacy single-string prompt.
+    (system prompt, tool declarations, the preserved head, the exact shadowed
+    messages) so the auxiliary request is served from the provider's warm cache.
+    Anything else keeps the legacy single-string prompt.
     """
     if getattr(summarizer, "replays_prefix", False):
-        return summarizer.summarize(list(messages))
+        instruction = COMPACTION_INSTRUCTION_KEEP_FIRST if prefix else COMPACTION_INSTRUCTION
+        try:
+            return summarizer.summarize(
+                list(messages), prefix=list(prefix), instruction=instruction
+            )
+        except TypeError as exc:
+            if "unexpected keyword" not in str(exc):
+                raise
+            return summarizer.summarize(list(messages))
     prompt = _SUMMARY_PROMPT.format(messages=get_buffer_string(list(messages)))
     response = summarizer.invoke(prompt)
     text = message_text(response).strip()
@@ -550,47 +562,106 @@ def _generate_title(model, messages: Sequence[BaseMessage]) -> str:
     return line[:30]
 
 
-def _keep_start_index(messages: Sequence[BaseMessage], keep_recent: int) -> int:
-    """Start of the retained tail; a tool result is never split from its call."""
-    return select_shadow_start(messages, keep_recent)
-
-
 def compact_messages(
     messages: Sequence[BaseMessage],
     summarizer,
     keep_recent: int = 8,
+    *,
+    retain_tokens: int | None = None,
+    preserved: int = 0,
+    start: int | None = None,
 ) -> tuple[list[BaseMessage], str | None]:
     """Replace the oldest span with one checkpoint message.
 
-    The retained tail is returned unchanged and in order, so the next request
-    reuses its cache from the checkpoint onwards; a summary that would not
-    shrink the span is rejected and the original history is kept.
+    ``preserved`` messages at the head are kept byte-for-byte (the optional
+    first exchange); ``retain_tokens`` bounds the tail by context volume instead
+    of message count. The retained tail is returned unchanged and in order, so
+    the next request reuses its cache from the checkpoint onwards; a summary
+    that would not shrink the span is rejected and the original history is kept.
 
     Returns:
         ``(new message list, summary text)``. ``(original, None)`` when there is
         nothing to compact, the summary is empty, or it does not shrink.
     """
-    start = _keep_start_index(messages, keep_recent)
-    if start <= 0:
+    preserved = max(0, min(preserved, len(messages)))
+    if start is None:
+        if retain_tokens and retain_tokens > 0:
+            start = select_shadow_start_by_budget(
+                messages, retain_tokens, min_start=preserved
+            )
+        else:
+            start = select_shadow_start(messages, keep_recent, min_start=preserved)
+    if start <= preserved:
         return list(messages), None
 
-    older = list(messages[:start])
+    head = list(messages[:preserved])
+    older = list(messages[preserved:start])
     recent = list(messages[start:])
+    if not older:
+        return list(messages), None
+
     try:
-        summary = _summarize(summarizer, older)
+        summary = _summarize(summarizer, older, prefix=head)
     except Exception as exc:  # 摘要失败不应中断对话
         logger.warning("上下文摘要失败，降级为省略更早消息：%s", exc)
         note = HumanMessage(
             content=f"({len(older)} earlier messages were omitted because summarization failed; ask again if you need those details.)"
         )
-        return [note, *recent], None
+        return [*head, note, *recent], None
 
     checkpoint = checkpoint_message(summary)
     if estimate_tokens([checkpoint]) >= estimate_tokens(older):
         # 摘要没有缩小上下文：替换只会多花 token 并打断缓存，保持原样。
         logger.warning("摘要未缩小上下文（%s 条消息），保留原历史", len(older))
         return list(messages), None
-    return [checkpoint, *recent], summary
+    return [*head, checkpoint, *recent], summary
+
+
+# ---------------------------------------------------------------------------
+# 上下文预算
+# ---------------------------------------------------------------------------
+def context_budget(
+    window: int,
+    output_reserve: int | None = None,
+    *,
+    trigger_ratio: float | None = None,
+    headroom: int | None = None,
+    retain: int | None = None,
+) -> tuple[int, int]:
+    """Return ``(trigger_tokens, retain_tokens)`` for a context window.
+
+    The trigger is the smaller of a window share and what remains after the
+    reply reserve and a headroom that scales with the window. Raising the floor
+    to a share of the usable window keeps the trigger away from zero and away
+    from negative values on small windows, while the window share keeps large
+    windows from compacting early. The retain budget is a share of the usable
+    window, bounded by half the trigger so a compaction can still shrink.
+    """
+    total = max(256, int(window or settings.model_context_window))
+    reserve = int(
+        output_reserve
+        if output_reserve is not None
+        else settings.compact_output_reserve_tokens
+    )
+    # A reply cannot reserve more than half the window; without this clamp a
+    # large default reserve would erase a small window's budget entirely.
+    reserve = min(max(0, reserve), total // 2)
+    usable = max(128, total - reserve)
+    if headroom is not None:
+        room = max(64, int(headroom))
+    else:
+        room = max(
+            64,
+            min(settings.compact_headroom_tokens, int(usable * settings.compact_headroom_ratio)),
+        )
+    ratio = trigger_ratio or settings.compact_trigger_ratio
+    candidate = min(int(total * ratio), usable - room)
+    floor = max(64, int(usable * settings.compact_min_trigger_ratio))
+    threshold = min(candidate if candidate > floor else floor, usable)
+    keep = int(retain if retain is not None else usable * settings.compact_retain_ratio)
+    keep = max(settings.compact_min_retain_tokens, keep)
+    keep = min(keep, max(1, threshold // 2))
+    return max(64, threshold), max(1, keep)
 
 
 # ---------------------------------------------------------------------------
@@ -630,9 +701,13 @@ class ChatSession:
         max_context_messages: int | None = None,
         keep_recent: int | None = None,
         model_context_window: int | None = None,
+        max_output_tokens: int | None = None,
+        compact_headroom_tokens: int | None = None,
+        compact_retain_tokens: int | None = None,
         compact_reserve_tokens: int | None = None,
         trigger_ratio: float | None = None,
         max_tool_output_tokens: int | None = None,
+        keep_first_turn: bool = False,
         workspace_id: str = "",
         workspace_path: str = "",
         hydrate: bool = True,
@@ -643,21 +718,34 @@ class ChatSession:
         self.summarizer = summarizer
 
         self.model_context_window = model_context_window or settings.model_context_window
-        self.compact_reserve_tokens = (
-            compact_reserve_tokens or settings.compact_reserve_tokens
+        self.max_output_tokens = int(
+            max_output_tokens or settings.compact_output_reserve_tokens
         )
-        ratio = trigger_ratio or settings.compact_trigger_ratio
-        # 压缩阈值 = 窗口 × 触发比例 − 预留（给回复和摘要请求本身留余量）
+        # ``compact_reserve_tokens`` is the legacy name of the headroom override.
+        headroom = compact_headroom_tokens or compact_reserve_tokens
+        threshold, retain = self._context_budget(
+            trigger_ratio=trigger_ratio, headroom=headroom, retain=compact_retain_tokens
+        )
+        self.compact_headroom_tokens = headroom or self._headroom_tokens()
         self.max_context_tokens = (
-            max_context_tokens
-            or settings.max_context_tokens
-            or max(1, int(self.model_context_window * ratio) - self.compact_reserve_tokens)
+            max_context_tokens or settings.max_context_tokens or threshold
         )
-        self.max_context_messages = max_context_messages or settings.max_context_messages
+        # The retained tail must stay below the effective trigger, including an
+        # explicitly configured one, otherwise compaction could never shrink.
+        # An explicit ``keep_recent`` opts into message-count retention instead
+        # of the token budget (used by tests and by callers that want a fixed
+        # message window).
+        self.compact_retain_tokens = 0 if keep_recent is not None else max(
+            1, min(retain, max(1, int(self.max_context_tokens) // 2))
+        )
+        # Message-count pressure is opt-in only (tests / explicit overrides);
+        # production sessions are bounded by tokens alone.
+        self.max_context_messages = max_context_messages
         self.keep_recent = keep_recent or settings.keep_recent_messages
         self.max_tool_output_tokens = (
             max_tool_output_tokens or settings.max_tool_output_tokens
         )
+        self.keep_first_turn = bool(keep_first_turn)
 
         self.messages: list[BaseMessage] = []
         self.display_messages: list[BaseMessage] = []
@@ -675,6 +763,32 @@ class ChatSession:
             self.meta.workspace_path = workspace_path
 
     # ---- 查询 ----
+    def _headroom_tokens(self) -> int:
+        """Spare room below the trigger: one reply plus one summary request.
+
+        Scales with the usable window and is capped, so a small window keeps a
+        usable threshold instead of subtracting a fixed large reserve.
+        """
+        usable = max(1024, int(self.model_context_window) - int(self.max_output_tokens))
+        scaled = int(usable * settings.compact_headroom_ratio)
+        return max(64, min(settings.compact_headroom_tokens, scaled))
+
+    def _context_budget(
+        self,
+        *,
+        trigger_ratio: float | None = None,
+        headroom: int | None = None,
+        retain: int | None = None,
+    ) -> tuple[int, int]:
+        """Return ``(trigger_tokens, retain_tokens)`` for this session."""
+        return context_budget(
+            self.model_context_window,
+            self.max_output_tokens,
+            trigger_ratio=trigger_ratio,
+            headroom=headroom,
+            retain=retain,
+        )
+
     def __len__(self) -> int:
         return len(self.messages)
 
@@ -684,9 +798,13 @@ class ChatSession:
 
     def needs_compaction(self) -> bool:
         tokens, _source = self.usage()
-        return (
-            len(self.messages) > self.max_context_messages
-            or tokens > self.max_context_tokens
+        if tokens > self.max_context_tokens:
+            return True
+        # Message-count pressure is only active when a caller sets an explicit
+        # bound; production sessions are measured by tokens alone.
+        return bool(
+            self.max_context_messages
+            and len(self.messages) > self.max_context_messages
         )
 
     def stats(self) -> dict[str, Any]:
@@ -699,9 +817,12 @@ class ChatSession:
             "token_source": source,
             "compactions": self.meta.compactions,
             "max_tokens": self.max_context_tokens,
-            "max_messages": self.max_context_messages,
+            "max_messages": self.max_context_messages or 0,
             "model_context_window": self.model_context_window,
-            "reserve_tokens": self.compact_reserve_tokens,
+            "output_reserve_tokens": self.max_output_tokens,
+            "headroom_tokens": self.compact_headroom_tokens,
+            "retain_tokens": self.compact_retain_tokens,
+            "keep_first_turn": self.keep_first_turn,
             "updated_at": self.meta.updated_at,
             "usage": self.session_usage.to_dict(),
         }
@@ -909,27 +1030,41 @@ class ChatSession:
                         },
                     )
 
-    def compact(self, keep_recent: int | None = None, *, force: bool = False) -> bool:
-        """缩掉最旧的一段历史；返回是否真的发生了变化。
+    def compact(
+        self,
+        keep_recent: int | None = None,
+        *,
+        force: bool = False,
+        retain_tokens: int | None = None,
+    ) -> bool:
+        """Condense the oldest span of the history; return whether anything changed.
 
-        每一步都为前缀缓存考虑：
+        Every step is shaped by prefix caching:
 
-        1. 选出「被遮蔽的头部 + 逐字保留的尾部」，尾部从用户消息开始，绝不拆开
-           工具调用与它的结果；
-        2. 头部里超大的工具结果先本地修剪（不花模型调用）。修剪后已回到阈值
-           以内就到此为止，保留原有历史结构；
-        3. 否则用回放前缀的摘要器生成检查点替换头部，尾部逐字不变 —— 下一次
-           请求可以从检查点之后继续复用缓存；
-        4. 摘要没能缩小上下文就保持原样：替换只会多花 token 并白白打断缓存。
+        0. when the session keeps its first exchange, that head is copied
+           verbatim and never summarized; the auxiliary request replays it too;
+        1. the retained tail starts at a user message and never splits a tool
+           call from its result; its size comes from the token budget;
+        2. oversized tool results inside the shadow are pruned locally first
+           (no model call) and the run stops early if that is enough;
+        3. otherwise a prefix-replaying summarizer replaces the shadow with one
+           checkpoint message, leaving the tail byte-identical;
+        4. a summary that does not shrink the span is rejected.
         """
         if self.summarizer is None:
             raise RuntimeError("当前会话没有配置摘要模型，无法压缩。")
         keep = keep_recent if keep_recent is not None else self.keep_recent
-        start = select_shadow_start(self.messages, keep)
-        if start <= 0:
+        preserved = self._preserved_count()
+        start = self._shadow_start(preserved, keep, retain_tokens)
+        if start <= preserved and force:
+            # A manual compaction should shrink something even when the whole
+            # history still fits the retain budget.
+            start = select_shadow_start(self.messages, keep, min_start=preserved)
+        if start <= preserved:
             return False
 
-        shadow = list(self.messages[:start])
+        head = list(self.messages[:preserved])
+        shadow = list(self.messages[preserved:start])
         tail = list(self.messages[start:])
 
         # 头部只剩一条检查点时，再摘要一次不会带来新信息：跳过，省下一次调用，
@@ -939,24 +1074,48 @@ class ChatSession:
 
         pruned, pruned_count = prune_tool_messages(shadow, self.max_tool_output_tokens)
         if pruned_count and not force:
-            candidate = [*pruned, *tail]
+            candidate = [*head, *pruned, *tail]
             if not self._over_threshold(candidate):
                 self.messages = candidate
                 self._record_compaction()
                 logger.info("压缩：修剪了 %s 条超长工具输出，无需摘要调用", pruned_count)
                 return True
 
-        messages, summary = compact_messages(self.messages, self.summarizer, keep)
+        messages, summary = compact_messages(
+            self.messages,
+            self.summarizer,
+            keep,
+            retain_tokens=self.compact_retain_tokens,
+            preserved=preserved,
+            start=start,
+        )
         if summary is None:
             # 摘要失败或未缩小：至少把已经完成的修剪落地，避免白跑一趟。
             if pruned_count:
-                self.messages = [*pruned, *tail]
+                self.messages = [*head, *pruned, *tail]
                 self._record_compaction()
                 return True
             return False
         self.messages = messages
         self._record_compaction()
         return True
+
+    def _preserved_count(self) -> int:
+        """Messages kept verbatim at the head (the first exchange, when enabled)."""
+        if not self.keep_first_turn:
+            return 0
+        end = first_turn_end(self.messages)
+        # Only preserve a head that still leaves a span to condense.
+        return end if 0 < end < len(self.messages) - 1 else 0
+
+    def _shadow_start(self, preserved: int, keep: int, retain_tokens: int | None = None) -> int:
+        """Start of the retained tail, measured by tokens."""
+        retain = retain_tokens if retain_tokens is not None else self.compact_retain_tokens
+        if retain:
+            return select_shadow_start_by_budget(
+                self.messages, retain, min_start=preserved
+            )
+        return select_shadow_start(self.messages, keep, min_start=preserved)
 
     def reset(self) -> None:
         """Clear the current session (also deletes the history file on disk)."""
@@ -1057,17 +1216,23 @@ class ChatSession:
             return False
         compacted = False
         keep = self.keep_recent
+        retain = self.compact_retain_tokens
         for index in range(1 + max(0, settings.compaction_retries)):
             try:
-                changed = self.compact(keep_recent=keep, force=index > 0)
+                changed = self.compact(
+                    keep_recent=keep, force=index > 0, retain_tokens=retain
+                )
             except Exception as exc:  # 压缩失败不影响本轮对话
                 logger.warning("自动压缩失败，本轮继续使用完整历史：%s", exc)
                 return compacted
             compacted = compacted or changed
             if not changed or not self.needs_compaction():
                 break
-            # 仍然超阈值：下一轮保留更少，确保压力真的降下来
+            # Still above the trigger: shrink both the retained budget and the
+            # message-based fallback so the pressure really drops.
             keep = max(1, keep // 2)
+            if retain:
+                retain = max(settings.compact_min_retain_tokens, retain // 2)
         return compacted
 
     def _recover_from_overflow(self) -> bool:
@@ -1086,9 +1251,10 @@ class ChatSession:
 
     def _over_threshold(self, messages: Sequence[BaseMessage]) -> bool:
         tokens, _source = context_tokens(messages)
-        return (
-            len(messages) > self.max_context_messages
-            or tokens > self.max_context_tokens
+        if tokens > self.max_context_tokens:
+            return True
+        return bool(
+            self.max_context_messages and len(messages) > self.max_context_messages
         )
 
     def _record_compaction(self) -> None:

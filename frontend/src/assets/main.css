@@ -349,11 +349,14 @@ html.resizing .inspector-resizer::after {
 /* ---------- 主区 ---------- */
 .main {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
     background: var(--paper);
     position: relative;
+    /* Keep the whole column in one paint layer so nothing inside it (composer
+       popovers included) can paint above the mobile sidebar or its backdrop. */
+    z-index: 0;
 }
 .topbar {
     display: flex;
@@ -564,11 +567,15 @@ html.resizing .sidebar-toggle { transition: none; }
 }
 .icon-btn:hover { border-color: var(--border); background: var(--card); color: var(--ink); }
 .icon-plus { width: 14px; height: 14px; }
+.icon-close { width: 14px; height: 14px; }
 
 /* ---------- 对话 ---------- */
 .transcript {
+    grid-row: 2;
+    grid-column: 1;
     overflow-y: auto;
-    padding: 30px 0 6px;
+    /* Room for the floating composer: the last message must stay reachable. */
+    padding: 30px 0 calc(var(--composer-height, 140px) + 14px);
     scroll-behavior: smooth;
 }
 .welcome {
@@ -742,9 +749,10 @@ html.resizing .sidebar-toggle { transition: none; }
 .no-provider-text { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
 .no-provider-action { margin-top: 12px; }
 .message {
-    max-width: 800px;
+    /* Same box as the composer shell so messages never render wider than it. */
+    width: min(780px, calc(100% - 56px));
     margin: 0 auto 26px;
-    padding: 0 28px;
+    padding: 0 11px;
     display: flex;
     gap: 12px;
     animation: arrive 200ms ease-out;
@@ -814,9 +822,9 @@ html.resizing .sidebar-toggle { transition: none; }
 .tool-chip .tool-dot { color: var(--emerald); }
 .tool-chip.result { background: #f4f9f2; border-color: #d5e6d8; color: #5e755a; }
 .system-note {
-    max-width: 800px;
+    width: min(780px, calc(100% - 56px));
     margin: 0 auto 22px;
-    padding: 0 28px;
+    padding: 0 11px;
     font-size: 10.5px;
     color: var(--soft);
     display: flex;
@@ -825,7 +833,7 @@ html.resizing .sidebar-toggle { transition: none; }
 }
 .system-note::before, .system-note::after { content: ""; height: 1px; background: var(--border-soft); flex: 1; }
 .error-note {
-    max-width: 800px;
+    width: min(780px, calc(100% - 56px));
     margin: 0 auto 22px;
     padding: 10px 14px;
     border: 1px solid var(--danger-border);
@@ -1299,11 +1307,49 @@ html.resizing .sidebar-toggle { transition: none; }
 .prose tbody tr:nth-child(even) { background: rgba(244, 242, 232, 0.45); }
 
 /* ---------- 输入区 ---------- */
+/* The composer floats over the transcript and paints nothing itself; the blur
+   sheet lives on the dock, so the composer's own box and its contents keep
+   their size while the blur spans the whole column below its top edge. */
 .composer {
+    --composer-gutter: 28px;
+    grid-row: 2;
+    grid-column: 1;
+    align-self: end;
+    z-index: 3;
     position: relative;
-    border-top: 1px solid var(--border);
-    padding: 14px 28px 18px;
-    background: linear-gradient(to top, var(--paper) 55%, rgba(250, 248, 241, 0.85));
+    padding: 14px var(--composer-gutter) 18px;
+    background: transparent;
+    pointer-events: none;
+}
+.composer > * { pointer-events: auto; }
+/* Two stacked backdrop layers: light blur first, stronger blur lower down, so
+   the fade grows with depth instead of switching at a single edge. They belong
+   to the dock, which spans the whole main column at the composer's height, so
+   the blur reaches every edge below the composer's top while the composer's
+   own layout (and the shell inside it) stays unchanged. */
+.composer-dock::before,
+.composer-dock::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    pointer-events: none;
+}
+.composer-dock::before {
+    z-index: -2;
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 55%);
+    mask-image: linear-gradient(to bottom, transparent 0%, #000 55%);
+}
+.composer-dock::after {
+    z-index: -1;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 35%, #000 92%);
+    mask-image: linear-gradient(to bottom, transparent 35%, #000 92%);
 }
 .composer-file-input { display: none; }
 .composer-attachments {
@@ -1494,7 +1540,11 @@ html.resizing .sidebar-toggle { transition: none; }
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    transition: opacity 180ms ease;
 }
+/* The status row is centred over the same line; when the column gets narrow the
+   hint fades out before the two can collide. */
+.composer-hint.suppressed { opacity: 0; }
 .composer-hint-alert {
     color: var(--danger);
     font-size: 10.5px;
@@ -2161,8 +2211,8 @@ html.resizing .sidebar-toggle { transition: none; }
     .menu-btn { display: inline-grid; }
     .topbar .menu-btn { display: inline-grid; }
     .topbar { padding: 0 14px; gap: 10px; }
-    .composer { padding: 12px 16px 16px; }
-    .message { padding: 0 16px; }
+    .composer { --composer-gutter: 16px; padding: 12px var(--composer-gutter) 16px; }
+    .message { width: min(780px, calc(100% - 32px)); padding: 0 11px; }
     .welcome { padding-inline: 16px; }
     .todo-panel { margin-inline: 16px; max-width: none; }
     .general-row { grid-template-columns: 1fr; gap: 8px; }
@@ -2670,7 +2720,17 @@ html.resizing .sidebar-toggle { transition: none; }
 }
 .inspector-bar-spacer { flex: 1; }
 .inspector-bar .inspector-tabs { flex: 1; }
-.inspector-bar .inspector-close { align-self: center; width: 26px; height: 26px; }
+.inspector-bar .inspector-close {
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    font-size: 16px;
+    line-height: 1;
+}
 .inspector-title {
     flex: 1;
     font-size: 11px;
@@ -3475,20 +3535,22 @@ html.resizing .sidebar-toggle { transition: none; }
     max-width: 70%;
 }
 
-/* 拖动插入位置提示 */
+/* 拖动插入位置提示：与侧边栏左右边框齐平 */
 .session-item.drop-before::before,
 .session-item.drop-after::after {
     content: "";
     position: absolute;
-    left: 6px;
-    right: 6px;
+    /* Sidebar padding (16px) + list padding (12px) on the left, sidebar
+       padding on the right, so the line spans the whole sidebar width. */
+    left: -28px;
+    right: -16px;
     height: 2px;
     border-radius: 1px;
     background: var(--emerald);
     pointer-events: none;
 }
-.session-item.drop-before::before { top: -1px; }
-.session-item.drop-after::after { bottom: -1px; }
+.session-item.drop-before::before { top: -2px; }
+.session-item.drop-after::after { bottom: -2px; }
 
 /* 图标按钮只在图标本身上变化 */
 .session-icon:hover { background: transparent; color: var(--ink); }

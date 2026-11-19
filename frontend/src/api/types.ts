@@ -3,8 +3,15 @@
 export type ModelProvider =
   | 'deepseek'
   | 'openai'
+  | 'anthropic'
   | 'claude'
+  | 'xai'
+  | 'google'
+  | 'moonshot'
+  | 'zhipu'
   | 'qwen'
+  | 'volcengine'
+  | 'minimax'
   | 'siliconflow'
   | 'custom'
 
@@ -28,6 +35,8 @@ export interface ProviderInfo {
   provider: ModelProvider | string
   name: string
   base_url: string
+  /** `openai` | `anthropic` | "" for the provider's default protocol. */
+  api_mode: string
   api_key_set: boolean
   api_key_hint: string
   models: ProviderModelInfo[]
@@ -52,6 +61,7 @@ export interface ProviderPayload {
   provider: string
   name: string
   base_url: string
+  api_mode?: string
   api_key: string
   models: ProviderModelPayload[]
 }
@@ -207,6 +217,8 @@ export interface Preferences {
   terminal: TerminalKind
   link_target: LinkTarget
   developer_tools: boolean
+  /** Keep the first exchange verbatim when the context is compacted. */
+  compact_keep_first_turn: boolean
 }
 
 export interface HistoryMessage {

@@ -37,7 +37,8 @@ html[data-theme='dark'] {
 
 /* 背景里仍然是浅色的部分 */
 html[data-theme='dark'] .composer {
-    background: linear-gradient(to top, var(--paper) 55%, rgba(18, 23, 20, 0.9));
+    /* 与浅色一致：输入区自身透明，只透出下方的模糊内容 */
+    background: transparent;
 }
 html[data-theme='dark'] .process-row.open { background: rgba(35, 45, 39, 0.75); }
 html[data-theme='dark'] .message-attachment,

@@ -129,10 +129,19 @@ class Settings:
     # ============================================================================
 
     model_context_window = _env_int("MODEL_CONTEXT_WINDOW", 200000)
-    compact_trigger_ratio = _env_float("COMPACT_TRIGGER_RATIO", 0.70, upper=1.0)
+    # Trigger budget: a share of the window, capped by what is left after the
+    # reply reserve and a headroom that scales with the window (bounded above),
+    # so small windows never collapse to zero and large windows do not compact
+    # too early. RETENTION is a share of the usable window kept verbatim.
+    compact_trigger_ratio = _env_float("COMPACT_TRIGGER_RATIO", 0.80, upper=1.0)
+    compact_min_trigger_ratio = _env_float("COMPACT_MIN_TRIGGER_RATIO", 0.35, upper=1.0)
+    compact_headroom_tokens = _env_int("COMPACT_HEADROOM_TOKENS", 65536)
+    compact_headroom_ratio = _env_float("COMPACT_HEADROOM_RATIO", 0.20, upper=1.0)
+    compact_retain_ratio = _env_float("COMPACT_RETAIN_RATIO", 0.16, upper=1.0)
+    compact_min_retain_tokens = _env_int("COMPACT_MIN_RETAIN_TOKENS", 1024)
+    compact_output_reserve_tokens = _env_int("COMPACT_OUTPUT_RESERVE_TOKENS", 8192)
     compact_reserve_tokens = _env_int("COMPACT_RESERVE_TOKENS", 12000)
     max_context_tokens = _env_int("MAX_CONTEXT_TOKENS", 0)
-    max_context_messages = _env_int("MAX_CONTEXT_MESSAGES", 60)
     keep_recent_messages = _env_int("KEEP_RECENT_MESSAGES", 12)
     max_tool_output_tokens = _env_int("MAX_TOOL_OUTPUT_TOKENS", 12000)
 

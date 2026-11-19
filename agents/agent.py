@@ -267,7 +267,14 @@ def assemble_agent(
     summarizer = PrefixSummarizer(
         model=chat_model,
         system_prompt=system_prompt,
-        tools=model_tools,
+        tools=model_tools if not managed else (
+            lambda: [
+                tool
+                for tool in model_tools
+                if str(getattr(tool, "name", "") or "")
+                in visible_tool_names(enabled_names, activation)
+            ]
+        ),
         engine="tool_calling",
         max_tokens=settings.compact_summary_max_tokens or None,
     )

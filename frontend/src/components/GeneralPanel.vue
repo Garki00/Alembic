@@ -12,6 +12,7 @@ import type {
 import { errorMessage } from '../api/client'
 import {
   COLLAPSE_TIMINGS,
+  COMPACTION_MODES,
   LINK_TARGETS,
   PERMISSION_MODES,
   TERMINALS,
@@ -32,6 +33,10 @@ const MODES = TRANSCRIPT_MODES
 const TIMINGS = COLLAPSE_TIMINGS
 const PERMISSIONS = PERMISSION_MODES
 const LINKS = LINK_TARGETS
+const COMPACTIONS = COMPACTION_MODES
+const compactionMode = computed(() => (
+  store.preferences.compact_keep_first_turn ? 'keep_first_turn' : 'default'
+))
 
 const terminalOptions = computed(() => {
   const available = new Map(store.terminals.map((item) => [item.value, item]))
@@ -141,6 +146,14 @@ async function setDeveloperTools(event: Event): Promise<void> {
     element.checked = store.preferences.developer_tools
   }
 }
+
+async function setCompaction(event: Event): Promise<void> {
+  const element = event.target as HTMLSelectElement
+  const value = element.value === 'keep_first_turn'
+  if (!(await save({ compact_keep_first_turn: value }, '压缩选项已更新'))) {
+    element.value = store.preferences.compact_keep_first_turn ? 'keep_first_turn' : 'default'
+  }
+}
 </script>
 
 <template>
@@ -186,6 +199,28 @@ async function setDeveloperTools(event: Event): Promise<void> {
               </option>
             </select>
             <div class="general-hint">{{ currentTerminalHint }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-title">上下文</div>
+      <div class="general-list">
+        <div class="general-row">
+          <div class="general-text">
+            <div class="general-title">压缩选项</div>
+            <div class="general-desc">上下文超过预算时如何处理较早的对话</div>
+          </div>
+          <div class="general-control">
+            <select class="general-select" :value="compactionMode" @change="setCompaction">
+              <option v-for="mode in COMPACTIONS" :key="mode.value" :value="mode.value">
+                {{ mode.label }}
+              </option>
+            </select>
+            <div class="general-hint">
+              {{ COMPACTIONS.find((mode) => mode.value === compactionMode)?.hint }}
+            </div>
           </div>
         </div>
       </div>

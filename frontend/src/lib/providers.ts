@@ -5,12 +5,13 @@
  * - baseUrl / hint feed form autofill and help text;
  * - modelPlaceholder / modelExamples are template metadata only; the UI does not
  *   show "common models" options;
- * - iconPaths are brand marks in a 24×24 viewBox (OpenAI / Anthropic / DeepSeek /
- *   Qwen / SiliconCloud come from public icon sets; the custom provider uses a
- *   generic outlined mark);
- * - all requests go through OpenAI-compatible endpoints; Claude uses Anthropic's
- *   compatible endpoint.
+ * - iconPaths are brand marks in a 24×24 viewBox;
+ * - every provider except Anthropic speaks an OpenAI-compatible protocol;
+ *   Anthropic uses its native Messages API so explicit cache breakpoints work.
+ *   The cache policy itself is resolved from the model id on the backend.
  */
+
+export type ApiMode = 'openai' | 'anthropic'
 
 export interface ProviderTemplate {
   id: string
@@ -27,6 +28,12 @@ export interface ProviderTemplate {
   iconPaths: string[]
   /** If true, the icon is rendered as a stroke (custom providers). */
   stroke?: boolean
+  /** Wire protocols this provider can speak; the first one is the default. */
+  apiModes?: ApiMode[]
+  /** Base URL used when the Anthropic protocol is selected. */
+  anthropicBaseUrl?: string
+  /** Base URL used when the OpenAI protocol differs from `baseUrl`. */
+  openaiBaseUrl?: string
 }
 
 export const PROVIDERS: ProviderTemplate[] = [
@@ -35,6 +42,8 @@ export const PROVIDERS: ProviderTemplate[] = [
     name: '深度求索',
     short: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
+    anthropicBaseUrl: 'https://api.deepseek.com/anthropic',
+    apiModes: ['openai', 'anthropic'],
     modelPlaceholder: '例如 deepseek-chat',
     modelExamples: ['deepseek-chat', 'deepseek-reasoner'],
     hint: 'DeepSeek 官方 API',
@@ -59,13 +68,15 @@ export const PROVIDERS: ProviderTemplate[] = [
     ],
   },
   {
-    id: 'claude',
+    id: 'anthropic',
     name: 'Anthropic Claude',
     short: 'Claude',
-    baseUrl: 'https://api.anthropic.com/v1',
+    baseUrl: 'https://api.anthropic.com',
+    openaiBaseUrl: 'https://api.anthropic.com/v1',
+    apiModes: ['anthropic', 'openai'],
     modelPlaceholder: '例如 claude-sonnet-4-5',
     modelExamples: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'],
-    hint: '通过 Anthropic 兼容端点调用',
+    hint: '原生 Messages API，支持显式缓存断点',
     color: '#c96442',
     background: '#fbf0ea',
     iconPaths: [
@@ -101,13 +112,106 @@ export const PROVIDERS: ProviderTemplate[] = [
     ],
   },
   {
+    id: 'xai',
+    name: 'xAI',
+    short: 'xAI',
+    baseUrl: 'https://api.x.ai/v1',
+    modelPlaceholder: '例如 grok-4',
+    modelExamples: ['grok-4', 'grok-3', 'grok-3-mini'],
+    hint: 'xAI 官方 API',
+    color: '#1f2937',
+    background: '#f1f2f4',
+    iconPaths: [
+      'M2.8 3h4.6l5 6.7L17.8 3H21l-7.1 9.2L21.4 21h-4.6l-5.3-7.1L5.9 21H2.7l7.4-9.6z',
+    ],
+  },
+  {
+    id: 'google',
+    name: 'Google Gemini',
+    short: 'Gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    modelPlaceholder: '例如 gemini-2.5-pro',
+    modelExamples: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+    hint: 'Google AI Studio 官方 API',
+    color: '#4285f4',
+    background: '#eaf1fe',
+    iconPaths: [
+      'M12 2.6a9.4 9.4 0 1 0 0 18.8 9.4 9.4 0 0 0 0-18.8zm0 3.4a6 6 0 1 1 0 12 6 6 0 0 1 0-12z',
+      'M12.6 10.7h9.2v3.1h-9.2z',
+    ],
+  },
+  {
+    id: 'moonshot',
+    name: '月之暗面',
+    short: 'Moonshot',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    anthropicBaseUrl: 'https://api.moonshot.cn/anthropic',
+    apiModes: ['openai', 'anthropic'],
+    modelPlaceholder: '例如 kimi-k2-0905-preview',
+    modelExamples: ['kimi-k2-0905-preview', 'moonshot-v1-128k'],
+    hint: 'Moonshot 官方 API',
+    color: '#4b5563',
+    background: '#f1f2f4',
+    iconPaths: [
+      'M15.8 2.3a9.7 9.7 0 1 0 5.9 16.1A8.5 8.5 0 0 1 15.8 2.3z',
+    ],
+  },
+  {
+    id: 'zhipu',
+    name: '智谱',
+    short: 'Zhipu',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    anthropicBaseUrl: 'https://open.bigmodel.cn/api/anthropic',
+    apiModes: ['openai', 'anthropic'],
+    modelPlaceholder: '例如 glm-4.6',
+    modelExamples: ['glm-4.6', 'glm-4.5-air'],
+    hint: '智谱开放平台 API',
+    color: '#1d4ed8',
+    background: '#e8eefc',
+    iconPaths: [
+      'M12 2 22 12 12 22 2 12z',
+      'M12 7.4 16.6 12 12 16.6 7.4 12z',
+    ],
+  },
+  {
+    id: 'volcengine',
+    name: '火山引擎',
+    short: 'Volcengine',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    modelPlaceholder: '例如 doubao-seed-1-6-250615',
+    modelExamples: ['doubao-seed-1-6-250615', 'doubao-1-5-pro-32k'],
+    hint: '方舟平台 API，可用推理接入点 ID',
+    color: '#1664ff',
+    background: '#e9f0ff',
+    iconPaths: [
+      'M2.6 5.2h4.3L12 15l5.1-9.8h4.3L12 21.4z',
+    ],
+  },
+  {
+    id: 'minimax',
+    name: 'MiniMax',
+    short: 'MiniMax',
+    baseUrl: 'https://api.minimax.chat/v1',
+    anthropicBaseUrl: 'https://api.minimax.chat/anthropic',
+    apiModes: ['openai', 'anthropic'],
+    modelPlaceholder: '例如 MiniMax-M1',
+    modelExamples: ['MiniMax-M1', 'abab6.5s-chat'],
+    hint: 'MiniMax 官方 API',
+    color: '#e8590c',
+    background: '#feeceb',
+    iconPaths: [
+      'M3 20.4V3.6h3.4l5.6 8 5.6-8H21v16.8h-3.4V9.4L12 17.2 6.4 9.4v11z',
+    ],
+  },
+  {
     id: 'custom',
     name: '自定义供应商',
     short: 'Custom',
     baseUrl: '',
+    apiModes: ['openai', 'anthropic'],
     modelPlaceholder: '填写上游模型 ID',
     modelExamples: [],
-    hint: 'OpenAI 兼容接口，需填 Base URL',
+    hint: 'OpenAI 或 Anthropic 兼容接口，需填 Base URL',
     color: '#65735f',
     background: '#f1f2ec',
     stroke: true,
@@ -120,8 +224,12 @@ export const PROVIDERS: ProviderTemplate[] = [
 
 export const CUSTOM_PROVIDER = PROVIDERS[PROVIDERS.length - 1]
 
+/** Older saved providers used ``claude``; the template id is ``anthropic``. */
+const PROVIDER_ALIASES: Record<string, string> = { claude: 'anthropic' }
+
 export function providerOf(id: string): ProviderTemplate {
-  const key = (id || '').trim().toLowerCase()
+  const raw = (id || '').trim().toLowerCase()
+  const key = PROVIDER_ALIASES[raw] || raw
   return PROVIDERS.find((item) => item.id === key) ?? {
     ...CUSTOM_PROVIDER,
     id: key || 'custom',
@@ -132,4 +240,20 @@ export function providerOf(id: string): ProviderTemplate {
 
 export function providerName(id: string): string {
   return providerOf(id).name
+}
+
+/** Wire protocols this provider can speak; the first entry is the default. */
+export function providerApiModes(id: string): ApiMode[] {
+  return providerOf(id).apiModes ?? ['openai']
+}
+
+export function providerDefaultApiMode(id: string): ApiMode {
+  return providerApiModes(id)[0] ?? 'openai'
+}
+
+/** Default base URL for one protocol of a provider. */
+export function providerBaseUrl(id: string, mode: ApiMode): string {
+  const template = providerOf(id)
+  if (mode === 'anthropic') return template.anthropicBaseUrl || template.baseUrl
+  return template.openaiBaseUrl || template.baseUrl
 }

@@ -9,8 +9,8 @@ the whole transcript as fresh input; the replacement that came back then
 rewrote the head of the history, so the *next* real request also started from
 scratch. Two cold requests for every compaction.
 
-The strategy here (the same shape DSH uses for ``dsh-compaction-basic``)
------------------------------------------------------------------------
+The strategy here
+-----------------
 1. **The summarizer replays the live prefix.** The auxiliary request is built
    as ``system prompt + tools + the exact messages being compacted + one
    trailing instruction``. Those first bytes are identical to the conversation's
@@ -51,6 +51,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "COMPACTION_PREAMBLE",
     "COMPACTION_INSTRUCTION",
+    "COMPACTION_INSTRUCTION_KEEP_FIRST",
     "CHECKPOINT_OPEN",
     "CHECKPOINT_CLOSE",
     "LEGACY_SUMMARY_PREFIX",
@@ -58,7 +59,9 @@ __all__ = [
     "checkpoint_message",
     "is_checkpoint_text",
     "is_checkpoint_message",
+    "first_turn_end",
     "select_shadow_start",
+    "select_shadow_start_by_budget",
     "prune_tool_messages",
     "estimate_messages_tokens",
     "is_context_overflow_error",
@@ -86,6 +89,44 @@ Output EXACTLY the Markdown structure below: keep every section, in order. Use t
 
 ## Primary Request and Intent
 - [the user's original and evolving goals; quote verbatim where the exact wording matters]
+
+## Key Technical Concepts
+- [technologies, frameworks, patterns, and conventions in play]
+
+## Files and Code
+- [exact path: why it matters, key changes or snippets]
+
+## Errors and Fixes
+- [error: how it was resolved, plus any related user feedback]
+
+## Pending Jobs
+- [explicitly requested work not yet completed]
+
+## Current Work
+- [precisely what was in progress at this checkpoint]
+
+## Next Step
+- [the single next action, directly in line with the most recent request, or "(none)"]
+
+## Critical Context
+- [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]
+
+Rules:
+- Write concise engineering prose in the language the conversation mostly uses. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.
+- Capture user feedback and explicit instructions faithfully, especially corrections.
+- Do NOT mention this summarization request or that the context was compacted.
+- Output only the checkpoint text: do not call any tool or take any other action.
+- If the conversation already contains a <compacted-summary> block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer information into a single consolidated summary under the same structure.
+"""
+
+#: Instruction variant used when the first exchange is preserved verbatim: the
+#: checkpoint will be placed after it, so it must not be restated.
+COMPACTION_INSTRUCTION_KEEP_FIRST = """You are now acting as a compaction engine for this AI coding assistant. The FIRST user/assistant exchange above is preserved verbatim in the live conversation and appears before this checkpoint, so do not restate it. Condense only the LATER conversation above into a structured checkpoint that lets another model resume the work with no loss of essential context.
+
+Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.
+
+## Primary Request and Intent
+- [the user's goals from the condensed span; quote verbatim where the exact wording matters]
 
 ## Key Technical Concepts
 - [technologies, frameworks, patterns, and conventions in play]
@@ -194,21 +235,32 @@ class PrefixSummarizer:
 
     model: Any
     system_prompt: str
-    tools: Sequence[Any] = ()
+    #: Exact tool declarations, or a callable returning them. A callable lets the
+    #: summarizer bind the set the last live request actually used, which keeps
+    #: the replayed tools block byte-identical when tool visibility changes.
+    tools: Any = ()
     engine: str = "tool_calling"
     max_tokens: int | None = None
 
     #: Tells :class:`agents.context.ChatSession` to use the replay path.
     replays_prefix: bool = True
 
-    def __post_init__(self) -> None:
-        self._bound = self._bind()
-
-    def _bind(self) -> Any:
-        model = self.model
-        if self.engine == "tool_calling" and self.tools:
+    def _resolve_tools(self) -> list[Any]:
+        tools = self.tools
+        if callable(tools):
             try:
-                model = model.bind_tools(list(self.tools))
+                tools = tools()
+            except Exception as exc:  # 工具快照失败时退化为不带工具回放
+                logger.warning("摘要器无法读取当前工具声明：%s", exc)
+                return []
+        return list(tools or ())
+
+    def _bind(self, tools: Sequence[Any] | None = None) -> Any:
+        model = self.model
+        resolved = self._resolve_tools() if tools is None else list(tools)
+        if self.engine == "tool_calling" and resolved:
+            try:
+                model = model.bind_tools(resolved)
             except Exception as exc:  # 工具声明不可绑定时退化为纯文本摘要
                 logger.warning("摘要器无法绑定工具声明，将不带工具回放：%s", exc)
         if self.max_tokens:
@@ -218,25 +270,44 @@ class PrefixSummarizer:
                 logger.debug("摘要器无法设置 max_tokens：%s", exc)
         return model
 
-    def replay(self, shadow: Sequence[BaseMessage]) -> list[BaseMessage]:
-        """Build the auxiliary request: live prefix first, instruction last."""
+    def replay(
+        self,
+        shadow: Sequence[BaseMessage],
+        prefix: Sequence[BaseMessage] = (),
+        instruction: str = COMPACTION_INSTRUCTION,
+    ) -> list[BaseMessage]:
+        """Build the auxiliary request: live prefix first, instruction last.
+
+        ``prefix`` is the part of the history kept verbatim (the preserved first
+        exchange). It is replayed ahead of the condensed span so the request
+        still starts with the same bytes as the live conversation.
+        """
+        if prefix and instruction == COMPACTION_INSTRUCTION:
+            # A preserved head must not be restated in the checkpoint.
+            instruction = COMPACTION_INSTRUCTION_KEEP_FIRST
         if self.engine == "react":
             # ReAct 的请求是「系统提示词 + 一段渲染后的文本」；回放同样形状，
             # 只是把渲染范围收窄到被遮蔽的历史，前面仍是逐字节相同的前缀。
             from agents.react import format_history
 
-            body = format_history(list(shadow))
-            text = f"{body}\n\n{COMPACTION_INSTRUCTION}" if body else COMPACTION_INSTRUCTION
+            body = format_history([*prefix, *shadow])
+            text = f"{body}\n\n{instruction}" if body else instruction
             return [SystemMessage(content=self.system_prompt), HumanMessage(content=text)]
         return [
             SystemMessage(content=self.system_prompt),
+            *prefix,
             *shadow,
-            HumanMessage(content=COMPACTION_INSTRUCTION),
+            HumanMessage(content=instruction),
         ]
 
-    def summarize(self, shadow: Sequence[BaseMessage]) -> str:
+    def summarize(
+        self,
+        shadow: Sequence[BaseMessage],
+        prefix: Sequence[BaseMessage] = (),
+        instruction: str = COMPACTION_INSTRUCTION,
+    ) -> str:
         """Return the checkpoint body; raise when the model produced no text."""
-        response = self._bound.invoke(self.replay(shadow))
+        response = self._bind().invoke(self.replay(shadow, prefix, instruction))
         text = _message_text(response).strip()
         if not text:
             calls = list(getattr(response, "tool_calls", None) or [])
@@ -253,34 +324,106 @@ def _is_human(message: Any) -> bool:
     return getattr(message, "type", "") == "human"
 
 
+def first_turn_end(messages: Sequence[BaseMessage]) -> int:
+    """Index just past the first complete user/assistant exchange.
+
+    The first turn is the first user message plus the first assistant answer
+    that closes it (an assistant message without tool calls). Returns ``0`` when
+    the history does not contain a complete first turn yet, in which case
+    nothing can be preserved.
+    """
+    started = False
+    for index, message in enumerate(messages):
+        kind = getattr(message, "type", "")
+        if kind == "human":
+            if started:
+                return index
+            started = True
+            continue
+        if started and kind == "ai" and not getattr(message, "tool_calls", None):
+            if _message_text(message).strip():
+                return index + 1
+    return 0
+
+
 def select_shadow_start(
     messages: Sequence[BaseMessage],
     keep_recent: int,
     *,
     prefer_human: bool = True,
+    min_start: int = 0,
 ) -> int:
     """Index where the retained tail starts; everything before it is compacted.
 
-    Two invariants:
+    Three invariants:
 
     * a tool result is never separated from the assistant message that called it
       (the API rejects an orphan ``tool`` message);
     * when possible the tail starts at a user message, so the model resumes at a
-      natural boundary instead of mid-exchange.
+      natural boundary instead of mid-exchange;
+    * ``min_start`` (the preserved first exchange) is never crossed.
     """
     if not messages:
         return 0
-    start = max(0, len(messages) - max(1, keep_recent))
-    while start > 0 and isinstance(messages[start], ToolMessage):
+    start = max(min_start, len(messages) - max(1, keep_recent))
+    while start > min_start and isinstance(messages[start], ToolMessage):
         start -= 1
-    if prefer_human and start > 0:
+    if prefer_human and start > min_start:
         nxt = next(
-            (index for index in range(start, len(messages)) if _is_human(messages[index])),
+            (
+                index
+                for index in range(start, len(messages))
+                if _is_human(messages[index])
+            ),
             None,
         )
         if nxt is not None and nxt > start:
             start = nxt
-    return start
+    return max(start, min_start)
+
+
+def select_shadow_start_by_budget(
+    messages: Sequence[BaseMessage],
+    budget_tokens: int,
+    *,
+    prefer_human: bool = True,
+    min_start: int = 0,
+) -> int:
+    """Index where the retained tail starts, measured in tokens.
+
+    Walks backwards until the accumulated estimate exceeds ``budget_tokens``, so
+    the retained tail is bounded by context volume rather than message count.
+    The same boundary invariants as :func:`select_shadow_start` apply.
+    """
+    if not messages:
+        return 0
+    if budget_tokens <= 0:
+        return select_shadow_start(messages, 1, prefer_human=prefer_human, min_start=min_start)
+
+    total = 0
+    start = len(messages)
+    for index in range(len(messages) - 1, max(-1, min_start - 1), -1):
+        tokens = estimate_messages_tokens([messages[index]])
+        if total + tokens > budget_tokens and index < len(messages) - 1:
+            start = index + 1
+            break
+        total += tokens
+        start = index
+    start = min(max(start, min_start), len(messages) - 1)
+    while start > min_start and isinstance(messages[start], ToolMessage):
+        start -= 1
+    if prefer_human and start > min_start:
+        nxt = next(
+            (
+                index
+                for index in range(start, len(messages))
+                if _is_human(messages[index])
+            ),
+            None,
+        )
+        if nxt is not None and nxt > start:
+            start = nxt
+    return max(start, min_start)
 
 
 # ---------------------------------------------------------------------------

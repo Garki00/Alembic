@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 /**
  * Site-wide hover label: reads an element's `title`, shows it in one shared
@@ -14,6 +14,8 @@ const state = reactive({
   top: 0,
   placement: 'above' as Placement,
 })
+
+const tipEl = ref<HTMLElement | null>(null)
 
 let active: HTMLElement | null = null
 let pending: HTMLElement | null = null
@@ -41,23 +43,37 @@ function restoreTitle(): void {
 function hide(): void {
   clearTimers()
   state.visible = false
+  state.text = ''
   restoreTitle()
 }
 
-function place(target: HTMLElement): void {
+/**
+ * Anchor the label to the target and keep it on screen.
+ *
+ * The clamped position uses the measured width, so a short label on a button
+ * close to a window edge stays next to that button instead of being pushed
+ * towards the middle by a fixed assumed width.
+ */
+async function place(target: HTMLElement): Promise<void> {
   const rect = target.getBoundingClientRect()
   const above = rect.top > 52
   state.placement = above ? 'above' : 'below'
   state.top = above ? rect.top - 8 : rect.bottom + 8
-  const margin = 12
-  const half = 150
-  state.left = Math.min(
-    Math.max(rect.left + rect.width / 2, margin + half),
-    window.innerWidth - margin - half,
-  )
+  const center = rect.left + rect.width / 2
+  state.left = center
+  await nextTick()
+  const width = tipEl.value?.offsetWidth ?? 0
+  if (width > 0) {
+    const margin = 8
+    const half = width / 2
+    state.left = Math.min(
+      Math.max(center, margin + half),
+      window.innerWidth - margin - half,
+    )
+  }
 }
 
-function activate(target: HTMLElement): void {
+async function activate(target: HTMLElement): Promise<void> {
   const text = (target.getAttribute('title') || '').trim()
   if (!text) return
   showTimer = 0
@@ -65,9 +81,10 @@ function activate(target: HTMLElement): void {
   pending = null
   target.dataset.tipTitle = text
   target.removeAttribute('title')
-  place(target)
+  state.visible = false
   state.text = text
-  state.visible = true
+  await place(target)
+  if (active === target) state.visible = true
 }
 
 function schedule(target: HTMLElement): void {
@@ -147,10 +164,15 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <div
-      v-if="state.visible"
+      v-if="state.text"
+      ref="tipEl"
       class="ui-tooltip"
       :class="state.placement"
-      :style="{ left: `${state.left}px`, top: `${state.top}px` }"
+      :style="{
+        left: `${state.left}px`,
+        top: `${state.top}px`,
+        visibility: state.visible ? 'visible' : 'hidden',
+      }"
       role="tooltip"
     >{{ state.text }}</div>
   </Teleport>

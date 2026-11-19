@@ -130,6 +130,14 @@ def default_model_limits(provider: str, model: str) -> dict[str, Any]:
         context, output = 200_000, 64_000
     elif "gemini" in text:
         context, output = 1_048_576, 8_192
+    elif "grok" in text:
+        context, output = 256_000, 16_384
+    elif "kimi" in text or "moonshot" in text:
+        context, output = 256_000, 16_384
+    elif "minimax" in text or "abab" in text:
+        context, output = 1_000_000, 32_768
+    elif "doubao" in text or text.startswith("ep-"):
+        context, output = 256_000, 16_384
     elif "qwen" in text:
         context, output = 131_072, 8_192
     elif "deepseek" in text:
@@ -140,7 +148,7 @@ def default_model_limits(provider: str, model: str) -> dict[str, Any]:
     images = any(
         token in text
         for token in (
-            "gpt-4o", "gpt-4.1", "gpt-5", "claude", "gemini",
+            "gpt-4o", "gpt-4.1", "gpt-5", "claude", "gemini", "grok",
             "vision", "qwen-vl", "qwen2.5-vl", "vl-", "omni", "llava",
         )
     )
@@ -155,6 +163,16 @@ def default_model_limits(provider: str, model: str) -> dict[str, Any]:
 def _thinking_level(value: Any) -> str:
     text = str(value or "none").strip().lower()
     return text if text in _THINKING_LEVELS else "none"
+
+
+#: Wire protocols a provider entry can use. Empty means "provider default".
+API_MODES = ("openai", "anthropic")
+
+
+def _api_mode(value: Any) -> str:
+    """Normalize a stored API mode; unknown or missing values mean "default"."""
+    text = str(value or "").strip().lower()
+    return text if text in API_MODES else ""
 
 
 def _sort_levels(values: Iterable[str]) -> list[str]:
@@ -244,6 +262,9 @@ class ProviderConfig:
     name: str = ""
     base_url: str = ""
     api_key: str = ""
+    #: Wire protocol for this provider: ``openai``, ``anthropic`` or "" for the
+    #: provider's own default.
+    api_mode: str = ""
     models: list[ProviderModel] = field(default_factory=list)
     updated_at: str = field(default_factory=_now)
 
@@ -255,6 +276,7 @@ class ProviderConfig:
             "provider": self.provider,
             "name": self.name,
             "base_url": self.base_url,
+            "api_mode": self.api_mode,
             "api_key_set": bool(key),
             "api_key_hint": _mask(key),
             "models": [item.public(self.provider) for item in self.models],
@@ -274,6 +296,7 @@ class ModelConfig:
     model: str = ""
     base_url: str = ""
     api_key: str = ""
+    api_mode: str = ""
     temperature: float = 0.0
     thinking: str = "high"
     thinking_levels: list[str] = field(default_factory=lambda: list(_DEFAULT_THINKING_LEVELS))
@@ -368,6 +391,7 @@ class ModelStore:
             model=model.model,
             base_url=provider.base_url,
             api_key=provider.api_key,
+            api_mode=provider.api_mode,
             temperature=model.temperature,
             thinking=model.thinking,
             thinking_levels=list(model.thinking_levels),
@@ -421,6 +445,7 @@ class ModelStore:
                 "provider": str(payload.get("provider") or existing.get("provider") or "custom").strip(),
                 "name": str(payload.get("name") or "").strip(),
                 "base_url": str(payload.get("base_url") or "").strip(),
+                "api_mode": _api_mode(payload.get("api_mode", existing.get("api_mode"))),
                 "api_key": api_key,
                 "models": models,
                 "updated_at": _now(),
@@ -737,6 +762,7 @@ class ModelStore:
             name=str(item.get("name") or ""),
             base_url=str(item.get("base_url") or ""),
             api_key=str(item.get("api_key") or ""),
+            api_mode=_api_mode(item.get("api_mode")),
             models=models,
             updated_at=str(item.get("updated_at") or ""),
         )
@@ -1197,6 +1223,9 @@ def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
     theme = str(data.get("theme") or DEFAULT_THEME).strip().lower()
     if theme not in THEME_MODES:
         theme = DEFAULT_THEME
+    keep_first = data.get("compact_keep_first_turn", False)
+    if isinstance(keep_first, str):
+        keep_first = keep_first.strip().lower() in {"1", "true", "on", "yes"}
     return {
         "theme": theme,
         "transcript_view": mode,
@@ -1205,6 +1234,7 @@ def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
         "terminal": terminal,
         "link_target": link_target,
         "developer_tools": bool(developer),
+        "compact_keep_first_turn": bool(keep_first),
     }
 
 
@@ -1230,6 +1260,7 @@ class PreferencesStore:
                     "terminal": DEFAULT_TERMINAL,
                     "link_target": DEFAULT_LINK_TARGET,
                     "developer_tools": False,
+                    "compact_keep_first_turn": False,
                 }
             )
         )
@@ -1271,6 +1302,11 @@ class PreferencesStore:
         if "developer_tools" in patch:
             value = patch["developer_tools"]
             current["developer_tools"] = value if isinstance(value, bool) else (
+                str(value).strip().lower() in {"1", "true", "on", "yes"}
+            )
+        if "compact_keep_first_turn" in patch:
+            value = patch["compact_keep_first_turn"]
+            current["compact_keep_first_turn"] = value if isinstance(value, bool) else (
                 str(value).strip().lower() in {"1", "true", "on", "yes"}
             )
         payload = dict(current)

@@ -38,6 +38,7 @@ class PreferencesStoreTest(unittest.TestCase):
                 "terminal": "powershell",
                 "link_target": "sidebar",
                 "developer_tools": False,
+                "compact_keep_first_turn": False,
             },
         )
 

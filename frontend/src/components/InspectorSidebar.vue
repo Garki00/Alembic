@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { beginResize } from '../lib/resize'
 import { useInspectorStore } from '../stores/inspector'
 import BrowserView from './BrowserView.vue'
@@ -9,6 +9,7 @@ import FileViewer from './FileViewer.vue'
 const inspector = useInspectorStore()
 const addOpen = ref(false)
 const tabsEl = ref<HTMLElement | null>(null)
+const addMenu = ref<HTMLElement | null>(null)
 const activeTab = computed(() => inspector.activeTab)
 
 watch(
@@ -43,6 +44,28 @@ function chooseBrowser(): void {
   addOpen.value = false
   inspector.openBrowser()
 }
+
+/** A click anywhere outside the add menu closes it. */
+function onDocumentPointer(event: PointerEvent): void {
+  if (!addOpen.value) return
+  const root = addMenu.value
+  if (root && event.target instanceof Node && root.contains(event.target)) return
+  addOpen.value = false
+}
+
+function onDocumentKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') addOpen.value = false
+}
+
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocumentPointer)
+  document.addEventListener('keydown', onDocumentKeydown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocumentPointer)
+  document.removeEventListener('keydown', onDocumentKeydown)
+})
 </script>
 
 <template>
@@ -80,7 +103,7 @@ function chooseBrowser(): void {
         </div>
       </div>
       <span v-else class="inspector-bar-spacer"></span>
-      <div v-if="inspector.canAddTab" class="inspector-add">
+      <div v-if="inspector.canAddTab" ref="addMenu" class="inspector-add">
         <button
           type="button"
           class="icon-btn inspector-add-btn"
@@ -109,7 +132,15 @@ function chooseBrowser(): void {
         aria-label="收起侧边栏"
         @click="inspector.hide()"
       >
-        ×
+        <svg class="icon-close" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M3.2 3.2 12.8 12.8M12.8 3.2 3.2 12.8"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+          />
+        </svg>
       </button>
     </header>
 

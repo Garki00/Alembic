@@ -39,7 +39,8 @@
     /* 上侧不留内边距：浮层上边界与输入框上边界齐平 */
     padding: 0 0 14px;
     border-top: 0;
-    background: var(--paper);
+    /* 只让输入区这一层透出下面的模糊内容；--paper 保持不变，对话区仍是原纸色 */
+    background: #faf8f100;
 }
 
 .composer-request {
