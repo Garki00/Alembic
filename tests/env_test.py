@@ -2,12 +2,14 @@
 """Subprocess environment allowlist: system variables pass through, secret variables are stripped."""
 
 import unittest
+from unittest.mock import patch
 
 from tools.env import build_child_env, is_allowed_name, is_secret_name
 
 
 class EnvPolicyTest(unittest.TestCase):
-    def test_system_variables_are_kept(self):
+    @patch("tools.runtimes.runtime_paths", return_value=[])
+    def test_system_variables_are_kept(self, _paths):
         env = build_child_env(
             inherit={
                 "Path": r"C:\Windows\System32",

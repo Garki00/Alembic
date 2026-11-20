@@ -7,8 +7,8 @@ Register a tool once in :data:`TOOL_SPECS`; consumers derive from it:
 - Web chat ← :func:`build_tools` (assembled from enabled state and current configuration);
 - CLI ← :func:`build_tools` + :func:`default_enabled_names`.
 
-A single entry (ToolSpec) may consist of several tools (for example the file
-read/write groups); enable/disable and configuration apply at entry granularity.
+Each entry exposes one tool with its own enable switch and configuration.
+Legacy group names remain accepted by the assembly API.
 """
 
 from __future__ import annotations
@@ -48,7 +48,8 @@ FIELD_TEXT = "text"
 FIELD_NUMBER = "number"
 FIELD_SELECT = "select"
 FIELD_SWITCH = "switch"
-FIELD_KINDS = (FIELD_TEXT, FIELD_NUMBER, FIELD_SELECT, FIELD_SWITCH)
+FIELD_RADIO = "radio"
+FIELD_KINDS = (FIELD_TEXT, FIELD_NUMBER, FIELD_SELECT, FIELD_SWITCH, FIELD_RADIO)
 
 Builder = Callable[[Mapping[str, str], ToolContext], Sequence]
 
@@ -63,7 +64,8 @@ class ToolField:
     - ``secret``: secret value, never echoed back; empty means keep the current value;
     - ``multiline``: multi-line text box (effective when ``kind="text"``);
     - ``kind``: control type, see ``FIELD_KINDS``;
-    - ``options``: candidates for ``kind="select"``, as ``((value, display name), ...)``;
+    - ``options``: candidates for ``kind="select"`` or ``kind="radio"``, as ``((value, display name), ...)``;
+    - ``enabled_when``: optional ``(field_key, value)`` rule for dimming the field in the panel;
     - ``required``: UI marker only (the tool itself reports whether the value is empty);
     - ``default``: initial value when the configuration file has no such key.
     """
@@ -77,12 +79,13 @@ class ToolField:
     options: tuple[tuple[str, str], ...] = ()
     required: bool = False
     default: str = ""
+    enabled_when: tuple[str, str] | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in FIELD_KINDS:
             raise ValueError(f"未知的字段类型 {self.kind!r}（{self.key}）")
-        if self.kind == FIELD_SELECT and not self.options:
-            raise ValueError(f"字段 {self.key} 是 select，但没有给出 options")
+        if self.kind in {FIELD_SELECT, FIELD_RADIO} and not self.options:
+            raise ValueError(f"字段 {self.key} 是 {self.kind}，但没有给出 options")
 
     def public(self) -> dict:
         """Frontend-facing structure; value-related fields are filled in by :class:`ToolStore`."""
@@ -95,6 +98,11 @@ class ToolField:
             "kind": self.kind,
             "options": [{"value": value, "label": label} for value, label in self.options],
             "required": self.required,
+            "enabled_when": (
+                {"key": self.enabled_when[0], "value": self.enabled_when[1]}
+                if self.enabled_when
+                else None
+            ),
         }
 
     def normalize(self, value: str) -> str:
@@ -111,7 +119,7 @@ class ToolField:
                 float(text)
             except ValueError as exc:
                 raise ValueError(f"「{self.label}」需要填写数字") from exc
-        if self.kind == FIELD_SELECT:
+        if self.kind in {FIELD_SELECT, FIELD_RADIO}:
             allowed = {item for item, _label in self.options}
             if text.strip() and text not in allowed:
                 raise ValueError(f"「{self.label}」只能是：{'、'.join(sorted(allowed))}")
@@ -129,8 +137,10 @@ class ToolSpec:
         fields: Parameters the user needs to fill in.
         risk: Risk level, see RISK_*.
         default_enabled: Whether the entry is enabled by default when data/tools.json is first generated.
-        tool_names: Names of the tool functions actually exposed to the model (one entry may contain several).
+        tool_names: Names of the tool functions actually exposed to the model (one per entry).
         builder: Assembly function of type ``(config, ctx) -> Sequence[BaseTool]``.
+        source: Built-in or externally installed source classification.
+        source_id: Stable identifier of the supplying plugin or MCP server.
     """
 
     name: str
@@ -141,6 +151,8 @@ class ToolSpec:
     default_enabled: bool = True
     tool_names: tuple[str, ...] = ()
     builder: Builder | None = field(default=None, repr=False)
+    source: str = "builtin"
+    source_id: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +238,29 @@ def _build_mock(config: Mapping[str, str], _ctx: ToolContext) -> Sequence:
     return build_mock_tools(dict(config))
 
 
+def _single_tool(builder: Builder, name: str) -> Builder:
+    """Reuse the original implementation and schema for exactly one tool."""
+    def build(config, ctx):
+        return [tool for tool in builder(config, ctx) if tool.name == name]
+    return build
+
+
+LEGACY_TOOL_GROUPS: dict[str, tuple[str, ...]] = {
+    "file_read": ("list_dir", "read_file", "search_files", "find_files", "file_stat"),
+    "file_write": ("write_file", "edit_file", "make_dir", "delete_file", "move_file", "copy_file"),
+    "background_process": ("start_process", "stop_process"),
+    "process_inspect": ("list_processes", "read_process_logs", "wait_process"),
+    "git_read": ("git_status", "git_diff"),
+}
+
+
+def expand_enabled_names(enabled: set[str] | None) -> set[str]:
+    """Expand retired entry names without changing individual tool choices."""
+    if enabled is None:
+        return set(TOOL_SPECS)
+    return {member for name in enabled for member in LEGACY_TOOL_GROUPS.get(name, (name,))}
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -244,32 +279,30 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         tool_names=("list_timezones",),
         builder=_build_timezone_list,
     ),
-    "get_weather": ToolSpec(
-        name="get_weather",
-        label="实时天气",
-        description="查询城市实时天气，需和风天气凭据",
-        fields=(
-            ToolField("QWEATHER_KEY_ID", "Key ID", secret=True),
-            ToolField("QWEATHER_PROJECT_ID", "Project ID"),
-            ToolField("QWEATHER_DEVELOPER_ID", "Developer ID"),
-            ToolField("QWEATHER_PRIVATE_KEY", "Private Key（Ed25519）", secret=True, multiline=True),
-            ToolField(
-                "QWEATHER_API_HOST",
-                "API Host",
-                placeholder="填写你的和风天气 API Host（不含 https://）",
-            ),
-        ),
-        tool_names=("get_weather",),
-        default_enabled=False,
-        builder=_build_weather,
+    "list_dir": ToolSpec(
+        name="list_dir", label="目录浏览", description="列出目录内容",
+        risk=RISK_READ, tool_names=("list_dir",),
+        builder=_single_tool(_build_file_read, "list_dir"),
     ),
-    "file_read": ToolSpec(
-        name="file_read",
-        label="文件读取",
-        description="浏览目录、读取文件、搜索内容、查找文件",
-        risk=RISK_READ,
-        tool_names=("list_dir", "read_file", "search_files", "find_files", "file_stat"),
-        builder=_build_file_read,
+    "read_file": ToolSpec(
+        name="read_file", label="文件读取", description="读取文本文件",
+        risk=RISK_READ, tool_names=("read_file",),
+        builder=_single_tool(_build_file_read, "read_file"),
+    ),
+    "search_files": ToolSpec(
+        name="search_files", label="内容搜索", description="搜索文件内容",
+        risk=RISK_READ, tool_names=("search_files",),
+        builder=_single_tool(_build_file_read, "search_files"),
+    ),
+    "find_files": ToolSpec(
+        name="find_files", label="文件查找", description="按名称查找文件",
+        risk=RISK_READ, tool_names=("find_files",),
+        builder=_single_tool(_build_file_read, "find_files"),
+    ),
+    "file_stat": ToolSpec(
+        name="file_stat", label="文件信息", description="查看文件元数据",
+        risk=RISK_READ, tool_names=("file_stat",),
+        builder=_single_tool(_build_file_read, "file_stat"),
     ),
     "read_document": ToolSpec(
         name="read_document",
@@ -287,20 +320,35 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         tool_names=("read_image",),
         builder=_build_images,
     ),
-    "file_write": ToolSpec(
-        name="file_write",
-        label="文件写入",
-        description="写入、修改、移动、复制、删除文件",
-        risk=RISK_WRITE,
-        tool_names=(
-            "write_file",
-            "edit_file",
-            "make_dir",
-            "delete_file",
-            "move_file",
-            "copy_file",
-        ),
-        builder=_build_file_write,
+    "write_file": ToolSpec(
+        name="write_file", label="文件写入", description="写入文件内容",
+        risk=RISK_WRITE, tool_names=("write_file",),
+        builder=_single_tool(_build_file_write, "write_file"),
+    ),
+    "edit_file": ToolSpec(
+        name="edit_file", label="文件编辑", description="精确替换文件内容",
+        risk=RISK_WRITE, tool_names=("edit_file",),
+        builder=_single_tool(_build_file_write, "edit_file"),
+    ),
+    "make_dir": ToolSpec(
+        name="make_dir", label="创建目录", description="创建工作区目录",
+        risk=RISK_WRITE, tool_names=("make_dir",),
+        builder=_single_tool(_build_file_write, "make_dir"),
+    ),
+    "delete_file": ToolSpec(
+        name="delete_file", label="删除文件", description="删除文件或目录",
+        risk=RISK_WRITE, tool_names=("delete_file",),
+        builder=_single_tool(_build_file_write, "delete_file"),
+    ),
+    "move_file": ToolSpec(
+        name="move_file", label="移动文件", description="移动文件或目录",
+        risk=RISK_WRITE, tool_names=("move_file",),
+        builder=_single_tool(_build_file_write, "move_file"),
+    ),
+    "copy_file": ToolSpec(
+        name="copy_file", label="复制文件", description="复制文件或目录",
+        risk=RISK_WRITE, tool_names=("copy_file",),
+        builder=_single_tool(_build_file_write, "copy_file"),
     ),
     "apply_patch": ToolSpec(
         name="apply_patch",
@@ -323,6 +371,19 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         label="网页抓取",
         description="抓取网页或接口内容",
         fields=(
+            ToolField(
+                "FETCH_MODE",
+                "抓取方式",
+                kind=FIELD_RADIO,
+                options=(("local", "本地抓取"), ("api", "Fetch API")),
+                default="local",
+            ),
+            ToolField(
+                "FETCH_API_URL",
+                "Fetch API 地址",
+                placeholder="https://example.com/fetch?url={url_encoded}",
+                enabled_when=("FETCH_MODE", "api"),
+            ),
             ToolField("FETCH_TIMEOUT", "超时（秒）", kind=FIELD_NUMBER, default="20"),
             ToolField("FETCH_MAX_BYTES", "最大响应字节", kind=FIELD_NUMBER, default="2000000"),
             ToolField(
@@ -336,6 +397,21 @@ TOOL_SPECS: dict[str, ToolSpec] = {
                 "FETCH_USER_AGENT",
                 "User-Agent",
                 default="ALEMBIC/0.1 (+local)",
+                enabled_when=("FETCH_MODE", "local"),
+            ),
+            ToolField(
+                "FETCH_RENDER",
+                "动态渲染",
+                kind=FIELD_SWITCH,
+                default="true",
+                enabled_when=("FETCH_MODE", "local"),
+            ),
+            ToolField(
+                "FETCH_RENDER_TIMEOUT",
+                "渲染超时（秒）",
+                kind=FIELD_NUMBER,
+                default="12",
+                enabled_when=("FETCH_MODE", "local"),
             ),
         ),
         risk=RISK_READ,
@@ -437,29 +513,40 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         tool_names=("run_command",),
         builder=_build_shell,
     ),
-    "background_process": ToolSpec(
-        name="background_process",
-        label="后台进程",
-        description="启动或停止后台长任务",
-        risk=RISK_EXEC,
-        tool_names=("start_process", "stop_process"),
-        builder=_build_process_exec,
+    "start_process": ToolSpec(
+        name="start_process", label="启动进程", description="启动后台任务",
+        risk=RISK_EXEC, tool_names=("start_process",),
+        builder=_single_tool(_build_process_exec, "start_process"),
     ),
-    "process_inspect": ToolSpec(
-        name="process_inspect",
-        label="进程查看",
-        description="查看后台进程与日志",
-        risk=RISK_READ,
-        tool_names=("list_processes", "read_process_logs", "wait_process"),
-        builder=_build_process_inspect,
+    "stop_process": ToolSpec(
+        name="stop_process", label="停止进程", description="停止后台任务",
+        risk=RISK_EXEC, tool_names=("stop_process",),
+        builder=_single_tool(_build_process_exec, "stop_process"),
     ),
-    "git_read": ToolSpec(
-        name="git_read",
-        label="Git 查看",
-        description="查看 Git 状态与改动",
-        risk=RISK_READ,
-        tool_names=("git_status", "git_diff"),
-        builder=_build_git_read,
+    "list_processes": ToolSpec(
+        name="list_processes", label="进程列表", description="列出后台任务",
+        risk=RISK_READ, tool_names=("list_processes",),
+        builder=_single_tool(_build_process_inspect, "list_processes"),
+    ),
+    "read_process_logs": ToolSpec(
+        name="read_process_logs", label="进程日志", description="读取后台任务输出",
+        risk=RISK_READ, tool_names=("read_process_logs",),
+        builder=_single_tool(_build_process_inspect, "read_process_logs"),
+    ),
+    "wait_process": ToolSpec(
+        name="wait_process", label="等待进程", description="等待后台任务或日志",
+        risk=RISK_READ, tool_names=("wait_process",),
+        builder=_single_tool(_build_process_inspect, "wait_process"),
+    ),
+    "git_status": ToolSpec(
+        name="git_status", label="Git 状态", description="查看工作区状态",
+        risk=RISK_READ, tool_names=("git_status",),
+        builder=_single_tool(_build_git_read, "git_status"),
+    ),
+    "git_diff": ToolSpec(
+        name="git_diff", label="Git 差异", description="查看文件改动",
+        risk=RISK_READ, tool_names=("git_diff",),
+        builder=_single_tool(_build_git_read, "git_diff"),
     ),
     "git_commit": ToolSpec(
         name="git_commit",
@@ -468,6 +555,25 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         risk=RISK_EXEC,
         tool_names=("git_commit",),
         builder=_build_git_commit,
+    ),
+    "get_weather": ToolSpec(
+        name="get_weather",
+        label="实时天气",
+        description="查询城市实时天气，需和风天气凭据",
+        fields=(
+            ToolField("QWEATHER_KEY_ID", "Key ID", secret=True),
+            ToolField("QWEATHER_PROJECT_ID", "Project ID"),
+            ToolField("QWEATHER_DEVELOPER_ID", "Developer ID"),
+            ToolField("QWEATHER_PRIVATE_KEY", "Private Key（Ed25519）", secret=True, multiline=True),
+            ToolField(
+                "QWEATHER_API_HOST",
+                "API Host",
+                placeholder="填写你的和风天气 API Host（不含 https://）",
+            ),
+        ),
+        tool_names=("get_weather",),
+        default_enabled=False,
+        builder=_build_weather,
     ),
     # Mock tool: exercises the chain "registry declares field → settings panel →
     # tool reads it", and doubles as a template for new Python-only tools.
@@ -494,7 +600,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
 
 def default_enabled_names() -> set[str]:
     """Entry names enabled by default (used by the CLI)."""
-    return {name for name, spec in TOOL_SPECS.items() if spec.default_enabled}
+    return {name for name, spec in tuple(TOOL_SPECS.items()) if spec.default_enabled}
 
 
 def build_tools(
@@ -513,16 +619,18 @@ def build_tools(
     Returns:
         List of LangChain tool instances, ordered like :data:`TOOL_SPECS`.
     """
-    names = set(TOOL_SPECS) if enabled is None else set(enabled)
+    names = expand_enabled_names(enabled)
     built: list = []
-    for name, spec in TOOL_SPECS.items():
+    for name, spec in tuple(TOOL_SPECS.items()):
         if name not in names or spec.builder is None:
             continue
-        config = dict((configs or {}).get(name) or {})
+        configured = configs or {}
+        legacy = next((group for group, members in LEGACY_TOOL_GROUPS.items() if name in members), None)
+        config = dict(configured.get(name, configured.get(legacy, {})) or {})
         try:
             built.extend(spec.builder(config, ctx))
         except Exception:  # a single entry failing to assemble must not break the whole turn
-            logger.exception("装配工具 %s 失败，已跳过", name)
+            logger.exception("Failed to assemble tool %s; skipped", name)
     return built
 
 

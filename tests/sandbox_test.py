@@ -56,6 +56,7 @@ class SandboxConfigTest(unittest.TestCase):
         config = self.store.get()
         self.assertEqual(config["network"], "offline")
         self.assertIn("pypi.org", config["allowed_domains"])
+        self.assertIn("gitee.com", config["allowed_domains"])
 
         updated = self.store.update({
             "network": "allowlist",
@@ -65,6 +66,18 @@ class SandboxConfigTest(unittest.TestCase):
         self.assertEqual(updated["network"], "allowlist")
         self.assertEqual(updated["allowed_domains"], ["example.com"])
         self.assertEqual(self.store.get()["allowed_ports"], [443])
+
+    def test_legacy_default_domains_gain_gitee(self):
+        self.store.path.write_text(
+            '{"version":1,"network":"allowlist","allowed_domains":['
+            '"registry.npmjs.org","registry.npmmirror.com","pypi.org",'
+            '"files.pythonhosted.org","github.com","codeload.github.com",'
+            '"raw.githubusercontent.com"],"allowed_ports":[443,80],"proxy_port":47831}',
+            encoding="utf-8",
+        )
+        config = self.store.get()
+        self.assertIn("gitee.com", config["allowed_domains"])
+        self.assertEqual(config["version"], 2)
 
     def test_utf8_bom_from_powershell_is_accepted(self):
         self.store.path.write_text(

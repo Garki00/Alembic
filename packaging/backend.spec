@@ -19,9 +19,15 @@ from PyInstaller.utils.hooks import collect_data_files
 
 PROJECT = Path(SPECPATH).resolve().parent  # spec 在 packaging/ 下
 
+# Do not silently produce a distribution that depends on host runtimes.
+import runpy
+import shutil
+runtime_provisioner = runpy.run_path(str(PROJECT / "scripts" / "provision_runtimes.py"))
+runtime_bundle = runtime_provisioner["provision"](offline=True, verify_only=True)
+
 # 前后端分离后，web/static 已移除：前端由 frontend/ 单独构建。
 # 后端只提供 /api，因此这里只带运行时数据。
-datas = []
+datas = [(str(PROJECT / "extensions" / "builtin"), "extensions/builtin")]
 # Windows 不自带 IANA 时区库，zoneinfo 依赖 tzdata 的数据文件
 datas += collect_data_files("tzdata")
 # python-docx 读取时不一定用到模板，但带上可避免打包后创建文档失败
@@ -85,3 +91,6 @@ coll = COLLECT(
     upx=False,
     name="alembic-backend",
 )
+
+# Preserve executable layout and licenses without PyInstaller binary rewriting.
+shutil.copytree(runtime_bundle, Path(DISTPATH) / "alembic-backend" / "runtimes" / runtime_bundle.name, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"))

@@ -29,6 +29,9 @@ if ($LASTEXITCODE -ne 0) {
     if ($LASTEXITCODE -ne 0) { Write-Error "安装 PyInstaller 失败" }
 }
 
+& $python scripts/provision_runtimes.py
+if ($LASTEXITCODE -ne 0) { throw "Portable runtime provisioning failed" }
+
 $args = @("-m", "PyInstaller", "packaging\backend.spec", "--noconfirm")
 if ($Clean) { $args += "--clean" }
 

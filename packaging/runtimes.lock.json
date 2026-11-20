@@ -1,0 +1,31 @@
+{
+  "platform": "win32-x64",
+  "checked_at": "2026-11-20",
+  "artifacts": {
+    "node": {
+      "version": "26.13.1",
+      "filename": "node.zip",
+      "directory": "node-v26.13.1-win-x64",
+      "url": "https://nodejs.org/dist/v26.13.1/node-v26.13.1-win-x64.zip",
+      "sha256": "e2edda75bfb089654705cf65a13b58933bfd5f57148e8ebda916f58a2474f1f7",
+      "checksum_source": "https://nodejs.org/dist/v26.13.1/SHASUMS256.txt"
+    },
+    "python": {
+      "version": "3.13.18",
+      "filename": "python.tar.gz",
+      "directory": "python",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.13.18%2B20261110-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "sha256": "7e93813bd362c6413f30788b248590e2f169df2d17dcac81aafbcc7a6eeb542c",
+      "checksum_source": "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20261110"
+    },
+    "pnpm": {
+      "version": "12.21.0",
+      "filename": "pnpm-native.tgz",
+      "directory": "package",
+      "url": "https://registry.npmjs.org/@pnpm/exe.win32-x64/-/exe.win32-x64-12.21.0.tgz",
+      "sha256": "5714e2f49d2eb3217f0a2567775b56cad25cd08cda1aba29cde0cf5774a6f2a8",
+      "integrity": "sha512-9TpkJemVApxJ1Z1w0ZFGN+AuSx4nJOqXSJUqMqDvaXTYwGOzvBiiWdFP9GN0ketiWCQS1Q0/pza2E7I3pP0OBQ==",
+      "checksum_source": "https://registry.npmjs.org/@pnpm/exe.win32-x64/12.21.0"
+    }
+  }
+}

@@ -59,7 +59,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
             :aria-selected="ui.settingsTab === 'tools'"
             @click="ui.settingsTab = 'tools'"
           >
-            工具
+            扩展
           </button>
         </nav>
 

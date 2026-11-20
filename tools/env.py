@@ -96,5 +96,8 @@ def build_child_env(
     if "PATH" not in env:
         env["PATH"] = os.defpath
     for key, value in (overrides or {}).items():
-        env[str(key)] = str(value)
-    return env
+        if is_allowed_name(key) and value is not None:
+            env[str(key).upper()] = str(value)
+    from tools.runtimes import add_runtime_path
+
+    return add_runtime_path(env)

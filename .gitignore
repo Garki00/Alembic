@@ -25,6 +25,7 @@ data/
 .alembic/
 
 # ---------- 打包产物 ----------
+runtimes/
 build/
 dist/
 frontend/dist/

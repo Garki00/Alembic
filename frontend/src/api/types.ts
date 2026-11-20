@@ -87,7 +87,7 @@ export interface ActiveModelInfo {
   api_key_hint: string
 }
 
-export type ToolFieldKind = 'text' | 'number' | 'select' | 'switch'
+export type ToolFieldKind = 'text' | 'number' | 'select' | 'switch' | 'radio'
 
 export interface ToolFieldInfo {
   key: string
@@ -98,6 +98,7 @@ export interface ToolFieldInfo {
   kind: ToolFieldKind
   options: Array<{ value: string; label: string }>
   required: boolean
+  enabled_when?: { key: string; value: string } | null
   // 由 ToolStore.public() 补齐
   value: string
   value_set: boolean
@@ -105,6 +106,8 @@ export interface ToolFieldInfo {
 }
 
 export interface ToolInfo {
+  source?: 'builtin' | 'plugin'
+  source_id?: string
   name: string
   label: string
   description: string

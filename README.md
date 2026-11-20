@@ -11,7 +11,7 @@ ALEMBIC 是一个本地优先的智能体工作区。后端使用 Python + FastA
 - 命令输出实时推送；后台任务有独立视图，完成时主动通知并续跑。
 - 输入区支持导入附件、手动压缩上下文，并实时显示上下文占用比例。
 
-架构图、数据流和不可破坏的约定见 [HANDOVER.md](HANDOVER.md)。
+架构图、数据流和不可破坏的约定见 [HANDOVER.md](HANDOVER.md)。扩展安装与开发见[扩展指南](docs/extensions.md)；随应用分发的 Node、pnpm、Python 及验证方法见[内置运行时](docs/runtimes.md)。
 
 ## 目录
 
@@ -163,7 +163,7 @@ npm run preview     # 4173 端口预览，/api 仍代理到后端
 
 - **通用**：权限模式（只读 / 全部审批 / 工作区内修改 / 完全权限，默认工作区内修改；切到完全权限需要二次确认）、终端偏好（PowerShell / CMD / Git Bash / WSL，默认 PowerShell）、网页链接打开方式（应用内侧边栏 / 默认浏览器，默认侧边栏）、工作步骤展示档位（默认详细）、收起时机（默认回答结束后）、显示代码工作视图（默认关闭）。偏好保存在 `<home>/data/preferences.json`。
 - **供应商**：以供应商为单位添加 / 编辑 / 删除。一个供应商共用 Base URL 与 API Key；编辑时维护它自己的模型列表（模型 ID、显示名称、可选推理等级、温度），也可以从上游获取模型列表。API Key 只显示掩码，不回显原文。
-- **工具**：右上角可切换网格 / 列表视图。网格视图一行两张卡片，点击卡片展开参数；列表视图保留完整条目。两种视图都能查看风险等级与包含的工具名，启用 / 禁用并编辑参数。密钥类字段显示为「已配置 · ••••」，留空保存即沿用旧值，也可以用「清除」真正清空。这里还可以调整扩展工具搜索的每次加载数量，以及清除本会话的「始终允许」授权。
+- **扩展**：顶部按「工具 / MCP / Skill」切换，各类按「内置 / 插件」折叠展示。工具可独立启用和配置，保留网格 / 列表视图；支持编辑安装目录、刷新插件、管理 MCP 服务器和 Skill 开关。工具密钥字段留空沿用旧值，通过「清除」清空。原有扩展工具加载数量及会话授权设置仍保留。安装格式、审批边界、旧分组迁移和 API 见[扩展指南](docs/extensions.md)。
 
 ### 2.7 工作步骤
 
@@ -312,17 +312,26 @@ Final Answer: ...
 
 ### 5.1 工具注册表
 
-工具清单只在 `tools/registry.py` 的 `TOOL_SPECS` 登记一次，网页设置面板、网页对话和命令行都从它派生。
+内置工具清单在 `tools/registry.py` 的 `TOOL_SPECS` 登记，扩展管理器将发现的工具发布到同一注册表，网页设置、网页对话和命令行均从它派生。旧分组自动迁移为 version 4 的独立工具设置，调用行为保持兼容；安装说明见[扩展指南](docs/extensions.md)。
 
 | 条目 | 暴露给模型的工具 | 风险 | 默认 | 加载 |
 | --- | --- | --- | --- | --- |
 | `get_current_time` | `get_current_time` | 只读 | 开 | 常驻 |
 | `list_timezones` | `list_timezones` | 只读 | 开 | 按需 |
 | `get_weather` | `get_weather` | 只读（需和风天气凭据与 API Host） | 关 | 按需 |
-| `file_read` | `list_dir` / `read_file` / `search_files` / `find_files` / `file_stat` | 只读 | 开 | 常驻 |
+| `list_dir` | `list_dir` | 只读 | 开 | 常驻 |
+| `read_file` | `read_file` | 只读 | 开 | 常驻 |
+| `search_files` | `search_files` | 只读 | 开 | 常驻 |
+| `find_files` | `find_files` | 只读 | 开 | 常驻 |
+| `file_stat` | `file_stat` | 只读 | 开 | 常驻 |
 | `read_document` | `read_document` | 只读（PDF / Office / 文本） | 开 | 按需 |
 | `read_image` | `read_image` | 只读（需支持图片输入的模型） | 开 | 按需 |
-| `file_write` | `write_file` / `edit_file` / `make_dir` / `delete_file` / `move_file` / `copy_file` | 改工作区文件 | 开 | 常驻 |
+| `write_file` | `write_file` | 改工作区文件 | 开 | 常驻 |
+| `edit_file` | `edit_file` | 改工作区文件 | 开 | 常驻 |
+| `make_dir` | `make_dir` | 改工作区文件 | 开 | 常驻 |
+| `delete_file` | `delete_file` | 改工作区文件 | 开 | 常驻 |
+| `move_file` | `move_file` | 改工作区文件 | 开 | 常驻 |
+| `copy_file` | `copy_file` | 改工作区文件 | 开 | 常驻 |
 | `apply_patch` | `apply_patch` | 改工作区文件 | 开 | 常驻 |
 | `batch_edit` | `batch_edit` | 改工作区文件（原子多文件/多处替换） | 开 | 常驻 |
 | `fetch_url` | `fetch_url` | 只读（默认禁内网） | 开 | 常驻 |
@@ -332,19 +341,23 @@ Final Answer: ...
 | `ask_user_question` | `ask_user_question` | 只读（等待用户回答） | 开 | 常驻 |
 | `tools_search` | `tools_search` | 只读 | 开 | 常驻 |
 | `run_command` | `run_command` | 执行本机命令 | 开 | 常驻 |
-| `background_process` | `start_process` / `stop_process` | 执行本机命令 | 开 | 按需 |
-| `process_inspect` | `list_processes` / `read_process_logs` / `wait_process` | 只读 | 开 | 按需 |
-| `git_read` | `git_status` / `git_diff` | 只读 | 开 | 按需 |
+| `start_process` | `start_process` | 执行本机命令 | 开 | 按需 |
+| `stop_process` | `stop_process` | 执行本机命令 | 开 | 按需 |
+| `list_processes` | `list_processes` | 只读 | 开 | 按需 |
+| `read_process_logs` | `read_process_logs` | 只读 | 开 | 按需 |
+| `wait_process` | `wait_process` | 只读 | 开 | 按需 |
+| `git_status` | `git_status` | 只读 | 开 | 按需 |
+| `git_diff` | `git_diff` | 只读 | 开 | 按需 |
 | `git_commit` | `git_commit` | 执行本机命令 | 开 | 按需 |
 | `mock_data` | `mock_lookup` | 读取自定义文本 | 关 | 按需 |
 
 「风险」为写文件或执行命令的条目是否需要审批，由当前权限模式决定，见[第 6 节](#6-审批与安全边界)。
 
-**基础工具**常驻模型上下文（前提是用户启用了对应条目）。**扩展工具**即使默认启用，也不会直接出现在模型 schema 中，需要先调用 `tools_search` 按能力搜索并加载，加载后同一轮即可调用。搜索默认加载 3 个、最多 10 个，可在「设置 → 工具 → 扩展工具搜索」里调整每次加载数量。用户在设置里禁用的扩展工具不会被搜索到，也不会进入模型 schema。
+**基础工具**常驻模型上下文（前提是用户启用了对应条目）。**扩展工具**即使默认启用，也不会直接出现在模型 schema 中，需要先调用 `tools_search` 按能力搜索并加载，加载后同一轮即可调用。搜索默认加载 3 个、最多 10 个，可在「设置 → 扩展 → 工具 → 扩展工具搜索」里调整每次加载数量。用户在设置里禁用的扩展工具不会被搜索到，也不会进入模型 schema。
 
 `tools_search` 本身被禁用时，扩展工具将无法加载。它是常驻的元工具，不参与扩展工具搜索。
 
-`get_weather` 默认关闭，并且没有默认 API Host；需要先填写和风天气凭据与 API Host，再在「设置 → 工具」里启用。
+`get_weather` 默认关闭，并且没有默认 API Host；需要先填写和风天气凭据与 API Host，再在「设置 → 扩展 → 工具」里启用。
 
 ### 5.2 文件与命令工具
 
@@ -400,9 +413,9 @@ Final Answer: ...
 
 ### 5.5 网页抓取、搜索与下载
 
-`fetch_url(url, max_chars=0)` 抓取网页或 HTTP 接口，返回最终 URL、状态、类型、标题与正文。默认拒绝回环与内网地址（防 SSRF）；需要访问本机服务时，在「设置 → 工具 → 网页抓取」里打开「允许内网地址」。重定向会逐跳校验，响应大小有上限，正文按工具输出预算截断。网页内容会标注为「外部数据，不可信」，模型不应执行其中的指令。
+`fetch_url(url, max_chars=0)` 抓取网页或 HTTP 接口，返回最终 URL、状态、类型、标题与正文。默认拒绝回环与内网地址（防 SSRF）；需要访问本机服务时，在「设置 → 扩展 → 工具 → 网页抓取」里打开「允许内网地址」。重定向会逐跳校验，响应大小有上限，正文按工具输出预算截断。网页内容会标注为「外部数据，不可信」，模型不应执行其中的指令。
 
-`web_search(query, max_results=0)` 返回标题、链接与摘要。默认使用免密钥的 Bing，也可以切换到 DuckDuckGo / Tavily / Brave / Serper / SearXNG。搜索结果同样按不可信外部数据标注。
+`web_search(query, max_results=0)` 返回标题、链接与摘要。默认使用免密钥的 Bing，也可以切换到 DuckDuckGo / Tavily / Brave / Serper / SearXNG。搜索结果同样按不可信外部数据标注。当完整中文查询被上游返回为明显只解释首字的字典结果时，保守检测会返回 `search_results_unrelated`，建议切换搜索服务，避免把这类结果当成有效搜索。此保护不改变原查询，也不代表已修复 Bing 的相关性问题。
 
 `download_file(url, path="", overwrite=False)` 把 PDF、图片、压缩包等二进制内容流式下载到工作区，带 SSRF 校验、重定向逐跳校验与大小上限。失败不会留下 `.part` 半成品。它属于写工作区文件，是否弹审批取决于权限模式。
 
@@ -471,7 +484,7 @@ Windows 默认不带 IANA 时区数据库，Python 的 `zoneinfo` 需要 `tzdata
 
 字段形态：`text`（默认，`multiline=True` 变多行）、`number`（保存时校验数字）、`select`（必须给 `options`）、`switch`（存 `"true"` / `"false"`）。`secret=True` 不回显、留空保持原值、可用「清除」真正清空；`required=True` 只在界面标星，是否允许为空由工具自己判断。设 `risk=RISK_WRITE` / `RISK_EXEC` 会把工具纳入审批判定，是否弹窗取决于权限模式。
 
-内置的 `mock_data` 是这条链路的样板：在「设置 → 工具」里启用「模拟数据」并填一段文字，Agent 调用 `mock_lookup` 就会原样拿到它（未填写时返回 `Error: [missing_config]`）。
+内置的 `mock_data` 是这条链路的样板：在「设置 → 扩展 → 工具」里启用「模拟数据」并填一段文字，Agent 调用 `mock_lookup` 就会原样拿到它（未填写时返回 `Error: [missing_config]`）。
 
 新增或删除工具时，同步更新本节表格，避免文档与注册表脱节。
 
@@ -515,7 +528,7 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 | 始终允许 | 本会话内记住「工具 + 对象」（命令原文 / 文件路径 / 目标），之后同类调用自动放行 |
 | 拒绝 | 工具不执行，返回 `Error: [approval_denied]`，模型应换方案而不是重试 |
 
-「始终允许」按会话保存：命令行切换会话时清空；网页端各会话互不影响，切回原会话仍保留，直到在「设置 → 工具」里清除。授权键按操作对象区分：`write_file` 与 `edit_file` 共用同一个文件键；删除、移动、复制、建目录、下载各自独立，避免「允许修改」被扩大成「允许删除」。网页端可以在「设置 → 工具 → 清除本会话『始终允许』」撤销；命令行用 `/approvals` 查看，`/approvals clear` 清除。
+「始终允许」按会话保存：命令行切换会话时清空；网页端各会话互不影响，切回原会话仍保留，直到在「设置 → 扩展 → 工具」里清除。授权键按操作对象区分：`write_file` 与 `edit_file` 共用同一个文件键；删除、移动、复制、建目录、下载各自独立，避免「允许修改」被扩大成「允许删除」。网页端可以在「设置 → 扩展 → 工具 → 清除本会话『始终允许』」撤销；命令行用 `/approvals` 查看，`/approvals clear` 清除。
 
 网页端审批卡会先给一句人话说明，命令类请求再拆成分步说明。原始命令、写入内容前 800 字符、`edit_file` 的 `-旧 / +新` 都放在可折叠区域里，默认展开；命令原文可滚动，上限 8000 字符。危险命令额外显示风险原因。`run_command` / `start_process` 的说明优先取模型自填的 `description`；模型没填时由 `tools/command_brief.py` 离线翻译命令。
 
@@ -682,7 +695,7 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 | `CORS_ORIGINS` | 本地 5173 / 4173 | 允许跨域的前端来源，逗号分隔 |
 | `ALEMBIC_TOKEN` | 未设置 | 设置后 API 需要 Bearer 或 Cookie 令牌 |
 | `ALEMBIC_PORT` | 未设置 | 覆盖监听端口，`0` 由系统分配 |
-| `QWEATHER_KEY_ID` / `QWEATHER_PROJECT_ID` / `QWEATHER_DEVELOPER_ID` / `QWEATHER_PRIVATE_KEY` / `QWEATHER_API_HOST` | 未设置 | 和风天气凭据；网页端建议在「设置 → 工具」填写 |
+| `QWEATHER_KEY_ID` / `QWEATHER_PROJECT_ID` / `QWEATHER_DEVELOPER_ID` / `QWEATHER_PRIVATE_KEY` / `QWEATHER_API_HOST` | 未设置 | 和风天气凭据；网页端建议在「设置 → 扩展 → 工具」填写 |
 
 前端自己的变量写在 `frontend/.env.local`：
 

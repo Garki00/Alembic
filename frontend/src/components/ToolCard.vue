@@ -26,7 +26,13 @@ function placeholderFor(field: ToolFieldInfo): string {
 }
 
 function span2(field: ToolFieldInfo): boolean {
-  return field.kind === 'text' && field.multiline
+  return field.kind === 'radio' || (field.kind === 'text' && field.multiline)
+}
+
+function fieldDisabled(field: ToolFieldInfo): boolean {
+  const rule = field.enabled_when
+  if (!rule) return false
+  return (values[rule.key] ?? '') !== rule.value
 }
 
 function riskLabel(risk: string): string {
@@ -157,18 +163,41 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
       </div>
       <template v-if="tool.fields.length">
         <div class="tool-fields">
-          <label
+          <component
+            :is="field.kind === 'radio' ? 'div' : 'label'"
             v-for="field in tool.fields"
             :key="field.key"
             class="field"
-            :class="{ 'span-2': span2(field) }"
+            :class="{ 'span-2': span2(field), 'field-muted': fieldDisabled(field) }"
           >
             <span>
               {{ field.label }}
               <em v-if="field.required" class="req" title="必填">*</em>
             </span>
 
-            <select v-if="field.kind === 'select'" v-model="values[field.key]">
+            <div v-if="field.kind === 'radio'" class="field-radio" role="radiogroup">
+              <label
+                v-for="option in field.options"
+                :key="option.value"
+                class="radio-option"
+                :class="{ active: values[field.key] === option.value }"
+              >
+                <input
+                  v-model="values[field.key]"
+                  type="radio"
+                  :name="`tool-${tool.name}-${field.key}`"
+                  :value="option.value"
+                  :disabled="fieldDisabled(field)"
+                />
+                <span>{{ option.label }}</span>
+              </label>
+            </div>
+
+            <select
+              v-else-if="field.kind === 'select'"
+              v-model="values[field.key]"
+              :disabled="fieldDisabled(field)"
+            >
               <option value="">（未设置）</option>
               <option
                 v-for="option in field.options"
@@ -184,6 +213,7 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
               type="checkbox"
               class="field-switch"
               :checked="values[field.key] === 'true'"
+              :disabled="fieldDisabled(field)"
               @change="setSwitch(field.key, $event)"
             />
 
@@ -193,6 +223,7 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
               type="number"
               step="any"
               :placeholder="field.placeholder"
+              :disabled="fieldDisabled(field)"
               autocomplete="off"
             />
 
@@ -200,6 +231,7 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
               v-else-if="field.multiline"
               v-model="values[field.key]"
               :placeholder="placeholderFor(field)"
+              :disabled="fieldDisabled(field)"
               autocomplete="off"
             ></textarea>
 
@@ -208,6 +240,7 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
               v-model="values[field.key]"
               :type="field.secret ? 'password' : 'text'"
               :placeholder="placeholderFor(field)"
+              :disabled="fieldDisabled(field)"
               autocomplete="off"
             />
 
@@ -226,7 +259,7 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
                 清除
               </button>
             </span>
-          </label>
+          </component>
         </div>
         <div class="tool-foot">
           <button type="button" class="btn-mini" :disabled="saving" @click="save">
@@ -237,3 +270,33 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
     </div>
   </div>
 </template>
+
+<style scoped>
+.field-muted { opacity: 0.45; }
+.field-muted :disabled { cursor: not-allowed; }
+.field-radio { display: flex; flex-wrap: wrap; gap: 8px; }
+.radio-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.radio-option:hover { border-color: var(--accent-border); color: var(--ink); }
+.radio-option.active { border-color: var(--accent-focus); background: var(--surface-tint); color: var(--emerald); }
+.field-radio input[type='radio'] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  accent-color: var(--emerald);
+}
+</style>

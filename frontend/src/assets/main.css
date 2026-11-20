@@ -1788,6 +1788,7 @@ html.resizing .sidebar-toggle { transition: none; }
 }
 /* 设置窗固定高度：切换标签页或内容多少都不再改变外框尺寸。 */
 .modal-card.settings-card {
+    position: relative;
     height: min(760px, 88vh);
     max-height: 88vh;
 }

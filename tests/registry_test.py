@@ -9,6 +9,7 @@ from tools.context import ToolContext
 from tools.errors import is_error, tool_error, truncate
 from tools.registry import (
     TOOL_SPECS,
+    LEGACY_TOOL_GROUPS,
     build_tools,
     default_enabled_names,
     spec_of,
@@ -20,15 +21,24 @@ class RegistryTest(unittest.TestCase):
     def test_registry_is_single_source(self):
         # 注册表是全量清单，且顺序稳定（设置面板按此渲染）
         self.assertEqual(
-            list(TOOL_SPECS),
+            [name for name, spec in tuple(TOOL_SPECS.items())
+             if spec.source == "builtin" and name not in {"load_skill", "read_skill_resource"}],
             [
                 "get_current_time",
                 "list_timezones",
-                "get_weather",
-                "file_read",
+                "list_dir",
+                "read_file",
+                "search_files",
+                "find_files",
+                "file_stat",
                 "read_document",
                 "read_image",
-                "file_write",
+                "write_file",
+                "edit_file",
+                "make_dir",
+                "delete_file",
+                "move_file",
+                "copy_file",
                 "apply_patch",
                 "batch_edit",
                 "fetch_url",
@@ -38,10 +48,15 @@ class RegistryTest(unittest.TestCase):
                 "ask_user_question",
                 "tools_search",
                 "run_command",
-                "background_process",
-                "process_inspect",
-                "git_read",
+                "start_process",
+                "stop_process",
+                "list_processes",
+                "read_process_logs",
+                "wait_process",
+                "git_status",
+                "git_diff",
                 "git_commit",
+                "get_weather",
                 "mock_data",
             ],
         )
@@ -57,12 +72,13 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(TOOL_SPECS["run_command"].risk, "exec")
 
     def test_specs_declare_risk_and_tools(self):
-        self.assertEqual(TOOL_SPECS["file_read"].risk, "read")
-        self.assertEqual(TOOL_SPECS["file_write"].risk, "write")
-        self.assertEqual(
-            set(TOOL_SPECS["file_read"].tool_names),
-            {"list_dir", "read_file", "search_files", "find_files", "file_stat"},
-        )
+        for group, members in LEGACY_TOOL_GROUPS.items():
+            risk = "write" if group == "file_write" else "exec" if group == "background_process" else "read"
+            self.assertNotIn(group, TOOL_SPECS)
+            for name in members:
+                with self.subTest(tool=name):
+                    self.assertEqual(TOOL_SPECS[name].risk, risk)
+                    self.assertEqual(TOOL_SPECS[name].tool_names, (name,))
         self.assertEqual(TOOL_SPECS["read_document"].risk, "read")
         self.assertEqual(TOOL_SPECS["read_image"].risk, "read")
         self.assertEqual(TOOL_SPECS["apply_patch"].risk, "write")
@@ -70,9 +86,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(TOOL_SPECS["fetch_url"].risk, "read")
         self.assertEqual(TOOL_SPECS["web_search"].risk, "read")
         self.assertEqual(TOOL_SPECS["download_file"].risk, "write")
-        self.assertEqual(TOOL_SPECS["git_read"].risk, "read")
         self.assertEqual(TOOL_SPECS["git_commit"].risk, "exec")
-        self.assertEqual(TOOL_SPECS["background_process"].risk, "exec")
         self.assertFalse(TOOL_SPECS["get_weather"].default_enabled)
         self.assertIsNotNone(spec_of("get_weather"))
         self.assertIsNone(spec_of("nope"))

@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from tools.context import ToolContext
 from tools.registry import (
     FIELD_NUMBER,
+    FIELD_RADIO,
     FIELD_SELECT,
     FIELD_SWITCH,
     TOOL_SPECS,
@@ -53,6 +54,8 @@ class ToolFieldContractTest(unittest.TestCase):
         if field.kind == "switch":
             return "true"
         if field.kind == "select":
+            return field.options[0][0]
+        if field.kind == "radio":
             return field.options[0][0]
         return f"值-{index}"
 
@@ -191,6 +194,7 @@ class FieldKindTest(unittest.TestCase):
             description="验证 select / number / switch。",
             fields=(
                 ToolField("MODE", "模式", kind=FIELD_SELECT, options=(("fast", "快速"), ("full", "完整"))),
+                ToolField("CHOICE", "单选", kind=FIELD_RADIO, options=(("a", "A"), ("b", "B")), default="a"),
                 ToolField("LIMIT", "上限", kind=FIELD_NUMBER),
                 ToolField("ENABLED", "开关", kind=FIELD_SWITCH, default="false"),
                 ToolField("NOTE", "备注", required=True),
@@ -206,6 +210,9 @@ class FieldKindTest(unittest.TestCase):
         fields = {item["key"]: item for item in self.entry()["fields"]}
         self.assertEqual(fields["MODE"]["kind"], "select")
         self.assertEqual([item["value"] for item in fields["MODE"]["options"]], ["fast", "full"])
+        self.assertEqual(fields["CHOICE"]["kind"], "radio")
+        self.assertEqual([item["value"] for item in fields["CHOICE"]["options"]], ["a", "b"])
+        self.assertEqual(fields["CHOICE"]["value"], "a")
         self.assertEqual(fields["LIMIT"]["kind"], "number")
         self.assertEqual(fields["ENABLED"]["kind"], "switch")
         self.assertTrue(fields["NOTE"]["required"])
@@ -216,11 +223,12 @@ class FieldKindTest(unittest.TestCase):
     def test_valid_values_are_saved(self):
         with patch.dict(TOOL_SPECS, {"demo_kinds": self.spec}, clear=False):
             response = self.client.put("/api/tools/demo_kinds", json={
-                "config": {"MODE": "fast", "LIMIT": "3.5", "ENABLED": "1", "NOTE": "hi"},
+                "config": {"MODE": "fast", "CHOICE": "b", "LIMIT": "3.5", "ENABLED": "1", "NOTE": "hi"},
             })
             self.assertEqual(response.status_code, 200)
             stored = self.app.state.tools.state()["demo_kinds"]["config"]
         self.assertEqual(stored["MODE"], "fast")
+        self.assertEqual(stored["CHOICE"], "b")
         self.assertEqual(stored["LIMIT"], "3.5")
         self.assertEqual(stored["ENABLED"], "true")  # 规范化
         self.assertEqual(stored["NOTE"], "hi")
@@ -230,6 +238,12 @@ class FieldKindTest(unittest.TestCase):
             response = self.client.put("/api/tools/demo_kinds", json={"config": {"MODE": "slow"}})
         self.assertEqual(response.status_code, 400)
         self.assertIn("模式", response.json()["detail"])
+
+    def test_invalid_radio_is_rejected(self):
+        with patch.dict(TOOL_SPECS, {"demo_kinds": self.spec}, clear=False):
+            response = self.client.put("/api/tools/demo_kinds", json={"config": {"CHOICE": "c"}})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("单选", response.json()["detail"])
 
     def test_invalid_number_is_rejected(self):
         with patch.dict(TOOL_SPECS, {"demo_kinds": self.spec}, clear=False):

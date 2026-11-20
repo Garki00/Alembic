@@ -25,7 +25,7 @@ from typing import Any, Iterable, Mapping
 from config.settings import settings
 
 # 工具清单与参数定义只有一份，在 tools/registry.py；这里只做持久化与对外输出。
-from tools.registry import TOOL_SPECS, ToolField, ToolSpec
+from tools.registry import LEGACY_TOOL_GROUPS, TOOL_SPECS, ToolField, ToolSpec
 
 __all__ = [
     "AppPaths",
@@ -44,7 +44,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # 工具配置结构版本：
 # v2 起 run_command 默认开启（审批机制上线）；
 # v3 起实时天气默认关闭（需要用户自己的和风天气凭据与 API Host）。
-_TOOLS_SCHEMA_VERSION = 3
+_TOOLS_SCHEMA_VERSION = 4
 
 # 工作区配置结构版本：v2 起从「单个当前目录 + 最近使用」变成命名工作区列表
 _WORKSPACE_SCHEMA_VERSION = 2
@@ -793,10 +793,15 @@ class ToolStore:
     def __init__(self, path: str | Path | None = None) -> None:
         self.file = _JsonFile(path or settings.tools_file)
 
+    def _load(self) -> dict[str, Any]:
+        """Migrate before exposing state, including callers that skip bootstrap."""
+        self.ensure_saved()
+        return self.file.load(self._seed())
+
     def state(self) -> dict[str, dict[str, Any]]:
-        data = self.file.load(self._seed())
+        data = self._load()
         state: dict[str, dict[str, Any]] = {}
-        for name, spec in TOOL_SPECS.items():
+        for name, spec in tuple(TOOL_SPECS.items()):
             entry = data.get("tools", {}).get(name, {})
             stored = entry.get("config", {}) or {}
             config = {}
@@ -817,10 +822,13 @@ class ToolStore:
         config: dict[str, Any] | None = None,
         clear: list[str] | None = None,
     ) -> bool:
-        if name not in TOOL_SPECS:
+        if name in LEGACY_TOOL_GROUPS:
+            return all(self.update(member, enabled=enabled, config=config, clear=clear)
+                       for member in LEGACY_TOOL_GROUPS[name])
+        spec = TOOL_SPECS.get(name)
+        if spec is None:
             return False
-        spec = TOOL_SPECS[name]
-        data = self.file.load(self._seed())
+        data = self._load()
         tools = data.setdefault("tools", {})
         entry = tools.setdefault(name, {"enabled": spec.default_enabled, "config": {}})
         current = entry.setdefault("config", {})
@@ -864,8 +872,11 @@ class ToolStore:
     def public(self) -> list[dict[str, Any]]:
         state = self.state()
         result: list[dict[str, Any]] = []
-        for spec in TOOL_SPECS.values():
-            config = state[spec.name]["config"]
+        for spec in tuple(TOOL_SPECS.values()):
+            entry = state.get(spec.name)
+            if entry is None:
+                continue
+            config = entry["config"]
             fields = []
             for f in spec.fields:
                 raw = config.get(f.key, "")
@@ -886,8 +897,10 @@ class ToolStore:
                     "description": spec.description,
                     "risk": spec.risk,
                     "tool_names": list(spec.tool_names),
+                    "source": spec.source,
+                    "source_id": spec.source_id,
                     "default_enabled": spec.default_enabled,
-                    "enabled": state[spec.name]["enabled"],
+                    "enabled": entry["enabled"],
                     "fields": fields,
                 }
             )
@@ -902,7 +915,23 @@ class ToolStore:
         data = self.file.load(self._seed())
         tools = data.setdefault("tools", {})
         changed = False
-        for name, spec in TOOL_SPECS.items():
+        # Expand old groups before seeding missing entries. Explicit member values win.
+        for group, members in LEGACY_TOOL_GROUPS.items():
+            legacy = tools.pop(group, None)
+            if legacy is None:
+                continue
+            changed = True
+            for member in members:
+                inherited = {**legacy, "config": dict(legacy.get("config") or {})}
+                if member in tools:
+                    explicit = tools[member]
+                    inherited.update(explicit)
+                    inherited["config"] = {
+                        **dict(legacy.get("config") or {}),
+                        **dict(explicit.get("config") or {}),
+                    }
+                tools[member] = inherited
+        for name, spec in tuple(TOOL_SPECS.items()):
             if name in tools:
                 continue
             tools[name] = {
@@ -931,7 +960,7 @@ class ToolStore:
 
     def _seed(self) -> dict[str, Any]:
         tools = {}
-        for name, spec in TOOL_SPECS.items():
+        for name, spec in tuple(TOOL_SPECS.items()):
             tools[name] = {
                 "enabled": spec.default_enabled,
                 "config": {f.key: os.getenv(f.key, f.default) for f in spec.fields},

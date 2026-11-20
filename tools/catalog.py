@@ -41,9 +41,12 @@ BASIC_TOOLS: tuple[str, ...] = (
     # Planning and interaction
     "todo_write",
     "ask_user_question",
+    # Skill discovery and resources
+    "load_skill",
+    "read_skill_resource",
 )
 
-#: Hidden until activated through ``tools_search``.
+#: Historical builtin extended tools; use extended_tool_names() for the live catalog.
 EXTENDED_TOOLS: tuple[str, ...] = (
     # Heavy documents and multimodal parsing
     "read_document",
@@ -137,7 +140,18 @@ def _registry():
     # Imported lazily so registry -> catalog -> registry is not a load cycle.
     from tools.registry import TOOL_SPECS
 
-    return TOOL_SPECS
+    return TOOL_SPECS.copy()
+
+
+def extended_tool_names() -> frozenset[str]:
+    """Concrete tools in the live registry outside the basic and meta sets."""
+    excluded = set(BASIC_TOOLS) | set(META_TOOLS)
+    return frozenset(
+        name
+        for spec in _registry().values()
+        for name in spec.tool_names
+        if name not in excluded
+    )
 
 
 def entry_names_for_tools(names: set[str] | frozenset[str]) -> set[str]:
@@ -152,8 +166,10 @@ def entry_names_for_tools(names: set[str] | frozenset[str]) -> set[str]:
 
 def enabled_tool_names(enabled_entries: set[str] | None) -> frozenset[str]:
     """Concrete tool names available from the user's enabled entries."""
+    from tools.registry import expand_enabled_names
+
     entries = _registry()
-    names = set(entries) if enabled_entries is None else set(enabled_entries)
+    names = set(entries) if enabled_entries is None else expand_enabled_names(enabled_entries)
     result: set[str] = set()
     for entry, spec in entries.items():
         if entry in names:
@@ -170,7 +186,7 @@ def visible_tool_names(
     active = set(activation.snapshot()) if activation is not None else set()
     visible = enabled & set(BASIC_TOOLS)
     visible |= enabled & set(META_TOOLS)
-    visible |= enabled & set(EXTENDED_TOOLS) & active
+    visible |= enabled & extended_tool_names() & active
     return frozenset(visible)
 
 
@@ -229,7 +245,7 @@ def search_extended(
     active = set(active_names)
     entries = _registry()
     matches: list[ToolMatch] = []
-    for name in EXTENDED_TOOLS:
+    for name in extended_tool_names():
         if name not in enabled or name in active:
             continue
         spec = next((item for item in entries.values() if name in item.tool_names), None)
