@@ -36,9 +36,10 @@ class SurfaceTest(unittest.TestCase):
     def test_web_and_cli_hints_differ(self):
         web = build_system_prompt(now=NOW, surface="web", tools=set())
         cli = build_system_prompt(now=NOW, surface="cli", tools=set())
-        self.assertIn("Alembic web chat", web)
+        self.assertIn("replying in the web chat", web)
         self.assertIn("replying in a terminal", cli)
-        self.assertNotIn("Alembic web chat", cli)
+        self.assertNotIn("replying in the web chat", cli)
+        self.assertNotIn("You are Alembic", web)
 
     def test_web_prompt_never_mentions_desktop_or_electron(self):
         prompt = build_system_prompt(now=NOW, surface="web", tools=set()).lower()
@@ -47,7 +48,7 @@ class SurfaceTest(unittest.TestCase):
 
     def test_unknown_surface_falls_back_to_web(self):
         prompt = build_system_prompt(now=NOW, surface="mobile", tools=set())
-        self.assertIn("Alembic web chat", prompt)
+        self.assertIn("replying in the web chat", prompt)
 
 
 class ToolRulesTest(unittest.TestCase):

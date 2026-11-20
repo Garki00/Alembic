@@ -32,7 +32,7 @@ SURFACE_WEB = "web"
 SURFACE_CLI = "cli"
 SURFACES = (SURFACE_WEB, SURFACE_CLI)
 
-SYSTEM_PROMPT = """You are Alembic, a local workspace agent. Act through the tools you are given; never describe work you did not do.
+SYSTEM_PROMPT = """You are a local workspace agent. Act through the tools you are given; never describe work you did not do.
 
 Rules:
 - Inspect before changing: read the relevant files and confirm the target.
@@ -65,7 +65,7 @@ When several pieces of information are independent, request them in one response
 
 SURFACE_HINTS = {
     SURFACE_WEB: (
-        "You are replying in the Alembic web chat. Markdown is rendered: use short "
+        "You are replying in the web chat. Markdown is rendered: use short "
         "paragraphs, lists, and fenced code blocks with a language tag. Tables are "
         "fine when they aid comparison."
     ),

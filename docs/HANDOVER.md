@@ -176,7 +176,7 @@ data/tools.json → ToolStore.configs() → build_runtime(..., tool_configs=)
 - 条目的启用状态与参数都在 `data/tools.json`，结构版本写在 `version` 字段（当前 4）。旧 `file_read`、`file_write`、`background_process`、`process_inspect`、`git_read` 组迁移为 18 个独立条目，保留启用状态与配置；显式成员设置优先。`LEGACY_TOOL_GROUPS` / `expand_enabled_names` 保留旧入口兼容。
 - `extensions/manager.py` 发现原生工具、MCP 和 Skills，并发布到同一工具注册表；扩展配置保存在 `data/extensions.json`。默认目录为数据目录父级的 `extensions/{tools,mcp,skills}`，启动自动创建。
 - 原生插件默认禁用，扫描不导入代码；实际调用属于可信宿主代码。MCP 默认禁用，启用后通过 SDK 连接。两类操作都沿用 `exec` 风险与现有审批，不能视为受限命令沙盒。
-- Skills 以元数据目录、`load_skill`、`read_skill_resource` 渐进读取；`allowed-tools` 不授予权限。刷新用于后续构建的 Agent，不替换运行中一轮的 schema。协议范围、配置 API、安装示例及 OAuth 限制见 [docs/extensions.md](docs/extensions.md)。
+- Skills 以元数据目录、`load_skill`、`read_skill_resource` 渐进读取；`allowed-tools` 不授予权限。刷新用于后续构建的 Agent，不替换运行中一轮的 schema。协议范围、配置 API、安装示例及 OAuth 限制见 [extensions.md](extensions.md)。
 - `ToolStore.public()` 把 `ToolField` 序列化给前端：`kind/options/required/secret/multiline`…
 - 密钥字段**永远不回显**：`value=""` + `value_set` + `hint`（`••••1234` / `12 字符`）。
 - 保存时空字符串表示「保持原值」；要清空必须走 `PUT /api/tools/{name}` 的 `clear: [key]`。
