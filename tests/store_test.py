@@ -40,12 +40,12 @@ class ToolsMigrationTest(unittest.TestCase):
         ToolStore(self.path).ensure_saved()
 
         saved = json.loads(self.path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["version"], 3)
+        self.assertEqual(saved["version"], 4)
         self.assertTrue(saved["tools"]["run_command"]["enabled"])
         self.assertFalse(saved["tools"]["get_weather"]["enabled"])
         self.assertEqual(saved["tools"]["get_weather"]["config"]["QWEATHER_KEY_ID"], "kid-1")
         # 新增条目也要补齐
-        self.assertIn("file_read", saved["tools"])
+        self.assertIn("read_file", saved["tools"])
 
     def test_v2_respects_user_choice(self):
         """After migration, a user who manually disables run_command is not forcibly re-enabled."""
@@ -64,7 +64,7 @@ class ToolsMigrationTest(unittest.TestCase):
         saved = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertTrue(saved["tools"]["run_command"]["enabled"])
         self.assertFalse(saved["tools"]["get_weather"]["enabled"])
-        self.assertEqual(saved["version"], 3)
+        self.assertEqual(saved["version"], 4)
 
 
 class ModelStoreTest(unittest.TestCase):

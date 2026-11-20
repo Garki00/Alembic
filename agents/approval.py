@@ -41,7 +41,7 @@ from langchain_core.messages import ToolMessage
 from tools.command_brief import command_steps, describe_command
 from tools.command_policy import assess_command
 from tools.errors import tool_error
-from tools.registry import RISK_EXEC, RISK_READ, RISK_WRITE, TOOL_SPECS
+from tools.registry import RISK_EXEC, RISK_READ, RISK_WRITE, TOOL_SPECS, expand_enabled_names
 
 logger = logging.getLogger(__name__)
 
@@ -233,9 +233,9 @@ def describe_steps(tool: str, args: Mapping) -> tuple[str, ...]:
 
 def gated_tools(enabled: set[str] | None = None) -> dict[str, str]:
     """Map enabled entries to the concrete tool names needing approval → risk level."""
-    names = set(TOOL_SPECS) if enabled is None else set(enabled)
+    names = set(TOOL_SPECS) if enabled is None else expand_enabled_names(enabled)
     gated: dict[str, str] = {}
-    for name, spec in TOOL_SPECS.items():
+    for name, spec in tuple(TOOL_SPECS.items()):
         if name not in names:
             continue
         if spec.risk not in {RISK_WRITE, RISK_EXEC}:
@@ -247,9 +247,9 @@ def gated_tools(enabled: set[str] | None = None) -> dict[str, str]:
 
 def tool_risks(enabled: set[str] | None = None) -> dict[str, str]:
     """Map every enabled tool name → risk level (read-only mode uses it to tell reads from writes)."""
-    names = set(TOOL_SPECS) if enabled is None else set(enabled)
+    names = set(TOOL_SPECS) if enabled is None else expand_enabled_names(enabled)
     risks: dict[str, str] = {}
-    for name, spec in TOOL_SPECS.items():
+    for name, spec in tuple(TOOL_SPECS.items()):
         if name not in names:
             continue
         for tool_name in spec.tool_names:
@@ -270,13 +270,13 @@ def permission_tools(enabled: set[str] | None, mode: str) -> dict[str, str]:
     mode = (mode or "workspace_write").strip().lower()
     if mode in {"full_access", "read_only"}:
         return {}
-    names = set(TOOL_SPECS) if enabled is None else set(enabled)
+    names = set(TOOL_SPECS) if enabled is None else expand_enabled_names(enabled)
     if mode == "approval_all":
         allowed_risks = {RISK_READ, RISK_WRITE, RISK_EXEC}
     else:
         allowed_risks = {RISK_EXEC}
     gated: dict[str, str] = {}
-    for name, spec in TOOL_SPECS.items():
+    for name, spec in tuple(TOOL_SPECS.items()):
         if name not in names or spec.risk not in allowed_risks:
             continue
         for tool_name in spec.tool_names:

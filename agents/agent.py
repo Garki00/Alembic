@@ -23,7 +23,7 @@ from config.settings import settings
 from prompts.system import SURFACE_CLI, build_system_prompt
 from tools.catalog import (
     BASIC_TOOLS,
-    EXTENDED_TOOLS,
+    extended_tool_names,
     META_TOOLS,
     ToolActivation,
     enabled_tool_names,
@@ -33,7 +33,7 @@ from tools.catalog import (
 from tools.context import SessionRef, ToolContext
 from tools.images import vision_from_model
 from tools.model_view import with_compact_descriptions
-from tools.registry import build_tools, default_enabled_names
+from tools.registry import build_tools
 
 from agents.approval import (
     ApprovalGate,
@@ -72,13 +72,20 @@ def cli_tool_context(
 
 
 def cli_enabled_tools() -> set[str]:
-    """Entries enabled for the CLI: those the registry enables by default."""
-    return default_enabled_names()
+    """Load extensions before reading persisted CLI tool enable states."""
+    from extensions.manager import get_default_manager
+    from config.store import ToolStore
+
+    get_default_manager()
+    return ToolStore().enabled_tools()
 
 
 def build_default_tools(ctx: ToolContext | None = None) -> list:
     """Build tool instances from the CLI configuration."""
-    return build_tools(cli_enabled_tools(), {}, ctx or cli_tool_context())
+    from config.store import ToolStore
+
+    enabled = cli_enabled_tools()
+    return build_tools(enabled, ToolStore().configs(), ctx or cli_tool_context())
 
 
 def build_cli_approval() -> ApprovalGate | None:
@@ -230,7 +237,7 @@ def assemble_agent(
             approval=approval,
             activation=activation if managed else None,
             basic_names=BASIC_TOOLS if managed else (),
-            extended_names=EXTENDED_TOOLS if managed else (),
+            extended_names=extended_tool_names() if managed else (),
             meta_names=META_TOOLS if managed else (),
             max_model_calls=settings.max_model_calls,
             max_tool_calls=settings.max_tool_calls,
@@ -252,7 +259,7 @@ def assemble_agent(
         visibility = ToolVisibilityMiddleware(
             activation=activation,
             basic_names=set(BASIC_TOOLS) & enabled_names,
-            extended_names=set(EXTENDED_TOOLS) & enabled_names,
+            extended_names=extended_tool_names() & enabled_names,
             meta_names=set(META_TOOLS) & enabled_names,
         )
     if middleware is None:

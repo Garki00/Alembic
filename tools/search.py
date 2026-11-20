@@ -21,7 +21,7 @@ import re
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any, Mapping
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 from langchain.tools import tool
@@ -66,6 +66,46 @@ def _number(config: Mapping[str, str], key: str, default: int, *, low: int, high
     return max(low, min(high, value))
 
 
+def _check_reported_query(requested: str, reported: str, source: str) -> None:
+    """Reject explicit query mismatches without inferring how they occurred."""
+    normalize = lambda value: " ".join(value.split())
+    if reported.strip() and normalize(requested) != normalize(reported):
+        raise SearchError(
+            "search_query_changed",
+            f"Search provider {source} reports a different query. "
+            f"Requested: {requested!r}; reported: {reported!r}. "
+            "Results were not used; this does not establish why the query changed.",
+            hint="Retry the full query or use another search provider.",
+        )
+
+
+class _SearchQueryParser(HTMLParser):
+    """Read explicit search inputs, ignoring result text and suggestion links."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.queries: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        values = dict(attrs)
+        if (
+            tag == "input"
+            and values.get("name") == "q"
+            and values.get("type", "text").lower() in {"text", "search"}
+            and values.get("value")
+        ):
+            self.queries.append(values["value"])
+
+
+def _check_page_query(page: str, requested: str) -> None:
+    """Check search fields when present; absent metadata proves nothing."""
+    parser = _SearchQueryParser()
+    parser.feed(page)
+    parser.close()
+    for reported in parser.queries:
+        _check_reported_query(requested, reported, "search field")
+
+
 # ---------------------------------------------------------------------------
 # HTTP helpers (isolated so tests can replace them directly without network access)
 # ---------------------------------------------------------------------------
@@ -79,6 +119,12 @@ def _get_text(
     with httpx.Client(timeout=float(timeout), follow_redirects=True) as client:
         response = client.get(url, params=dict(params or {}), headers=dict(headers or {}))
         response.raise_for_status()
+        requested = (params or {}).get("q")
+        if isinstance(requested, str):
+            # Inspect every redirect destination, including a rewrite later restored.
+            for hop in [*response.history, response]:
+                for reported in parse_qs(urlparse(str(hop.url)).query).get("q", []):
+                    _check_reported_query(requested, reported, "response URL")
         return response.text
 
 
@@ -165,10 +211,11 @@ def _unwrap_ddg_url(href: str) -> str:
         parsed = urlparse(text)
     except ValueError:
         return text
-    if "duckduckgo.com" in (parsed.netloc or "") and parsed.path.startswith("/l/"):
+    if (parsed.hostname or "").lower() in {"duckduckgo.com", "www.duckduckgo.com", "html.duckduckgo.com"} and parsed.path.startswith("/l/"):
         target = parse_qs(parsed.query).get("uddg", [""])[0]
         if target:
-            return unquote(target)
+            # parse_qs already decodes the redirect parameter once.
+            return target
     return text
 
 
@@ -186,6 +233,7 @@ def _search_duckduckgo(query: str, *, timeout: int, limit: int) -> list[dict[str
         },
         timeout=timeout,
     )
+    _check_page_query(html, query)
     parser = _DuckDuckGoParser()
     try:
         parser.feed(html)
@@ -214,6 +262,29 @@ def _strip_tags(fragment: str) -> str:
     return re.sub(r"\s+", " ", unescape(text)).strip()
 
 
+def _check_bing_dictionary_degradation(query: str, results: list[dict[str, str]]) -> None:
+    """Reject the observed first-character dictionary failure, not general low relevance."""
+    first = re.match(r"^[\s\"'“《]*([\u3400-\u9fff]{2,})", query)
+    if first is None or len(results) < 3:
+        return
+    if any(word in query for word in ("字典", "汉字", "拼音", "笔画", "笔顺", "怎么读", "读音", "部首", "字义", "组词")):
+        return
+    terms = re.findall(r"[\u3400-\u9fff]{2,}", query)
+    text = "\n".join(item.get("title", "") + " " + item.get("snippet", "") for item in results)
+    if any(term in text for term in terms):
+        return
+    char = re.escape(first.group(1)[0])
+    title_pattern = re.compile(
+        rf"^[《\"“]?{char}(?:[》\"”])?(?:[（(]汉语汉字[）)]|的(?:意思|解释|拼音)|字(?:的意思|笔画)|[ _-].*(?:汉典|字典))"
+    )
+    if sum(bool(title_pattern.search(item.get("title", ""))) for item in results) >= 2:
+        raise SearchError(
+            "search_results_unrelated",
+            "Bing retained the full query but returned dictionary entries for its first character; these results were discarded.",
+            hint="Retry with another search provider (Tavily, Brave, Serper, or SearXNG). The application did not shorten the query.",
+        )
+
+
 def _search_bing(query: str, *, timeout: int, limit: int) -> list[dict[str, str]]:
     """Bing HTML results page (no API key required)."""
     page = _get_text(
@@ -229,6 +300,7 @@ def _search_bing(query: str, *, timeout: int, limit: int) -> list[dict[str, str]
         },
         timeout=timeout,
     )
+    _check_page_query(page, query)
     blocks = re.findall(r'<li class="b_algo".*?</li>', page, re.S)
     results: list[dict[str, str]] = []
     for block in blocks:
@@ -254,6 +326,7 @@ def _search_bing(query: str, *, timeout: int, limit: int) -> list[dict[str, str]
             "Bing rejected this search (anti-bot verification may have been triggered).",
             hint="Retry later, or switch to Tavily / Brave / Serper / SearXNG under Settings → Tools → Web Search.",
         )
+    _check_bing_dictionary_degradation(query, results)
     return results
 
 

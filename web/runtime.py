@@ -23,7 +23,7 @@ from tools.images import vision_from_model
 from tools.model_view import with_compact_descriptions
 from tools.catalog import (
     BASIC_TOOLS,
-    EXTENDED_TOOLS,
+    extended_tool_names,
     META_TOOLS,
     ToolActivation,
     enabled_tool_names,
@@ -288,7 +288,7 @@ def build_runtime(
             approval=approval,
             activation=active,
             basic_names=BASIC_TOOLS,
-            extended_names=EXTENDED_TOOLS,
+            extended_names=extended_tool_names(),
             meta_names=META_TOOLS,
             max_model_calls=settings.max_model_calls,
             max_tool_calls=settings.max_tool_calls,
@@ -307,7 +307,7 @@ def build_runtime(
         visibility = ToolVisibilityMiddleware(
             activation=active,
             basic_names=set(BASIC_TOOLS) & enabled_names,
-            extended_names=set(EXTENDED_TOOLS) & enabled_names,
+            extended_names=extended_tool_names() & enabled_names,
             meta_names=set(META_TOOLS) & enabled_names,
         )
         model_tools = with_compact_descriptions(tools)

@@ -18,7 +18,12 @@ DEFAULT_DOMAINS = (
     "github.com",
     "codeload.github.com",
     "raw.githubusercontent.com",
+    "gitee.com",
 )
+
+#: Domains shipped before Gitee was added; used to migrate untouched old defaults.
+_LEGACY_DEFAULT_DOMAINS = frozenset(DEFAULT_DOMAINS) - {"gitee.com"}
+_DEFAULT_VERSION = 2
 
 
 class SandboxConfigStore:
@@ -31,7 +36,7 @@ class SandboxConfigStore:
 
     def _default(self) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": _DEFAULT_VERSION,
             "network": "offline",
             "allowed_domains": list(DEFAULT_DOMAINS),
             "allowed_ports": [443, 80],
@@ -43,6 +48,7 @@ class SandboxConfigStore:
             if self._cached is not None:
                 return json.loads(json.dumps(self._cached))
             payload = self._default()
+            migrated = False
             try:
                 data = json.loads(self.path.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
@@ -75,6 +81,18 @@ class SandboxConfigStore:
                     port = payload["proxy_port"]
                 if 1 <= port <= 65535:
                     payload["proxy_port"] = port
+                try:
+                    version = int(data.get("version", 1))
+                except (TypeError, ValueError):
+                    version = 1
+                if version < _DEFAULT_VERSION:
+                    if set(payload["allowed_domains"]) == _LEGACY_DEFAULT_DOMAINS:
+                        payload["allowed_domains"].append("gitee.com")
+                        migrated = True
+                    payload["version"] = _DEFAULT_VERSION
+            if migrated:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             self._cached = payload
             return json.loads(json.dumps(payload))
 

@@ -224,6 +224,13 @@ def build_system_prompt(
     rules = _tool_rules(tool_names)
     if rules:
         parts.append(rules)
+    if tool_names and "load_skill" in tool_names:
+        # This helper reads the existing manager; prompt assembly must not start one.
+        from extensions.manager import skill_catalog
+
+        catalog = skill_catalog()
+        if catalog:
+            parts.append(catalog)
     parts.append(EXECUTION_DISCIPLINE)
     parts.append(TASK_COMPLETION_GUIDANCE)
     if (engine or "").strip().lower() != "react":

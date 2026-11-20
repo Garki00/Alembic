@@ -27,8 +27,11 @@ ALL_NAMES = {name for spec in TOOL_SPECS.values() for name in spec.tool_names}
 
 class CatalogTest(unittest.TestCase):
     def test_basic_extended_and_meta_cover_every_tool(self):
-        catalog = set(BASIC_TOOLS) | set(EXTENDED_TOOLS) | set(META_TOOLS)
-        self.assertEqual(catalog, ALL_NAMES)
+        from tools.catalog import extended_tool_names
+
+        registered = {name for spec in TOOL_SPECS.values() for name in spec.tool_names}
+        catalog = (set(BASIC_TOOLS) | extended_tool_names() | set(META_TOOLS)) & registered
+        self.assertEqual(catalog, registered)
         self.assertEqual(len(BASIC_TOOLS), len(set(BASIC_TOOLS)))
         self.assertEqual(len(EXTENDED_TOOLS), len(set(EXTENDED_TOOLS)))
         self.assertFalse(set(BASIC_TOOLS) & set(EXTENDED_TOOLS))

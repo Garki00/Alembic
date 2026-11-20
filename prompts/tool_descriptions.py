@@ -34,5 +34,7 @@ TOOL_MODEL_DESCRIPTIONS = {
     "git_status": "Show the branch and working tree status.",
     "git_diff": "Show a unified diff for working tree or staged changes.",
     "git_commit": "Stage specified files and commit them.",
+    "load_skill": "Load an enabled skill's instructions before applying it.",
+    "read_skill_resource": "Read a referenced file or list a directory inside an enabled skill.",
     "mock_lookup": "Return configured mock text for testing.",
 }

@@ -142,12 +142,15 @@ class WebWorkspaceTest(unittest.TestCase):
         states = {tool["name"]: tool["enabled"] for tool in data["tools"]}
         # 审批机制上线后，命令执行默认开启（执行前仍需确认）
         self.assertTrue(states["run_command"])
-        self.assertTrue(states["file_read"])
-        self.assertTrue(states["file_write"])
+        from tools.registry import LEGACY_TOOL_GROUPS
+        for group, members in LEGACY_TOOL_GROUPS.items():
+            self.assertNotIn(group, states)
+            for name in members:
+                self.assertTrue(states[name], name)
         # 实时天气需要用户自己的凭据与 API Host，不再默认开启
         self.assertFalse(states["get_weather"])
         for name in ("read_document", "fetch_url", "todo_write", "ask_user_question",
-                     "background_process", "process_inspect"):
+                     "start_process", "stop_process", "list_processes", "read_process_logs", "wait_process"):
             self.assertTrue(states[name], name)
 
     def create_provider(self) -> dict:
@@ -182,9 +185,10 @@ class WebWorkspaceTest(unittest.TestCase):
         self.client.get("/api/bootstrap")
 
         saved = json.loads((self.tmp / "data" / "tools.json").read_text(encoding="utf-8"))
-        self.assertIn("file_read", saved["tools"])
+        self.assertIn("read_file", saved["tools"])
+        self.assertNotIn("file_read", saved["tools"])
         self.assertTrue(saved["tools"]["run_command"]["enabled"])
-        self.assertEqual(saved.get("version"), 3)
+        self.assertEqual(saved.get("version"), 4)
         self.assertEqual(saved["tools"]["get_weather"]["config"]["QWEATHER_PROJECT_ID"], "keep-me")
 
     # ---- 供应商与模型 ----

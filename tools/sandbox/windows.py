@@ -414,6 +414,12 @@ class WindowsSandbox:
         entries below the user's home are granted, and explicit credential
         denies are applied afterwards.
         """
+        from tools.runtimes import runtime_paths, runtime_root
+
+        if runtime_paths():
+            bundle = runtime_root().resolve()
+            self._grant_traverse(bundle, user)
+            self._icacls(bundle, "/grant", f"{user}:(OI)(CI)(RX)")
         home = Path.home().resolve()
         for entry in os.environ.get("PATH", "").split(os.pathsep):
             if not entry:

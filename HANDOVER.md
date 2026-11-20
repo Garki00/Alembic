@@ -173,7 +173,10 @@ data/tools.json → ToolStore.configs() → build_runtime(..., tool_configs=)
 → build_tools(enabled, configs, ctx) → spec.builder(config, ctx) → LangChain tools
 ```
 
-- 条目的启用状态与参数都在 `data/tools.json`，结构版本写在 `version` 字段（当前 3）。
+- 条目的启用状态与参数都在 `data/tools.json`，结构版本写在 `version` 字段（当前 4）。旧 `file_read`、`file_write`、`background_process`、`process_inspect`、`git_read` 组迁移为 18 个独立条目，保留启用状态与配置；显式成员设置优先。`LEGACY_TOOL_GROUPS` / `expand_enabled_names` 保留旧入口兼容。
+- `extensions/manager.py` 发现原生工具、MCP 和 Skills，并发布到同一工具注册表；扩展配置保存在 `data/extensions.json`。默认目录为数据目录父级的 `extensions/{tools,mcp,skills}`，启动自动创建。
+- 原生插件默认禁用，扫描不导入代码；实际调用属于可信宿主代码。MCP 默认禁用，启用后通过 SDK 连接。两类操作都沿用 `exec` 风险与现有审批，不能视为受限命令沙盒。
+- Skills 以元数据目录、`load_skill`、`read_skill_resource` 渐进读取；`allowed-tools` 不授予权限。刷新用于后续构建的 Agent，不替换运行中一轮的 schema。协议范围、配置 API、安装示例及 OAuth 限制见 [docs/extensions.md](docs/extensions.md)。
 - `ToolStore.public()` 把 `ToolField` 序列化给前端：`kind/options/required/secret/multiline`…
 - 密钥字段**永远不回显**：`value=""` + `value_set` + `hint`（`••••1234` / `12 字符`）。
 - 保存时空字符串表示「保持原值」；要清空必须走 `PUT /api/tools/{name}` 的 `clear: [key]`。
@@ -360,7 +363,7 @@ App.vue onMounted
   「再次点击删除」；成功删除不再弹顶部 Toast。
 - `FileViewer` 支持 PNG / JPEG / GIF / WebP / SVG 图片预览（后端返回 data URL，
   单张上限 8 MB）；其他二进制仍提示不支持。
-- 设置 → 工具支持网格 / 列表切换；网格卡片点击展开参数，条目名与包含工具分开显示。
+- 设置 → 扩展按「工具 / MCP / Skill」切换，按内置 / 插件分组；工具保留网格 / 列表切换与独立开关，支持刷新及安装目录编辑。
 
 ### 4.6 命令沙盒
 
@@ -642,9 +645,13 @@ run_command / start_process
     网格 / 列表视图；左右侧栏开关与布局过渡、搜索展开动画、空目录提示对齐、
     图标 hover 与确认弹窗样式统一。**
 
+## 当前扩展与运行时验证
+
+本轮完整后端测试运行 631 项，结果通过（其中 2 项因宿主无法创建符号链接而跳过）；前端 `vue-tsc` 类型检查及 Vite 生产构建通过。实际原生命令沙盒在不依赖宿主 PATH 的条件下验证了内置 Node、Python、venv/pip 和 pnpm。真实 PyInstaller 打包及冻结产物冒烟检查通过：在隔离的 `ALEMBIC_HOME` 中启动后，`/api/extensions` 返回已启用的内置 `code-review`、正确的打包资源路径及空错误列表。MCP 已验证本地 SDK 传输，不将其视为外部身份提供商 OAuth 授权的端到端验证。
+
 ## 10. 给接手者的建议顺序
 
-1. 跑一遍后端测试，确认 467 全绿；再 `cd frontend && npm run build`；
+1. 跑一遍后端测试并检查失败与跳过原因（本轮基线见上），再 `cd frontend && npm run build`；
 2. 读 `web/runtime.py`（默认 `create_agent`）、`agents/react.py`（可选文本 ReAct）、
    `tools/registry.py`、`web/server.py`、`agents/context.py`，够理解后端 85%；
 3. 读 `frontend/src/stores/chat.ts`、`frontend/src/api/chat.ts`、`frontend/src/App.vue`，

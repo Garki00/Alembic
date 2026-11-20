@@ -71,6 +71,31 @@ from web.runtime import build_runtime
 # 前后端分离后，后端只提供 /api；页面由 frontend/ 的 Vite 应用提供。
 
 
+def _pick_directory(initial: str, title: str) -> dict:
+    """Open the system folder picker and return the chosen directory."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:  # tkinter is optional in some Python builds
+        raise HTTPException(501, "当前环境无法打开系统文件选择器") from exc
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        try:
+            selected = filedialog.askdirectory(
+                initialdir=initial or None,
+                mustexist=True,
+                title=title,
+            )
+        finally:
+            root.destroy()
+    except Exception as exc:
+        raise HTTPException(500, f"无法打开系统文件选择器：{exc}") from exc
+    path = str(selected or "").strip()
+    return {"path": path, "cancelled": not bool(path)}
+
+
 # ---------------------------------------------------------------------------
 # 请求体
 # ---------------------------------------------------------------------------
@@ -395,6 +420,8 @@ def create_app(
     paths = AppPaths(data_dir)
     models = ModelStore(paths.models_file)
     tools = ToolStore(paths.tools_file)
+    from extensions.manager import ExtensionManager
+    extensions = ExtensionManager(paths.data_dir)
     workspaces = WorkspaceStore(paths.workspace_file, default=settings.default_workspace)
     preferences = PreferencesStore(paths.preferences_file)
     sessions = SessionStore(memory_dir or settings.memory_dir)
@@ -465,6 +492,54 @@ def create_app(
         if legacy_path and legacy_path.strip():
             return "", legacy_path.strip()
         raise HTTPException(400, "还没有工作区，请先在左侧添加一个")
+
+    app.state.extensions = extensions
+
+    @app.on_event("shutdown")
+    def close_extensions():
+        extensions.close()
+
+    @app.get("/api/extensions")
+    def extensions_get():
+        return extensions.snapshot()
+
+    @app.post("/api/extensions/refresh")
+    def extensions_refresh():
+        return extensions.refresh()
+
+    @app.put("/api/extensions/directories")
+    def extensions_directories(payload: dict):
+        try:
+            return extensions.set_directories(payload)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.put("/api/extensions/mcp/{identity}")
+    def extensions_mcp_put(identity: str, payload: dict):
+        try:
+            return extensions.put_server(identity, payload)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.delete("/api/extensions/mcp/{identity}")
+    def extensions_mcp_delete(identity: str):
+        try:
+            return extensions.delete_server(identity)
+        except KeyError as exc:
+            raise HTTPException(404, "MCP server not found") from exc
+
+    @app.patch("/api/extensions/skills/{identity}")
+    def extensions_skill_patch(identity: str, payload: dict):
+        if not isinstance(payload.get("enabled"), bool):
+            raise HTTPException(400, "enabled must be a boolean")
+        try:
+            return extensions.set_skill(identity, payload["enabled"])
+        except KeyError as exc:
+            raise HTTPException(404, "Skill not found") from exc
+
+    @app.post("/api/extensions/pick-directory")
+    def extensions_pick_directory():
+        return _pick_directory("", "选择插件目录")
 
     # ---- API 根与健康检查 ----
     @app.get("/")
@@ -796,27 +871,7 @@ def create_app(
     @app.post("/api/workspaces/pick")
     def pick_workspace_folder(payload: FolderPickPayload):
         """Open the system folder picker and return the chosen directory."""
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-        except Exception as exc:  # tkinter is optional in some Python builds
-            raise HTTPException(501, "当前环境无法打开系统文件选择器") from exc
-        try:
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            try:
-                selected = filedialog.askdirectory(
-                    initialdir=payload.initial or None,
-                    mustexist=True,
-                    title="选择工作区目录",
-                )
-            finally:
-                root.destroy()
-        except Exception as exc:
-            raise HTTPException(500, f"无法打开系统文件选择器：{exc}") from exc
-        path = str(selected or "").strip()
-        return {"path": path, "cancelled": not bool(path)}
+        return _pick_directory(payload.initial, "选择工作区目录")
 
     # ---- 工作区文件浏览（右侧边栏） ----
     _SKIP_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".tmp", ".idea", ".alembic"}
