@@ -66,9 +66,15 @@ from web.approvals import ApprovalBroker, ApprovalRegistry
 from web.auth import install_auth
 from web.process_events import ProcessEventHub
 from web.questions import QuestionBroker, QuestionRegistry
-from web.runtime import build_runtime
 
 # 前后端分离后，后端只提供 /api；页面由 frontend/ 的 Vite 应用提供。
+
+
+def _default_runtime_factory(*args, **kwargs):
+    """Import the LangChain runtime lazily so backend startup stays light."""
+    from web.runtime import build_runtime
+
+    return build_runtime(*args, **kwargs)
 
 
 def _pick_directory(initial: str, title: str) -> dict:
@@ -414,9 +420,11 @@ def _attachment_kind(name: str) -> str:
 def create_app(
     data_dir: str | Path | None = None,
     memory_dir: str | Path | None = None,
-    runtime_factory=build_runtime,
+    runtime_factory=None,
     auth_token: str | None = None,
 ) -> FastAPI:
+    if runtime_factory is None:
+        runtime_factory = _default_runtime_factory
     paths = AppPaths(data_dir)
     models = ModelStore(paths.models_file)
     tools = ToolStore(paths.tools_file)

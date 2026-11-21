@@ -14,7 +14,7 @@ The backend is built with Python, FastAPI, and LangChain; the frontend uses Vue,
 - Persist conversations, compact context, track tasks, stream output, and receive background-task updates.
 - Review tool approvals and use read-only mode, command policies, and credential-path protections.
 - Extend the workspace with tool plugins, MCP servers, and Agent Skills.
-- Use the browser workspace or command-line entry point.
+- Use the browser workspace, command-line entry point, or the Windows desktop installer.
 
 ## Quick Start
 
@@ -54,6 +54,29 @@ npm run dev
 ```
 
 Sandbox initialization can be skipped when command tools are not needed. To run commands, initialize the sandbox and review the approval and network policies first.
+
+### Desktop Installer
+
+```powershell
+# One-time build dependencies
+uv sync
+cd frontend;  npm install; cd ..
+cd desktop;   npm install; cd ..
+
+# Build the NSIS installer
+powershell -ExecutionPolicy Bypass -File packaging\build-release.ps1
+
+# Developer build (the artifact/exe names get a 开发版 suffix; the UI stays unlabeled)
+powershell -ExecutionPolicy Bypass -File packaging\build-release.ps1 -Dev
+```
+
+The artifact is `build\release\out\ALEMBIC-Setup-<version>-x64.exe`. The installer is
+native NSIS and uses the same paper/emerald visual language as the web UI. Its first
+page contains only the two shortcut options; the install contents list the app, bundled
+runtimes, and Windows command sandbox, which are always installed. Both the installer
+and the app default to administrator elevation. See
+[Desktop packaging and release](docs/packaging.md) for versioning, the install flow,
+developer naming, extension points, and code signing.
 
 ### Command Line
 

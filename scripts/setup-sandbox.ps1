@@ -1,4 +1,4 @@
-# scripts/setup-sandbox.ps1
+﻿# scripts/setup-sandbox.ps1
 # 一次性管理员初始化：创建两个专用低权限用户、防火墙规则和 App 可读的凭据文件。
 # 日常运行不需要管理员；应用本身不会以管理员身份运行。
 param(

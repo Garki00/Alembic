@@ -3,14 +3,19 @@
   "productName": "ALEMBIC",
   "version": "0.1.0",
   "private": true,
-  "description": "ALEMBIC 桌面外壳（Electron + Python sidecar）",
+  "description": "ALEMBIC desktop shell (Electron + Python sidecar + Vue frontend)",
+  "author": "Garki",
+  "license": "MIT",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "start:frozen": "electron . --frozen",
+    "start:uninstall": "electron . --uninstall",
     "smoke": "electron . --smoke",
     "build:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File ../packaging/build.ps1",
     "build:app": "electron-builder --dir --win",
+    "prebuild:nsis": "powershell -NoProfile -ExecutionPolicy Bypass -File ../packaging/tools/make-nsis-assets.ps1 -OutputDir build/nsis",
+    "build:nsis": "electron-builder --win nsis --prepackaged dist/win-unpacked",
     "build": "npm run build:backend && npm run build:app"
   },
   "devDependencies": {
@@ -20,24 +25,84 @@
   "build": {
     "appId": "com.garki.alembic",
     "productName": "ALEMBIC",
+    "copyright": "Copyright © 2026 Garki",
+    "directories": {
+      "output": "dist"
+    },
     "files": [
       "main.js",
+      "preload.js",
+      "frontend-server.js",
+      "uninstall.html",
+      "uninstall.css",
+      "uninstall.js",
+      "uninstall-preload.js",
       "package.json"
     ],
     "extraResources": [
       {
         "from": "../dist/alembic-backend",
         "to": "backend"
+      },
+      {
+        "from": "../frontend/dist",
+        "to": "frontend"
+      },
+      {
+        "from": "../scripts/setup-sandbox.ps1",
+        "to": "install/setup-sandbox.ps1"
+      },
+      {
+        "from": "../packaging/install/uninstall-worker.ps1",
+        "to": "install/uninstall-worker.ps1"
+      },
+      {
+        "from": "../packaging/install/nsis-postinstall.ps1",
+        "to": "install/nsis-postinstall.ps1"
       }
     ],
     "extraFiles": [
       {
         "from": "launcher.cmd",
-        "to": "启动 ALEMBIC.cmd"
+        "to": "启动 ALEMBIC（兼容模式）.cmd"
+      },
+      {
+        "from": "../LICENSE",
+        "to": "LICENSE"
       }
     ],
     "win": {
-      "target": "dir"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "executableName": "ALEMBIC",
+      "requestedExecutionLevel": "requireAdministrator",
+      "icon": "../packaging/assets/alembic.svg"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": false,
+      "runAfterFinish": false,
+      "deleteAppDataOnUninstall": false,
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "language": "2052",
+      "multiLanguageInstaller": false,
+      "include": "../packaging/nsis/installer.nsh",
+      "installerHeader": "nsis/installerHeader.bmp",
+      "installerSidebar": "nsis/installerSidebar.bmp",
+      "uninstallerSidebar": "nsis/uninstallerSidebar.bmp",
+      "artifactName": "ALEMBIC-Setup-${version}-${arch}.${ext}"
     }
   }
 }

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { api } from '../api/client'
+import { ApiError, api } from '../api/client'
 import type {
   ActiveModelInfo,
   BootstrapData,
@@ -88,7 +88,22 @@ export const useWorkspaceStore = defineStore('workspace', {
 
   actions: {
     async bootstrap(): Promise<void> {
-      const data = await api<BootstrapData>('/api/bootstrap')
+      // The window opens before the Python sidecar finishes starting. Retry only
+      // the gateway/network failures that mean "backend not ready yet".
+      const deadline = Date.now() + 60_000
+      let data: BootstrapData
+      for (;;) {
+        try {
+          data = await api<BootstrapData>('/api/bootstrap')
+          break
+        } catch (error) {
+          const retryable = error instanceof ApiError
+            ? [502, 503, 504].includes(error.status)
+            : error instanceof TypeError
+          if (!retryable || Date.now() > deadline) throw error
+          await new Promise((resolve) => window.setTimeout(resolve, 300))
+        }
+      }
       this.providers = data.providers || []
       this.activeProviderId = data.active_provider_id || ''
       this.activeModelId = data.active_model_id || ''
