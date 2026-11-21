@@ -1,4 +1,4 @@
-# packaging/build.ps1
+﻿# packaging/build.ps1
 # 构建后端可执行文件：dist/alembic-backend/alembic-backend.exe
 #
 # 注意：前后端分离后，这个后端只提供 /api，不再携带网页资源。

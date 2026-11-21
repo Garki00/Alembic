@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file:; style-src 'self' file:; script-src 'self' file:; img-src 'self' file: data:">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>卸载 ALEMBIC</title>
+  <link rel="stylesheet" href="uninstall.css">
+</head>
+<body>
+<div class="window">
+  <header class="titlebar">
+    <div class="titlebar-brand">
+      <svg class="sun" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="4.2"></circle>
+        <path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.3 5.3l1.9 1.9M16.8 16.8l1.9 1.9M18.7 5.3l-1.9 1.9M7.2 16.8l-1.9 1.9"></path>
+      </svg>
+      <span>ALEMBIC</span>
+    </div>
+    <button type="button" class="titlebar-close" id="btn-close" aria-label="关闭">×</button>
+  </header>
+
+  <main class="content">
+    <section class="view" id="view-loading">
+      <div class="loading-dot"></div>
+      <p class="muted">正在读取安装信息…</p>
+    </section>
+
+    <section class="view" id="view-uninstall" hidden>
+      <div class="hero">
+        <p class="eyebrow">卸载</p>
+        <h1>卸载 ALEMBIC</h1>
+        <p class="lead">将从这台电脑移除应用文件。你的工作区文件不会被删除。</p>
+      </div>
+
+      <div class="info-card">
+        <div class="info-row">
+          <span class="info-label">版本</span>
+          <span class="info-value" id="info-version">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">安装位置</span>
+          <span class="info-value mono" id="info-path">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">安装时间</span>
+          <span class="info-value" id="info-time">—</span>
+        </div>
+      </div>
+
+      <div class="choice-list">
+        <label class="choice">
+          <input type="checkbox" id="chk-sandbox">
+          <span class="choice-mark" aria-hidden="true"></span>
+          <span class="choice-body">
+            <span class="choice-title">删除命令沙盒账户与防火墙规则</span>
+            <span class="choice-hint" id="sandbox-hint">移除安装时创建的本地账户 AlembicSbxOffline / AlembicSbxOnline。</span>
+          </span>
+        </label>
+
+        <label class="choice">
+          <input type="checkbox" id="chk-data">
+          <span class="choice-mark" aria-hidden="true"></span>
+          <span class="choice-body">
+            <span class="choice-title">删除用户数据</span>
+            <span class="choice-hint">包括模型配置、会话历史、任务清单、日志和沙盒凭据。工作区目录本身不会被删除。</span>
+          </span>
+        </label>
+      </div>
+
+      <p class="warning" id="warning" hidden></p>
+
+      <div class="actions">
+        <label class="confirm">
+          <input type="checkbox" id="chk-confirm">
+          <span class="choice-mark" aria-hidden="true"></span>
+          <span>我确认要卸载 ALEMBIC</span>
+        </label>
+        <div class="action-buttons">
+          <button type="button" class="btn btn-ghost" id="btn-cancel">取消</button>
+          <button type="button" class="btn btn-danger" id="btn-uninstall" disabled>卸载</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-progress" hidden>
+      <div class="hero">
+        <p class="eyebrow">正在卸载</p>
+        <h1>正在移除 ALEMBIC</h1>
+        <p class="lead" id="progress-lead">请稍候，不要关闭窗口。</p>
+      </div>
+
+      <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+      <ol class="step-list" id="step-list"></ol>
+
+      <div class="log-box">
+        <button type="button" class="log-toggle" id="btn-log">显示详细日志</button>
+        <pre class="log" id="log" hidden></pre>
+      </div>
+    </section>
+
+    <section class="view view-center" id="view-done" hidden>
+      <div class="result-mark result-ok">✓</div>
+      <h1>卸载完成</h1>
+      <p class="lead" id="done-message">安装目录会在程序退出后自动删除。</p>
+      <div class="actions actions-center">
+        <button type="button" class="btn btn-primary" id="btn-done">关闭</button>
+      </div>
+    </section>
+
+    <section class="view view-center" id="view-error" hidden>
+      <div class="result-mark result-error">!</div>
+      <h1>卸载未完成</h1>
+      <p class="lead" id="error-message">发生未知错误。</p>
+      <pre class="log" id="error-log" hidden></pre>
+      <div class="actions actions-center">
+        <button type="button" class="btn btn-ghost" id="btn-open-log">打开日志</button>
+        <button type="button" class="btn btn-primary" id="btn-error-close">关闭</button>
+      </div>
+    </section>
+  </main>
+</div>
+<script src="uninstall.js"></script>
+</body>
+</html>

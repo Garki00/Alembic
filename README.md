@@ -14,7 +14,7 @@ ALEMBIC 是一个本地智能体工作区。它把模型、工具、审批、工
 - 会话持久化、上下文压缩、任务清单、流式输出和后台任务通知。
 - 工具审批、只读模式、命令策略和凭据路径保护。
 - 支持工具插件、MCP 服务器与 Agent Skills。
-- 提供浏览器工作区和命令行入口。
+- 提供浏览器工作区、命令行入口和 Windows 桌面安装包。
 
 ## 快速开始
 
@@ -54,6 +54,27 @@ npm run dev
 ```
 
 不使用命令工具时，可以跳过沙盒初始化；需要执行命令时，应完成初始化并在设置中确认审批与网络策略。
+
+### 桌面安装包
+
+```powershell
+# 一次性安装构建依赖
+uv sync
+cd frontend;  npm install; cd ..
+cd desktop;   npm install; cd ..
+
+# 构建 NSIS 安装包
+powershell -ExecutionPolicy Bypass -File packaging\build-release.ps1
+
+# 开发版（exe/安装包名称带“开发版”，页面不显示版本通道）
+powershell -ExecutionPolicy Bypass -File packaging\build-release.ps1 -Dev
+```
+
+产物在 `build\release\out\ALEMBIC-Setup-<version>-x64.exe`。安装器是原生 NSIS，
+窗口无原生边框，选项页自绘纸色标题栏；第一页显示安装位置、两个快捷方式选项和
+安装内容，运行时与 Windows 命令沙盒始终安装。安装器和主程序都默认请求管理员权限。
+版本号、安装流程、开发版命名和代码签名说明见
+[桌面安装包与发布流程](docs/packaging.md)。
 
 ### 命令行
 

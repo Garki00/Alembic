@@ -3,30 +3,44 @@
 //
 // 关键点：
 // - 后端用 ALEMBIC_PORT=0 由系统分配端口，避免和别的服务撞车；
-// - 每次启动生成随机 token，窗口用 /?token=... 首开，服务端换成 HttpOnly Cookie；
+// - 每次启动生成随机 token，窗口用 /?token=... 首开；本地静态服务器设置
+//   HttpOnly Cookie，前端同时从 URL 读取 token 作为 Bearer；
 // - 窗口/应用退出时连同子进程树一起结束，不留孤儿进程。
+
+const fs = require("node:fs");
+const http = require("node:http");
+const os = require("node:os");
+const path = require("node:path");
+
+// 卸载模式：安装目录里的「ALEMBIC-Uninstall.exe」是主程序的副本，靠文件名或
+// --uninstall 参数进入卸载界面。此时不启动后端，也不使用正常的 userData。
+const IS_UNINSTALL =
+  process.argv.includes("--uninstall") ||
+  /uninstall/i.test(path.basename(process.execPath)) ||
+  /^卸载/i.test(path.basename(process.execPath));
 
 // 最早的落盘标记：不依赖 electron，用来判断「进程到底有没有跑到 JS」。
 // 如果启动后连 boot.log 都没有，说明崩在 Chromium 初始化阶段。
 try {
-  const bootDir = require("node:path").join(
-    process.env.APPDATA || require("node:os").homedir(),
-    "Alembic",
-    "runtime",
-  );
-  require("node:fs").mkdirSync(bootDir, { recursive: true });
-  require("node:fs").appendFileSync(
-    require("node:path").join(bootDir, "boot.log"),
+  const bootDir = IS_UNINSTALL
+    ? path.join(process.env.TEMP || os.tmpdir(), `alembic-uninstall-${process.pid}`)
+    : path.join(process.env.APPDATA || os.homedir(), "Alembic", "runtime");
+  fs.mkdirSync(bootDir, { recursive: true });
+  fs.appendFileSync(
+    path.join(bootDir, "boot.log"),
     `[${new Date().toISOString()}] boot argv=${process.argv.slice(1).join(" ")}\n`,
   );
 } catch (_) { /* 记不下来也不能影响启动 */ }
 
-const { app, BrowserWindow, Menu, shell } = require("electron");
+const { app, BrowserWindow, Menu, shell, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
-const fs = require("node:fs");
-const http = require("node:http");
-const path = require("node:path");
+const { startFrontendServer } = require("./frontend-server");
+
+// The window is a local renderer only. Disabling the GPU before app ready avoids
+// the Chromium GPU child-process launch attempt on machines where it is denied.
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-gpu-compositing");
 
 // Chromium 需要在 userData 目录里建单实例锁、缓存等文件。目录不可写时
 // requestSingleInstanceLock() 会返回 false（表现为「双击后什么都没有」），
@@ -61,7 +75,11 @@ function pickUserData() {
   return preferred;
 }
 
-const USER_DATA = pickUserData();
+// 卸载器使用独立的临时 profile：避免和正在运行的主程序抢单实例锁/缓存，
+// 也避免卸载用户数据时把运行中的 profile 目录删掉。
+const USER_DATA = IS_UNINSTALL
+  ? path.join(process.env.TEMP || os.tmpdir(), `alembic-uninstall-${process.pid}`)
+  : pickUserData();
 app.setPath("userData", USER_DATA);
 
 // 最早的落盘标记：不依赖 app ready，用来判断「进程到底有没有跑到 JS」。
@@ -79,12 +97,15 @@ const IS_SMOKE = process.env.ALEMBIC_SMOKE === "1" || process.argv.includes("--s
 const START_TIMEOUT_MS = 90000;
 
 let backend = null;
+let frontendServer = null;
 let win = null;
 let quitting = false;
 let backendLog = [];
+let uninstallBusy = false;
+let uninstallLogPath = "";
 
-// 对话界面不需要 GPU 加速；关掉能避开不少显卡驱动导致的启动崩溃
-app.disableHardwareAcceleration();
+// GPU 加速；
+// app.disableHardwareAcceleration();
 
 // 启动日志：GUI 进程的 stdout 在 Windows 上经常接不到控制台，落文件更可靠。
 // 打包后默认写 userData/runtime/desktop.log，方便用户反馈问题时直接给文件。
@@ -175,6 +196,35 @@ function resolveBackend() {
     cwd: PROJECT_ROOT,
     label: "源码后端",
   };
+}
+
+/**
+ * 前端构建产物目录。
+ *
+ * 优先级：
+ * 1. ALEMBIC_FRONTEND 显式指定；
+ * 2. 打包后的应用：resources/frontend（electron-builder 的 extraResources）；
+ * 3. 开发：仓库 frontend/dist（先运行 cd frontend && npm run build）。
+ */
+function resolveFrontendRoot() {
+  const override = process.env.ALEMBIC_FRONTEND;
+  if (override) {
+    const dir = path.resolve(override);
+    if (fs.existsSync(path.join(dir, "index.html"))) return dir;
+    throw new Error(`ALEMBIC_FRONTEND 指向的目录缺少 index.html：${dir}`);
+  }
+
+  if (app.isPackaged) {
+    const packaged = path.join(process.resourcesPath, "frontend");
+    if (fs.existsSync(path.join(packaged, "index.html"))) return packaged;
+    throw new Error(`安装包缺少前端资源：${packaged}`);
+  }
+
+  const built = path.join(PROJECT_ROOT, "frontend", "dist");
+  if (fs.existsSync(path.join(built, "index.html"))) return built;
+  throw new Error(
+    `还没有构建前端：${built}\n先运行：cd frontend && npm install && npm run build`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -393,14 +443,17 @@ function maybeRelaunchWithoutSandbox(details) {
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 1320,
-    height: 880,
-    minWidth: 980,
+    width: 1360,
+    height: 900,
+    minWidth: 1080,
     minHeight: 640,
+    frame: false,
+    thickFrame: true,
     backgroundColor: "#faf8f1",
     title: "ALEMBIC",
     show: false,
     webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -411,6 +464,13 @@ function createWindow() {
     log("ready-to-show");
     if (!IS_SMOKE) win.show();
   });
+
+  const notifyMaximized = () => {
+    if (!win || win.isDestroyed()) return;
+    win.webContents.send("window:maximized", win.isMaximized());
+  };
+  win.on("maximize", notifyMaximized);
+  win.on("unmaximize", notifyMaximized);
 
   win.webContents.on("render-process-gone", (_event, details) => {
     log(`渲染进程退出：${JSON.stringify(details)}`);
@@ -439,8 +499,8 @@ function createWindow() {
 
     let report = "";
     try {
-      // 302 换 cookie 之后才是真正的页面，等一小段再自检
-      await new Promise((resolve) => setTimeout(resolve, 900));
+      // 页面会先出现，后端就绪后前端才填充数据；留出启动重试时间。
+      await new Promise((resolve) => setTimeout(resolve, 4000));
       // 顺手验证一次真实渲染：工作区、对话、工具卡片都应出现
       report = await win.webContents.executeJavaScript(`(() => {
         const workspaces = document.querySelectorAll(".ws-group").length;
@@ -496,9 +556,348 @@ function showError(error) {
 }
 
 // ---------------------------------------------------------------------------
+// 卸载界面（安装目录里的 ALEMBIC-Uninstall.exe，或 ALEMBIC.exe --uninstall）
+// ---------------------------------------------------------------------------
+
+function psQuote(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+// 提权脚本和进度文件必须放在只有当前用户（和 SYSTEM/Administrators）能写的位置。
+// C:\Users\Public 对 Interactive 用户可写，把将要提权执行的 .ps1 放进去会留下
+// 被其他本地用户替换的 TOCTOU 风险，所以统一用用户自己的 %TEMP%。
+function makeWorkDir(prefix) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function readJsonFile(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (_) {
+    return null;
+  }
+}
+
+function installReceipt() {
+  // ALEMBIC_UNINSTALL_DIR 只用于开发时用假 install.json 调试卸载界面。
+  const installDir = process.env.ALEMBIC_UNINSTALL_DIR
+    ? path.resolve(process.env.ALEMBIC_UNINSTALL_DIR)
+    : path.dirname(process.execPath);
+  const receipt = readJsonFile(path.join(installDir, "install.json"));
+  if (!receipt || typeof receipt !== "object") return null;
+  return { installDir, receipt };
+}
+
+function uninstallWorkerPath() {
+  const packaged = path.join(process.resourcesPath, "install", "uninstall-worker.ps1");
+  if (fs.existsSync(packaged)) return packaged;
+  const dev = path.join(PROJECT_ROOT, "packaging", "install", "uninstall-worker.ps1");
+  if (fs.existsSync(dev)) return dev;
+  return packaged;
+}
+
+// 逐行读取 worker 追加写入的 JSONL 进度文件。
+function watchJsonLines(file, onEvent) {
+  let offset = 0;
+  let buffer = "";
+  const tick = () => {
+    try {
+      const stat = fs.statSync(file);
+      if (stat.size < offset) {
+        offset = 0;
+        buffer = "";
+      }
+      if (stat.size === offset) return;
+      const length = stat.size - offset;
+      const fd = fs.openSync(file, "r");
+      const chunk = Buffer.alloc(length);
+      fs.readSync(fd, chunk, 0, length, offset);
+      fs.closeSync(fd);
+      buffer += chunk.toString("utf8");
+
+      let index = buffer.indexOf("\n");
+      while (index >= 0) {
+        const line = buffer.slice(0, index).trim();
+        buffer = buffer.slice(index + 1);
+        if (line) {
+          try {
+            onEvent(JSON.parse(line));
+          } catch (_) { /* 非 JSON 行，忽略 */ }
+        }
+        index = buffer.indexOf("\n");
+      }
+      // 已经读到的字节整体前移；末尾未闭合的半行留在 buffer 里，
+      // 等下一次追加补全后由换行切分。
+      offset = stat.size;
+    } catch (_) { /* 文件还没创建或已被清理 */ }
+  };
+  const timer = setInterval(tick, 200);
+  tick();
+  return {
+    stop() {
+      clearInterval(timer);
+      tick();
+    },
+  };
+}
+
+/**
+ * 以管理员身份运行 PowerShell worker。
+ *
+ * 安装/卸载界面本身不提权（这样安装完成后启动的应用仍是普通权限），只在真正
+ * 修改 Program Files、本地账户、防火墙和 HKLM 时弹出一次 UAC。
+ *
+ * 返回 { code, workDir, resultFile }。worker 的业务结果通过进度文件里的
+ * event=result 传递；这里只负责进程与退出码。
+ */
+function runElevatedPowerShell(workerPath, workerArgs, { progressFile, logPath, onEvent }) {
+  return new Promise((resolve, reject) => {
+    const workDir = makeWorkDir("alembic-elevate-");
+    const resultFile = path.join(workDir, "result.json");
+    const runScript = path.join(workDir, "run-worker.ps1");
+    const elevateScript = path.join(workDir, "elevate.ps1");
+
+    const call = `& ${psQuote(workerPath)} ${workerArgs.join(" ")}`;
+    const runBody = [
+      "$ErrorActionPreference = 'Stop'",
+      "$code = 0",
+      "try {",
+      `  ${call}`,
+      "  if ($null -ne $LASTEXITCODE) { $code = $LASTEXITCODE }",
+      "} catch {",
+      "  $code = 1",
+      `  [IO.File]::AppendAllText(${psQuote(logPath)}, ("[" + (Get-Date).ToString("o") + "] " + $_ + "\`n"), (New-Object Text.UTF8Encoding($false)))`,
+      "}",
+      `[IO.File]::WriteAllText(${psQuote(resultFile)}, (@{ code = $code } | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))`,
+      "exit $code",
+      "",
+    ].join("\r\n");
+    fs.writeFileSync(runScript, "\ufeff" + runBody, "utf8");
+
+    const elevateBody = [
+      "$ErrorActionPreference = 'Stop'",
+      "$code = 1223",
+      "try {",
+      `  $runFile = ${psQuote(runScript)}`,
+      "  $runArg = '-NoProfile -ExecutionPolicy Bypass -File \"' + $runFile + '\"'",
+      "  $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $runArg -Verb RunAs -Wait -PassThru -WindowStyle Hidden",
+      "  $code = $p.ExitCode",
+      "} catch {",
+      "  $code = 1223",
+      `  [IO.File]::AppendAllText(${psQuote(logPath)}, ("[" + (Get-Date).ToString("o") + "] 管理员授权失败：" + $_ + "\`n"), (New-Object Text.UTF8Encoding($false)))`,
+      "}",
+      `[IO.File]::WriteAllText(${psQuote(resultFile)}, (@{ code = $code } | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))`,
+      "exit $code",
+      "",
+    ].join("\r\n");
+    fs.writeFileSync(elevateScript, "\ufeff" + elevateBody, "utf8");
+
+    const watcher = onEvent ? watchJsonLines(progressFile, onEvent) : { stop() {} };
+    const powershell = path.join(
+      process.env.SystemRoot || "C:\\Windows",
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    const child = spawn(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", elevateScript], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      watcher.stop();
+      let code = -1;
+      const result = readJsonFile(resultFile);
+      if (result && Number.isFinite(Number(result.code))) code = Number(result.code);
+      if (error) reject(error);
+      else resolve({ code, workDir, resultFile });
+    };
+
+    child.on("error", (error) => finish(new Error(`无法启动安装程序：${error.message}`)));
+    child.on("exit", () => finish(null));
+
+    // 防止异常情况下无限等待；安装大文件时留足时间。
+    setTimeout(() => {
+      if (settled) return;
+      try {
+        child.kill();
+      } catch (_) { /* 已退出 */ }
+      finish(new Error("安装程序等待超时"));
+    }, 45 * 60 * 1000).unref();
+  });
+}
+
+function createUninstallWindow() {
+  registerUninstallIpc();
+  win = new BrowserWindow({
+    width: 820,
+    height: 640,
+    minWidth: 720,
+    minHeight: 560,
+    resizable: false,
+    maximizable: false,
+    frame: false,
+    show: false,
+    backgroundColor: "#faf8f1",
+    title: "卸载 ALEMBIC",
+    webPreferences: {
+      preload: path.join(__dirname, "uninstall-preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  win.once("ready-to-show", () => win.show());
+  win.on("closed", () => { win = null; });
+  win.on("close", (event) => {
+    if (!uninstallBusy) return;
+    event.preventDefault();
+    if (win && !win.isDestroyed()) {
+      win.webContents.send("uninstall:busy");
+    }
+  });
+  win.loadFile(path.join(__dirname, "uninstall.html")).catch((error) => {
+    log(`卸载界面加载失败：${error.message}`);
+  });
+}
+
+let uninstallIpcReady = false;
+function registerUninstallIpc() {
+  if (uninstallIpcReady) return;
+  uninstallIpcReady = true;
+
+  ipcMain.handle("uninstall:info", () => {
+    const found = installReceipt();
+    if (!found) {
+      const dir = process.env.ALEMBIC_UNINSTALL_DIR
+        ? path.resolve(process.env.ALEMBIC_UNINSTALL_DIR)
+        : path.dirname(process.execPath);
+      return {
+        ok: false,
+        error: `找不到安装记录：${path.join(dir, "install.json")}`,
+      };
+    }
+    const { installDir, receipt } = found;
+    return {
+      ok: true,
+      installDir,
+      version: receipt.version || "",
+      installedAt: receipt.installed_at || "",
+      owner: receipt.owner || "",
+      appHome: receipt.app_home || receipt.paths?.app_home || "",
+      localAppData: receipt.paths?.local_app_data || "",
+      sandbox: receipt.sandbox || { requested: false, created: false, users: [] },
+      options: receipt.options || {},
+      estimatedSizeKb: receipt.estimated_size_kb || 0,
+    };
+  });
+
+  ipcMain.handle("uninstall:start", async (event, rawOptions) => {
+    const options = rawOptions && typeof rawOptions === "object" ? rawOptions : {};
+    if (uninstallBusy) return { ok: false, error: "卸载正在进行" };
+    const found = installReceipt();
+    if (!found) return { ok: false, error: "找不到安装记录，无法卸载。" };
+    const { installDir, receipt } = found;
+    const worker = uninstallWorkerPath();
+    if (!fs.existsSync(worker)) {
+      return { ok: false, error: `缺少卸载组件：${worker}` };
+    }
+
+    uninstallBusy = true;
+    let workDir;
+    try {
+      workDir = makeWorkDir("alembic-uninstall-run-");
+    } catch (error) {
+      uninstallBusy = false;
+      return { ok: false, error: `无法创建卸载临时目录：${error.message}` };
+    }
+    const progressFile = path.join(workDir, "progress.jsonl");
+    const logPath = path.join(workDir, "uninstall.log");
+    uninstallLogPath = logPath;
+    const appHome = receipt.app_home || receipt.paths?.app_home || path.join(process.env.APPDATA || "", "Alembic");
+    const localAppData = receipt.paths?.local_app_data || path.join(process.env.LOCALAPPDATA || "", "Alembic");
+    const ownerName = receipt.owner || `${process.env.USERDOMAIN || ""}\\${process.env.USERNAME || ""}`;
+
+    const args = [
+      "-InstallDir", psQuote(installDir),
+      "-ProgressFile", psQuote(progressFile),
+      "-LogFile", psQuote(logPath),
+      "-AppHome", psQuote(appHome),
+      "-LocalAppData", psQuote(localAppData),
+      "-OwnerName", psQuote(ownerName),
+      "-UninstallerPid", String(process.pid),
+    ];
+    if (options && options.removeSandbox) args.push("-RemoveSandbox");
+    if (options && options.removeUserData) args.push("-RemoveUserData");
+
+    let lastResult = null;
+    try {
+      const { code } = await runElevatedPowerShell(worker, args, {
+        progressFile,
+        logPath,
+        onEvent: (payload) => {
+          if (payload.event === "result") lastResult = payload;
+          if (win && !win.isDestroyed()) {
+            win.webContents.send("uninstall:progress", payload);
+          }
+        },
+      });
+      if (code === 1223) {
+        return { ok: false, cancelled: true, error: "已取消管理员授权，未做任何修改。" };
+      }
+      if (lastResult && lastResult.status === "ok") {
+        return {
+          ok: true,
+          restart: true,
+          installDir,
+          version: receipt.version || "",
+          warnings: (lastResult.detail && lastResult.detail.warnings) || [],
+        };
+      }
+      const message = (lastResult && lastResult.message) || `卸载进程退出（code=${code}）`;
+      return { ok: false, error: message, logPath };
+    } catch (error) {
+      return { ok: false, error: String(error.message || error), logPath };
+    } finally {
+      uninstallBusy = false;
+      // 保留日志；临时目录由系统清理。
+    }
+  });
+
+  ipcMain.handle("uninstall:close", () => {
+    if (uninstallBusy) {
+      return { ok: false, error: "卸载正在进行，完成后再关闭窗口。" };
+    }
+    app.quit();
+    return { ok: true };
+  });
+
+  ipcMain.handle("uninstall:open-log", async () => {
+    const log = uninstallLogPath || process.env.ALEMBIC_UNINSTALL_LOG || "";
+    if (log && fs.existsSync(log)) {
+      await shell.openPath(log);
+      return { ok: true };
+    }
+    return { ok: false, error: "没有可打开的日志文件" };
+  });
+
+  ipcMain.handle("uninstall:busy", () => ({ ok: true, busy: uninstallBusy }));
+}
+
+// ---------------------------------------------------------------------------
 // 生命周期
 // ---------------------------------------------------------------------------
 function stopBackend() {
+  if (frontendServer) {
+    const server = frontendServer;
+    frontendServer = null;
+    server.close().catch(() => { /* 已经在关 */ });
+  }
   if (!backend || backend.exitCode !== null) return;
   if (process.platform === "win32") {
     // Python 会再拉起子进程，直接结束整棵进程树
@@ -508,24 +907,34 @@ function stopBackend() {
   }
 }
 
-function buildMenu() {
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate([
-      { label: "ALEMBIC", submenu: [{ role: "quit", label: "退出" }] },
-      {
-        label: "视图",
-        submenu: [
-          { role: "reload", label: "重新加载" },
-          { role: "toggleDevTools", label: "开发者工具" },
-          { type: "separator" },
-          { role: "resetZoom", label: "实际大小" },
-          { role: "zoomIn", label: "放大" },
-          { role: "zoomOut", label: "缩小" },
-          { role: "togglefullscreen", label: "全屏" },
-        ],
-      },
-    ]),
-  );
+function registerDesktopIpc() {
+  ipcMain.handle("app:info", () => ({
+    name: "ALEMBIC",
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+  }));
+
+  ipcMain.handle("window:minimize", () => {
+    if (win && !win.isDestroyed()) win.minimize();
+    return { ok: true };
+  });
+
+  ipcMain.handle("window:toggle-maximize", () => {
+    if (!win || win.isDestroyed()) return { ok: false, maximized: false };
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
+    return { ok: true, maximized: win.isMaximized() };
+  });
+
+  ipcMain.handle("window:close", () => {
+    if (win && !win.isDestroyed()) win.close();
+    return { ok: true };
+  });
+
+  ipcMain.handle("window:is-maximized", () => ({
+    ok: true,
+    maximized: Boolean(win && !win.isDestroyed() && win.isMaximized()),
+  }));
 }
 
 // 单实例锁：拿不到时不能一律退出——目录不可写时 Chromium 建不了锁文件，
@@ -565,7 +974,14 @@ if (!gotLock && otherInstance) {
   });
 
   app.whenReady().then(async () => {
-    buildMenu();
+    if (IS_UNINSTALL) {
+      Menu.setApplicationMenu(null);
+      createUninstallWindow();
+      return;
+    }
+
+    registerDesktopIpc();
+    Menu.setApplicationMenu(null);
     // 已知环境需要关沙箱时可直接跳过第一次尝试（也方便排查问题）
     if (process.env.ALEMBIC_FORCE_NO_SANDBOX === "1" && !process.argv.includes("--no-sandbox")) {
       log("按 ALEMBIC_FORCE_NO_SANDBOX 重启为无沙箱模式");
@@ -577,10 +993,19 @@ if (!gotLock && otherInstance) {
     log("窗口已创建，拉起后端");
     try {
       const { port, token } = await startBackend();
-      log("等待健康检查");
-      await waitForHealth(port);
-      log("健康检查通过，加载应用页面");
-      await loadApp(port, token);
+      const frontendRoot = resolveFrontendRoot();
+      frontendServer = await startFrontendServer({
+        root: frontendRoot,
+        backendPort: port,
+        token,
+        log,
+      });
+      log(`后端进程已启动，先加载界面（前端端口 ${frontendServer.port}）`);
+      await loadApp(frontendServer.port, token);
+      waitForHealth(port).catch((error) => {
+        log(`健康检查失败：${error.message || error}`);
+        showError(error);
+      });
     } catch (error) {
       log(`启动失败：${error.message || error}`);
       showError(error);

@@ -1,0 +1,5 @@
+LIBRARY alembic-installer-ui
+EXPORTS
+    AlembicUI_Create=_AlembicUI_Create@12
+    AlembicUI_SetMode=_AlembicUI_SetMode@4
+    AlembicUI_Shutdown=_AlembicUI_Shutdown@0

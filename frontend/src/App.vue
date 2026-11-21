@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppSidebar from './components/AppSidebar.vue'
+import AppTitlebar from './components/AppTitlebar.vue'
 import ChatComposer from './components/ChatComposer.vue'
 import ChatTopbar from './components/ChatTopbar.vue'
 import ChatTranscript from './components/ChatTranscript.vue'
@@ -15,9 +16,9 @@ import WorkspaceModal from './components/WorkspaceModal.vue'
 import { errorMessage } from './api/client'
 import { applyTheme, watchSystemTheme } from './lib/theme'
 import { useChatStore } from './stores/chat'
-import { useInspectorStore } from './stores/inspector'
+import { INSPECTOR_MIN, useInspectorStore } from './stores/inspector'
 import { useProcessStore } from './stores/processes'
-import { useUiStore } from './stores/ui'
+import { SIDEBAR_MIN, useUiStore } from './stores/ui'
 import { useWorkspaceStore } from './stores/workspace'
 
 const workspace = useWorkspaceStore()
@@ -31,6 +32,66 @@ const mainEl = ref<HTMLElement | null>(null)
 const composerDock = ref<HTMLElement | null>(null)
 let dockObserver: ResizeObserver | null = null
 let stopSystemThemeWatch: (() => void) | null = null
+
+const MIN_CHAT_WIDTH = 560
+let layoutFrame = 0
+
+/** Keep the conversation column readable when both panels are resized. */
+function clampLayout(): void {
+  const viewport = window.innerWidth || document.documentElement.clientWidth
+  if (!viewport) return
+
+  let sidebarWidth = ui.sidebarCollapsed ? 0 : ui.sidebarWidth
+  let inspectorWidth = inspector.open ? inspector.width : 0
+  let overflow = sidebarWidth + inspectorWidth + MIN_CHAT_WIDTH - viewport
+  if (overflow <= 0) return
+
+  if (inspector.open) {
+    const target = Math.max(INSPECTOR_MIN, inspectorWidth - overflow)
+    if (target !== inspectorWidth) {
+      inspector.setWidth(target)
+      overflow -= inspectorWidth - target
+      inspectorWidth = target
+    }
+  }
+
+  if (overflow > 0 && !ui.sidebarCollapsed) {
+    const target = Math.max(SIDEBAR_MIN, sidebarWidth - overflow)
+    if (target !== sidebarWidth) {
+      ui.setSidebarWidth(target)
+      overflow -= sidebarWidth - target
+      sidebarWidth = target
+    }
+  }
+
+  if (overflow > 0 && inspector.open) {
+    inspector.hide()
+    overflow -= inspectorWidth
+  } else if (overflow > 0 && !ui.sidebarCollapsed) {
+    ui.sidebarCollapsed = true
+  }
+}
+
+function queueClamp(): void {
+  if (layoutFrame) return
+  layoutFrame = window.requestAnimationFrame(() => {
+    layoutFrame = 0
+    clampLayout()
+  })
+}
+
+watch(
+  () => [ui.sidebarWidth, ui.sidebarCollapsed, inspector.open, inspector.width],
+  queueClamp,
+  { flush: 'post' },
+)
+
+watch(
+  () => workspace.ready,
+  (ready) => {
+    if (ready) queueClamp()
+  },
+)
 
 // 外观：偏好里的 light / dark / system 直接映射到 <html data-theme>
 applyTheme(workspace.preferences?.theme)
@@ -112,12 +173,19 @@ onMounted(() => {
     })
     dockObserver.observe(composerDock.value)
   }
+  window.addEventListener('resize', queueClamp)
+  queueClamp()
   processes.init()
   void initialize()
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('resize', queueClamp)
+  if (layoutFrame) {
+    window.cancelAnimationFrame(layoutFrame)
+    layoutFrame = 0
+  }
   dockObserver?.disconnect()
   dockObserver = null
   stopSystemThemeWatch?.()
@@ -126,18 +194,20 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    class="app"
-    :class="{
-      'sidebar-open': ui.sidebarOpen,
-      'sidebar-collapsed': ui.sidebarCollapsed,
-      'inspector-open': inspector.open,
-    }"
-    :style="{
-      '--sidebar-width': `${ui.sidebarWidth}px`,
-      '--inspector-width': `${inspector.width}px`,
-    }"
-  >
+  <div class="desktop-shell">
+    <AppTitlebar />
+    <div
+      class="app"
+      :class="{
+        'sidebar-open': ui.sidebarOpen,
+        'sidebar-collapsed': ui.sidebarCollapsed,
+        'inspector-open': inspector.open,
+      }"
+      :style="{
+        '--sidebar-width': `${ui.sidebarWidth}px`,
+        '--inspector-width': `${inspector.width}px`,
+      }"
+    >
     <AppSidebar />
     <PanelToggle
       class="sidebar-toggle"
@@ -156,6 +226,7 @@ onBeforeUnmount(() => {
     <Transition name="pane">
       <InspectorSidebar v-if="inspector.open" />
     </Transition>
+    </div>
   </div>
 
   <div

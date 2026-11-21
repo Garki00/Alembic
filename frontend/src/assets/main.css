@@ -61,16 +61,30 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 /* ---------- 布局 ---------- */
 .app {
-    --sidebar-track: var(--sidebar-width, 272px);
+    --sidebar-track: max(220px, var(--sidebar-width, 272px));
     --inspector-track: 0px;
     display: grid;
-    grid-template-columns: var(--sidebar-track) minmax(0, 1fr) var(--inspector-track);
+    grid-template-columns: var(--sidebar-track) minmax(560px, 1fr) var(--inspector-track);
     height: 100dvh;
     overflow: hidden;
     transition: grid-template-columns 300ms cubic-bezier(0.4, 0, 0.2, 1);
 }
-.app.inspector-open { --inspector-track: var(--inspector-width, 380px); }
+.app.inspector-open { --inspector-track: max(300px, var(--inspector-width, 380px)); }
 .app.sidebar-collapsed { --sidebar-track: 0px; }
+
+/* Desktop shell: the custom titlebar sits above the three-column app. */
+#app { height: 100%; }
+.desktop-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    min-height: 0;
+}
+.desktop-shell > .app {
+    flex: 1;
+    height: auto;
+    min-height: 0;
+}
 html.resizing .app { transition: none; }
 html.resizing { cursor: col-resize; }
 html.resizing body { user-select: none; cursor: col-resize; }
@@ -80,7 +94,7 @@ html.resizing body { user-select: none; cursor: col-resize; }
     display: flex;
     flex-direction: column;
     min-height: 0;
-    min-width: 0;
+    min-width: 220px;
     overflow: hidden;
     background: var(--paper-deep);
     border-right: 1px solid var(--border);
@@ -93,6 +107,7 @@ html.resizing body { user-select: none; cursor: col-resize; }
     opacity: 0;
     pointer-events: none;
     border-right-color: transparent;
+    min-width: 0;
 }
 .app.sidebar-collapsed .sidebar-resizer { display: none; }
 .sidebar-resizer,
@@ -350,7 +365,7 @@ html.resizing .inspector-resizer::after {
 .main {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
-    min-width: 0;
+    min-width: 560px;
     min-height: 0;
     background: var(--paper);
     position: relative;
@@ -406,7 +421,7 @@ html.resizing .inspector-resizer::after {
 .panel-toggle-right.active .panel-toggle-arrow { transform: rotate(180deg); }
 .sidebar-toggle {
     position: fixed;
-    top: 20px;
+    top: calc(20px + var(--desktop-titlebar-height, 0px));
     left: calc(var(--sidebar-width, 272px) - 46px);
     z-index: 35;
     transition:
@@ -2165,7 +2180,7 @@ html.resizing .sidebar-toggle { transition: none; }
 .sidebar-backdrop { display: none; }
 .boot-error {
     position: fixed;
-    top: 16px;
+    top: calc(16px + var(--desktop-titlebar-height, 0px));
     left: 50%;
     transform: translateX(-50%);
     z-index: 70;
@@ -2696,7 +2711,7 @@ html.resizing .sidebar-toggle { transition: none; }
 .inspector {
     display: flex;
     flex-direction: column;
-    min-width: 0;
+    min-width: 300px;
     min-height: 0;
     background: var(--paper-deep);
     border-left: 1px solid var(--border);
