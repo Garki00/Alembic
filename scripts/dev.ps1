@@ -1,4 +1,4 @@
-# scripts/dev.ps1
+﻿# scripts/dev.ps1
 # 一键启动本地开发环境：FastAPI 后端（8000）+ Vite 前端（5173）。
 #
 # 用法（仓库根目录）：

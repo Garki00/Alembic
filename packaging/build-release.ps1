@@ -2,12 +2,14 @@
 <#
 .SYNOPSIS
     Build an ALEMBIC Windows release: frontend, Python sidecar, Electron app,
-    themed NSIS installer, checksums.
+    NSIS installer, checksums and release metadata.
 
 .DESCRIPTION
-    The installer is native NSIS. The unpacked Electron application is built
-    first and then packaged with electron-builder's prepackaged mode, so the
-    installer and the application always use the same files.
+    Product identity and installer options come from packaging/release.config.json;
+    desktop/package.json must describe the same application and is validated before
+    any build step runs. The unpacked Electron application is built first and then
+    packaged with electron-builder's prepackaged mode, so the installer and the
+    application always use the same files.
 
     Use -Dev to build a developer package. The developer marker is only added to
     the output/product names; the application UI never shows a release label.
@@ -33,6 +35,21 @@ if (-not (Test-Path -LiteralPath $configPath)) {
     throw "Missing release configuration: $configPath"
 }
 $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+foreach ($required in @("product", "appId", "publisher", "version")) {
+    if (-not [string]$config.$required) {
+        throw "release.config.json is missing '$required'."
+    }
+}
+$product = [string]$config.product
+$appId = [string]$config.appId
+$publisher = [string]$config.publisher
+$minimumWindows = [string]$config.minimumWindows
+$arch = if ([string]$config.arch) { [string]$config.arch } else { "x64" }
+if ($arch -ne "x64") {
+    throw "release.config.json arch must be x64; the bundled runtimes and NSIS flow target win32-x64."
+}
+
 $requestedVersion = $Version
 if (-not $Version) { $Version = [string]$config.version }
 if (-not $Version) {
@@ -44,14 +61,10 @@ if ($requestedVersion -and $requestedVersion -ne [string]$config.version) {
     [IO.File]::WriteAllText($configPath, $json, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-$productName = if ($Dev) { "ALEMBIC-开发版" } else { "ALEMBIC" }
-$exeName = if ($Dev) { "ALEMBIC-开发版" } else { "ALEMBIC" }
+$productName = if ($Dev) { "$product-开发版" } else { $product }
+$exeName = $productName
 $channel = if ($Dev) { "dev" } else { [string]$config.channel }
-$artifactName = if ($Dev) {
-    "ALEMBIC-开发版-Setup-${Version}-x64.exe"
-} else {
-    "ALEMBIC-Setup-${Version}-x64.exe"
-}
+$artifactName = "$productName-Setup-${Version}-${arch}.exe"
 
 $desktopDir = Join-Path $root "desktop"
 $frontendDir = Join-Path $root "frontend"
@@ -80,6 +93,19 @@ function Remove-DirectorySafe {
     }
 }
 
+# 安装器用 Windows PowerShell 5.1（powershell.exe）运行这些脚本。5.1 对没有 BOM
+# 的 UTF-8 文件按当前 ANSI 代码页解析，脚本里的中文会让字符串提前截断，卸载 worker
+# 直接语法错误，界面只能显示「卸载未完成」。这些文件会原样复制进安装包，所以在构建
+# 阶段就校验 BOM，避免把无法解析的脚本发出去。
+function Assert-Utf8Bom {
+    param([string]$Path)
+    Assert-File $Path "Required PowerShell script is missing."
+    $head = [IO.File]::ReadAllBytes($Path)
+    if ($head.Length -lt 3 -or $head[0] -ne 0xEF -or $head[1] -ne 0xBB -or $head[2] -ne 0xBF) {
+        throw "PowerShell 脚本缺少 UTF-8 BOM：$Path`nWindows PowerShell 5.1 会把无 BOM 的 UTF-8 当作 ANSI，中文会导致语法错误；请用「UTF-8 with BOM」保存。"
+    }
+}
+
 function Get-CheckedCommand {
     param([string]$Name)
     $command = Get-Command $Name -ErrorAction SilentlyContinue
@@ -87,11 +113,59 @@ function Get-CheckedCommand {
     return $command.Source
 }
 
+# release.config.json is the single source for product identity and installer
+# options; desktop/package.json must describe the same application, otherwise the
+# unpacked directory and the NSIS installer disagree about names or settings.
+function Assert-ReleaseConfig {
+    $desktopPkgPath = Join-Path $desktopDir "package.json"
+    Assert-File $desktopPkgPath "desktop/package.json is required to build the installer."
+    $desktopPkg = Get-Content -LiteralPath $desktopPkgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $build = $desktopPkg.build
+
+    if ([string]$build.appId -ne $appId) {
+        throw "desktop/package.json build.appId '$($build.appId)' does not match release.config.json appId '$appId'."
+    }
+    if ([string]$build.productName -ne $product) {
+        throw "desktop/package.json build.productName '$($build.productName)' does not match release.config.json product '$product'."
+    }
+    if (-not $build.win -or [string]$build.win.executableName -ne $product) {
+        throw "desktop/package.json build.win.executableName must be '$product' for release builds."
+    }
+    if ($config.installer.requireAdmin -eq $true -and [string]$build.win.requestedExecutionLevel -ne "requireAdministrator") {
+        throw "release.config.json requires admin; desktop/package.json build.win.requestedExecutionLevel must be requireAdministrator."
+    }
+    if ($config.installer.perMachine -eq $true -and $build.nsis.perMachine -ne $true) {
+        throw "release.config.json requires a perMachine installer; desktop/package.json build.nsis.perMachine must be true."
+    }
+    if ([bool]$build.nsis.allowToChangeInstallationDirectory -ne [bool]$config.installer.allowCustomDir) {
+        throw "release.config.json installer.allowCustomDir and desktop/package.json build.nsis.allowToChangeInstallationDirectory disagree."
+    }
+    if ($config.installer.desktopShortcutByDefault -eq $false -or $config.installer.startMenuShortcutByDefault -eq $false) {
+        throw "Shortcut defaults are fixed to selected in packaging/nsis/installer.nsh; change that page before changing release.config.json shortcuts."
+    }
+}
+
+Assert-ReleaseConfig
+
+# 随安装包分发、并由 powershell.exe 5.1 执行的脚本；缺 BOM 时中文会导致解析失败，
+# 表现为安装后卸载界面报「卸载未完成」。
+foreach ($relative in @(
+    "scripts\setup-sandbox.ps1",
+    "packaging\install\uninstall-worker.ps1",
+    "packaging\install\nsis-postinstall.ps1"
+)) {
+    Assert-Utf8Bom (Join-Path $root $relative)
+}
+
 if ($Plan) {
     Write-Host "ALEMBIC installer build plan (version $Version, channel $channel)" -ForegroundColor Green
     Write-Host "  product: $productName"
+    Write-Host "  app id: $appId"
+    Write-Host "  publisher: $publisher"
     Write-Host "  executable: $exeName.exe"
     Write-Host "  installer: $artifactName"
+    Write-Host "  arch: $arch; minimum Windows: $minimumWindows"
+    Write-Host "  config checks: ok"
     Write-Host "  1. sync package versions"
     if (-not $SkipFrontend) { Write-Host "  2. frontend: npm run build" }
     if (-not $SkipBackend) { Write-Host "  3. backend: packaging\build.ps1 -Clean:$Clean" }
@@ -222,12 +296,12 @@ $npm = Get-CheckedCommand "npm"
 Push-Location $desktopDir
 try {
     $installerArgs = @("run", "build:nsis", "--")
+    # 由 release.config.json 派生的产品名统一决定安装包文件名，避免与 -Dev 的
+    # 命名规则或 desktop/package.json 的静态 artifactName 漂移。
+    $installerArgs += "-c.nsis.artifactName=$productName-Setup-`${version}-`${arch}.`${ext}"
     if ($Dev) {
         $installerArgs += "-c.productName=$productName"
         $installerArgs += "-c.win.executableName=$exeName"
-        $installerArgs += "-c.nsis.artifactName=ALEMBIC-开发版-Setup-`${version}-`${arch}.`${ext}"
-    } else {
-        $installerArgs += "-c.nsis.artifactName=ALEMBIC-Setup-`${version}-`${arch}.`${ext}"
     }
     & $npm @installerArgs
     if ($LASTEXITCODE -ne 0) { throw "NSIS installer build failed." }
@@ -251,28 +325,44 @@ if (-not (Test-Path -LiteralPath $outDir)) {
 $setup = Join-Path $outDir $artifactName
 Copy-Item -LiteralPath $built -Destination $setup -Force
 
+$hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+$size = (Get-Item -LiteralPath $setup).Length
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+
 $release = [ordered]@{
-    schema = 1
-    product = "ALEMBIC"
+    schema = 2
+    product = $product
+    app_id = $appId
+    publisher = $publisher
     version = $Version
     channel = $channel
+    arch = $arch
+    minimum_windows = $minimumWindows
     built_at = (Get-Date).ToString("o")
     commit = ""
     executable = "$exeName.exe"
     installer = $artifactName
+    installer_sha256 = $hash
+    installer_size = $size
+    artifacts = @(
+        [ordered]@{
+            role = "installer"
+            name = $artifactName
+            sha256 = $hash
+            size = $size
+        }
+    )
 }
 try {
     $commit = (& git rev-parse --short HEAD 2>$null | Select-Object -First 1).Trim()
     if ($commit) { $release.commit = $commit }
 } catch { }
-$utf8 = New-Object System.Text.UTF8Encoding($false)
 [IO.File]::WriteAllText(
     (Join-Path $outDir "release.json"),
     ($release | ConvertTo-Json -Depth 5),
     $utf8
 )
 
-$hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
 [IO.File]::WriteAllText(
     (Join-Path $outDir "SHA256SUMS.txt"),
     ("{0}  {1}`n" -f $hash, $artifactName),
@@ -281,6 +371,6 @@ $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvaria
 
 Write-Host ""
 Write-Host "Installer: $setup" -ForegroundColor Green
-Write-Host ("Size: {0:N1} MB" -f ((Get-Item -LiteralPath $setup).Length / 1MB))
+Write-Host ("Size: {0:N1} MB" -f ($size / 1MB))
 Write-Host "Checksums: $(Join-Path $outDir 'SHA256SUMS.txt')"
 Write-Host ("Finished in {0:N1} minutes." -f ((Get-Date) - $started).TotalMinutes) -ForegroundColor Green

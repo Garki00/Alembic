@@ -71,10 +71,10 @@ powershell -ExecutionPolicy Bypass -File packaging\build-release.ps1 -Dev
 ```
 
 The artifact is `build\release\out\ALEMBIC-Setup-<version>-x64.exe`. The installer is
-native NSIS and uses the same paper/emerald visual language as the web UI. Its first
-page contains only the two shortcut options; the install contents list the app, bundled
-runtimes, and Windows command sandbox, which are always installed. Both the installer
-and the app default to administrator elevation. See
+native NSIS and runs the standard Modern UI2 wizard: the target directory is chosen on
+the directory page, followed by one options page for the two shortcuts. The bundled
+runtimes and the Windows command sandbox are always installed. Both the installer and
+the app default to administrator elevation. See
 [Desktop packaging and release](docs/packaging.md) for versioning, the install flow,
 developer naming, extension points, and code signing.
 
@@ -112,7 +112,7 @@ cd frontend
 npm run build
 ```
 
-See the [extension guide](docs/extensions.md), [portable runtimes](docs/runtimes.md), and [handover document](docs/HANDOVER.md) for implementation details and conventions.
+See the [extension guide](docs/extensions.md), [portable runtimes](docs/runtimes.md), repository conventions in [AGENTS.md](AGENTS.md), and the UI design system in [DESIGN.md](DESIGN.md).
 
 ## Configuration and Data
 

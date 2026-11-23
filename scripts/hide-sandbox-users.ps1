@@ -1,4 +1,4 @@
-# scripts/hide-sandbox-users.ps1
+﻿# scripts/hide-sandbox-users.ps1
 # 隐藏 / 恢复沙盒账户在登录界面（锁屏、切换用户）里的显示。
 #
 # Windows 没有“隐藏账户”的正式开关，这里用的是 Welcome 界面沿用了二十年的

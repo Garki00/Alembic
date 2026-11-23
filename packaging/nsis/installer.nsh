@@ -1,16 +1,11 @@
-; ALEMBIC assisted-NSIS UI integration.
+; ALEMBIC assisted installer integration using the stock Modern UI2 wizard.
 ;
-; NSIS keeps ownership of extraction, registry writes, shortcuts and the
-; post-install PowerShell step. A small x86 Unicode Win32/GDI+ helper owns the
-; visible frameless wizard, so the installer matches the application's look
-; without replacing any installation logic.
-;
-; This file is injected by electron-builder *before* its own templates, so any
-; define or macro taken from those templates has to be provided here as well.
+; The custom frameless window (packaging/installer-ui) is archived and not used.
+; Everything here relies on standard NSIS/MUI pages so the installer keeps the
+; native look, the project icon and predictable behaviour.
 
 !include "nsDialogs.nsh"
 !include "LogicLib.nsh"
-!include "FileFunc.nsh"
 !include "WinMessages.nsh"
 
 ; Same values as electron-builder's multiUser.nsh, declared early because this
@@ -18,8 +13,8 @@
 !define /IfNDef INSTALL_REGISTRY_KEY "Software\${APP_GUID}"
 !define /IfNDef UNINSTALL_REGISTRY_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}"
 
-; Paths written by the post-install script (it derives them from the executable
-; name, so the dev build's "开发版" names are handled without duplication).
+; Paths written by the post-install script (derived from the executable name,
+; so the dev build's "开发版" names are handled without duplication).
 !define /IfNDef ALEMBIC_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_FILENAME}"
 !define /IfNDef ALEMBIC_INSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\App Paths\${PRODUCT_FILENAME}.exe"
 
@@ -29,163 +24,11 @@
   !define ALEMBIC_PUBLISHER "Garki"
 !endif
 
-; Built by packaging/tools/make-nsis-assets.ps1 before electron-builder runs.
-!define /IfNDef ALEMBIC_UI_DLL "${__FILEDIR__}\..\..\desktop\build\nsis\x86-unicode\alembic-installer-ui.dll"
-!define ALEMBIC_UI_OPTIONS "$PLUGINSDIR\alembic-ui.ini"
-
 !ifndef BUILD_UNINSTALLER
 Var NsisDesktopShortcutState
 Var NsisStartMenuShortcutState
-
-Function NsisHideWizard
-  System::Call 'user32::ShowWindow(p $HWNDPARENT, i 0) i .r0'
-FunctionEnd
-
-Function NsisShowWizard
-  System::Call 'user32::ShowWindow(p $HWNDPARENT, i 5) i .r0'
-FunctionEnd
-
-Function NsisNativeUiCreate
-  Call NsisHideWizard
-  System::Call '"$PLUGINSDIR\alembic-installer-ui.dll"::AlembicUI_Create(p $HWNDPARENT, w "$INSTDIR", w "${ALEMBIC_UI_OPTIONS}") i .r0'
-  ${If} $0 != 1
-    Call NsisShowWizard
-    MessageBox MB_ICONSTOP|MB_OK "无法启动 ALEMBIC 安装界面，安装已取消。"
-    Quit
-  ${EndIf}
-FunctionEnd
-
-Function NsisNativeUiMode
-  ; The mode arrives in $0 (System::Call register r0) so no stack juggling is needed.
-  System::Call '"$PLUGINSDIR\alembic-installer-ui.dll"::AlembicUI_SetMode(i r0)'
-FunctionEnd
-
-!macro NsisSetUiMode mode
-  Push $0
-  StrCpy $0 ${mode}
-  Call NsisNativeUiMode
-  Pop $0
-!macroend
-
-Function NsisOptionsPageCreate
-  nsDialogs::Create 1018
-  Pop $0
-  ${If} $0 == error
-    Abort
-  ${EndIf}
-
-  Call NsisNativeUiCreate
-  nsDialogs::Show
-FunctionEnd
-
-Function NsisOptionsPageLeave
-  ; The native page has already written its result to a UTF-16 INI file, so no
-  ; large Unicode buffer has to cross the plugin ABI.
-  ReadINIStr $INSTDIR "${ALEMBIC_UI_OPTIONS}" "install" "directory"
-  ReadINIStr $NsisDesktopShortcutState "${ALEMBIC_UI_OPTIONS}" "install" "desktop"
-  ReadINIStr $NsisStartMenuShortcutState "${ALEMBIC_UI_OPTIONS}" "install" "startmenu"
-  ${If} $NsisDesktopShortcutState == ""
-    StrCpy $NsisDesktopShortcutState "1"
-  ${EndIf}
-  ${If} $NsisStartMenuShortcutState == ""
-    StrCpy $NsisStartMenuShortcutState "1"
-  ${EndIf}
-
-  ; Drop wrapping quotes a user may have pasted together with the path.
-  StrCpy $1 $INSTDIR 1
-  ${If} $1 == '"'
-    StrCpy $INSTDIR $INSTDIR -1 1
-    StrCpy $1 $INSTDIR 1 -1
-    ${If} $1 == '"'
-      StrCpy $INSTDIR $INSTDIR -1
-    ${EndIf}
-  ${EndIf}
-
-  ${If} $INSTDIR == ""
-    !insertmacro NsisSetUiMode 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "请选择安装位置。"
-    Abort
-  ${EndIf}
-
-  ; Must already be a local absolute path ("X:\...") before normalization, so a
-  ; relative path cannot silently resolve against $PLUGINSDIR.
-  StrCpy $1 $INSTDIR 1 1
-  ${If} $1 != ":"
-    !insertmacro NsisSetUiMode 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "请输入完整的本地路径，例如 D:\ALEMBIC。"
-    Abort
-  ${EndIf}
-
-  GetFullPathName $INSTDIR "$INSTDIR"
-  StrCpy $2 $INSTDIR 1 -1
-  ${If} $2 == "\"
-    StrCpy $INSTDIR $INSTDIR -1
-  ${EndIf}
-  ; "C:\", "C:\Windows\.." and similar normalize to something that must not be
-  ; accepted as an installation directory.
-  StrLen $1 $INSTDIR
-  ${If} $1 < 4
-    !insertmacro NsisSetUiMode 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "请选择具体安装目录，例如 D:\ALEMBIC。"
-    Abort
-  ${EndIf}
-  StrCpy $2 $INSTDIR 1 -1
-  ${If} $2 == ":"
-    !insertmacro NsisSetUiMode 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "请选择具体安装目录，而不是驱动器根目录。"
-    Abort
-  ${EndIf}
-
-  ${If} $INSTDIR == "$PROGRAMFILES64"
-  ${OrIf} $INSTDIR == "$PROGRAMFILES64\"
-  ${OrIf} $INSTDIR == "$PROGRAMFILES"
-  ${OrIf} $INSTDIR == "$PROGRAMFILES\"
-  ${OrIf} $INSTDIR == "$WINDIR"
-  ${OrIf} $INSTDIR == "$WINDIR\"
-  ${OrIf} $INSTDIR == "$SYSDIR"
-  ${OrIf} $INSTDIR == "$SYSDIR\"
-    !insertmacro NsisSetUiMode 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "请选择具体安装目录，而不是系统目录本身。"
-    Abort
-  ${EndIf}
-
-  ; Never wipe an unrelated non-empty directory.
-  IfFileExists "$INSTDIR\*.*" alembic_path_has_files
-  Goto alembic_path_ok
-alembic_path_has_files:
-  IfFileExists "$INSTDIR\${PRODUCT_FILENAME}.exe" alembic_path_ok
-  IfFileExists "$INSTDIR\${PRODUCT_FILENAME}-Uninstall.exe" alembic_path_ok
-  !insertmacro NsisSetUiMode 0
-  MessageBox MB_ICONEXCLAMATION|MB_OK "该目录已有其他文件，请选择空目录或现有的 ALEMBIC 安装目录。"
-  Abort
-alembic_path_ok:
-  Call AlembicPrepareInstall
-FunctionEnd
-
-Function AlembicInstallFilesPagePre
-  Call NsisHideWizard
-FunctionEnd
-
-Function AlembicInstallFilesPageShow
-  ; The built-in NSIS instfiles page still performs and owns the installation.
-  !insertmacro NsisSetUiMode 2
-  Call NsisHideWizard
-FunctionEnd
-
-Function NsisFinishPageCreate
-  nsDialogs::Create 1018
-  Pop $0
-  ${If} $0 == error
-    Abort
-  ${EndIf}
-  !insertmacro NsisSetUiMode 4
-  Call NsisHideWizard
-  nsDialogs::Show
-FunctionEnd
-
-Function NsisFinishPageLeave
-  System::Call '"$PLUGINSDIR\alembic-installer-ui.dll"::AlembicUI_Shutdown()'
-FunctionEnd
+Var NsisDesktopCheckbox
+Var NsisStartMenuCheckbox
 
 Function AlembicPrepareInstall
   ; Stop the running app, then replace only an existing ALEMBIC installation.
@@ -208,16 +51,52 @@ Function AlembicPrepareInstall
   CreateDirectory "$INSTDIR"
 FunctionEnd
 
-Function .onGUIEnd
-  ${IfNot} ${Silent}
-    System::Call '"$PLUGINSDIR\alembic-installer-ui.dll"::AlembicUI_Shutdown()'
+; Shown right after the standard directory page.
+Function NsisOptionsPageCreate
+  nsDialogs::Create 1018
+  Pop $0
+  ${If} $0 == error
+    Abort
+  ${EndIf}
+
+  ; MUI_HEADER_TEXT cannot be used here: this include is preprocessed before
+  ; MUI2.nsh is loaded, so the title is drawn as a normal label instead.
+  ${NSD_CreateLabel} 0 0 100% 14u "安装选项"
+  Pop $0
+  CreateFont $1 "Microsoft YaHei UI" "12" "700"
+  SendMessage $0 ${WM_SETFONT} $1 1
+
+  ${NSD_CreateLabel} 0 18u 100% 34u "安装器将安装 ALEMBIC 主程序、内置运行时（Node、Python、pnpm）以及 Windows 命令沙盒。$\r$\n运行时与命令沙盒是必需组件，不能取消安装。"
+  Pop $0
+
+  ${NSD_CreateCheckbox} 0 60u 100% 12u "创建桌面快捷方式"
+  Pop $NsisDesktopCheckbox
+  ${NSD_SetState} $NsisDesktopCheckbox 1
+
+  ${NSD_CreateCheckbox} 0 78u 100% 12u "创建开始菜单快捷方式"
+  Pop $NsisStartMenuCheckbox
+  ${NSD_SetState} $NsisStartMenuCheckbox 1
+
+  nsDialogs::Show
+FunctionEnd
+
+Function NsisOptionsPageLeave
+  ${NSD_GetState} $NsisDesktopCheckbox $0
+  ${If} $0 == 1
+    StrCpy $NsisDesktopShortcutState "1"
+  ${Else}
+    StrCpy $NsisDesktopShortcutState "0"
+  ${EndIf}
+
+  ${NSD_GetState} $NsisStartMenuCheckbox $0
+  ${If} $0 == 1
+    StrCpy $NsisStartMenuShortcutState "1"
+  ${Else}
+    StrCpy $NsisStartMenuShortcutState "0"
   ${EndIf}
 FunctionEnd
 
 !macro customInit
-  InitPluginsDir
-  File /oname=$PLUGINSDIR\alembic-installer-ui.dll "${ALEMBIC_UI_DLL}"
-
   ; Preserve /D and electron-builder's computed install directory.
   ${If} $INSTDIR == ""
     StrCpy $INSTDIR "$PROGRAMFILES64\${PRODUCT_FILENAME}"
@@ -240,13 +119,9 @@ alembic_silent_prepare:
 alembic_prepare_done:
 !macroend
 
-; electron-builder inserts this hook right before MUI_PAGE_INSTFILES.
+; electron-builder inserts this hook right before MUI_PAGE_INSTFILES, i.e. after
+; the directory page that allowToChangeInstallationDirectory enables.
 !macro customPageAfterChangeDir
-  !define /IfNDef MUI_PAGE_CUSTOMFUNCTION_PRE AlembicInstallFilesPagePre
-  !define /IfNDef MUI_PAGE_CUSTOMFUNCTION_SHOW AlembicInstallFilesPageShow
-!macroend
-
-!macro customWelcomePage
   Page custom NsisOptionsPageCreate NsisOptionsPageLeave
 !macroend
 
@@ -259,12 +134,16 @@ alembic_prepare_done:
     DeleteRegKey HKLM "${UNINSTALL_REGISTRY_KEY_2}"
   !endif
 
-  ${IfNot} ${Silent}
-    !insertmacro NsisSetUiMode 3
-  ${EndIf}
-
   DetailPrint "配置运行时与命令沙盒…"
-  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\resources\install\nsis-postinstall.ps1" -InstallDir "$INSTDIR" -AppExe "${PRODUCT_FILENAME}.exe" -Version "${VERSION}" -Publisher "${ALEMBIC_PUBLISHER}" -DesktopShortcut "$NsisDesktopShortcutState" -StartMenuShortcut "$NsisStartMenuShortcutState" -LogFile "$TEMP\alembic-install.log"'
+  ; NSIS is a 32-bit process, so "$SYSDIR\WindowsPowerShell" would start the
+  ; 32-bit PowerShell. That one has no LocalAccounts module (Get-LocalUser) and
+  ; redirects HKLM\SOFTWARE to Wow6432Node. Sysnative addresses the 64-bit
+  ; PowerShell from a 32-bit process.
+  StrCpy $2 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+  IfFileExists "$2" alembic_powershell_ready
+  StrCpy $2 "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
+alembic_powershell_ready:
+  nsExec::ExecToStack '"$2" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\resources\install\nsis-postinstall.ps1" -InstallDir "$INSTDIR" -AppExe "${PRODUCT_FILENAME}.exe" -Version "${VERSION}" -Publisher "${ALEMBIC_PUBLISHER}" -DesktopShortcut "$NsisDesktopShortcutState" -StartMenuShortcut "$NsisStartMenuShortcutState" -LogFile "$TEMP\alembic-install.log"'
   Pop $0
   Pop $1
   ${If} $0 != 0
@@ -272,9 +151,5 @@ alembic_prepare_done:
     RMDir /r "$INSTDIR"
     Abort
   ${EndIf}
-!macroend
-
-!macro customFinishPage
-  Page custom NsisFinishPageCreate NsisFinishPageLeave
 !macroend
 !endif

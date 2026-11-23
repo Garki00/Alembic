@@ -19,6 +19,11 @@ const IS_UNINSTALL =
   /uninstall/i.test(path.basename(process.execPath)) ||
   /^卸载/i.test(path.basename(process.execPath));
 
+// 卸载器运行时副本的标记。Windows 不允许删除正在运行的 exe，所以卸载器会先把
+// 自己复制到 %TEMP% 再启动；副本通过 ALEMBIC_UNINSTALL_DIR 定位真正的安装目录。
+const UNINSTALL_COPY_MARKER = "ALEMBIC_UNINSTALL_COPY";
+const UNINSTALL_COPY_DIR_ENV = "ALEMBIC_UNINSTALL_COPY_DIR";
+
 // 最早的落盘标记：不依赖 electron，用来判断「进程到底有没有跑到 JS」。
 // 如果启动后连 boot.log 都没有，说明崩在 Chromium 初始化阶段。
 try {
@@ -32,15 +37,15 @@ try {
   );
 } catch (_) { /* 记不下来也不能影响启动 */ }
 
-const { app, BrowserWindow, Menu, shell, ipcMain } = require("electron");
+const { app, BrowserWindow, Menu, shell, ipcMain, dialog } = require("electron");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const { startFrontendServer } = require("./frontend-server");
 
 // The window is a local renderer only. Disabling the GPU before app ready avoids
 // the Chromium GPU child-process launch attempt on machines where it is denied.
-app.commandLine.appendSwitch("disable-gpu");
-app.commandLine.appendSwitch("disable-gpu-compositing");
+// app.commandLine.appendSwitch("disable-gpu");
+// app.commandLine.appendSwitch("disable-gpu-compositing");
 
 // Chromium 需要在 userData 目录里建单实例锁、缓存等文件。目录不可写时
 // requestSingleInstanceLock() 会返回 false（表现为「双击后什么都没有」），
@@ -579,13 +584,138 @@ function readJsonFile(file) {
 }
 
 function installReceipt() {
-  // ALEMBIC_UNINSTALL_DIR 只用于开发时用假 install.json 调试卸载界面。
-  const installDir = process.env.ALEMBIC_UNINSTALL_DIR
-    ? path.resolve(process.env.ALEMBIC_UNINSTALL_DIR)
-    : path.dirname(process.execPath);
+  // 副本模式下 ALEMBIC_UNINSTALL_DIR 指向真正的安装目录；从安装目录直接运行时
+  // 就是 exe 所在目录。开发时也可用这个变量配合假 install.json 调试界面。
+  const installDir = uninstallSourceDir();
   const receipt = readJsonFile(path.join(installDir, "install.json"));
   if (!receipt || typeof receipt !== "object") return null;
   return { installDir, receipt };
+}
+
+function uninstallSourceDir() {
+  return process.env.ALEMBIC_UNINSTALL_DIR
+    ? path.resolve(process.env.ALEMBIC_UNINSTALL_DIR)
+    : path.dirname(process.execPath);
+}
+
+// 让一个脱离父进程的 PowerShell 在指定 PID 退出后删除若干临时目录。
+// 卸载器副本和它自己的 profile 都含正在运行的 exe/文件，必须等进程退出再删。
+function scheduleRemovalAfterExit(directories) {
+  const targets = [...new Set((directories || []).filter(Boolean))];
+  if (!targets.length) return;
+  const lines = [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    `$wait = ${process.pid}`,
+    "while (Get-Process -Id $wait -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 300 }",
+    "for ($i = 0; $i -lt 120; $i++) {",
+    "  $left = $false",
+  ];
+  for (const directory of targets) {
+    const quoted = `'${directory.replace(/'/g, "''")}'`;
+    lines.push(`  try { Remove-Item -LiteralPath ${quoted} -Recurse -Force -ErrorAction Stop } catch { }`);
+    lines.push(`  if (Test-Path -LiteralPath ${quoted}) { $left = $true }`);
+  }
+  lines.push("  if (-not $left) { break }", "  Start-Sleep -Milliseconds 500", "}");
+  const encoded = Buffer.from(lines.join("\r\n"), "utf16le").toString("base64");
+  try {
+    const helper = spawn(
+      path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+      { detached: true, stdio: "ignore", windowsHide: true, cwd: os.tmpdir() },
+    );
+    helper.unref();
+  } catch (error) {
+    log(`安排临时目录清理失败：${error.message || error}`);
+  }
+}
+
+// 复制卸载器运行所需的文件，跳过体积大的后端/前端资源和主程序 exe。
+function copyUninstallerRuntime(source, target) {
+  const keepExe = path.basename(process.execPath).toLowerCase();
+  fs.cpSync(source, target, {
+    recursive: true,
+    filter(src) {
+      const relative = path.relative(source, src);
+      if (!relative) return true;
+      const parts = relative.split(path.sep);
+      const lower = parts.map((part) => part.toLowerCase());
+      if (lower[0] === "resources" && lower.length > 1 && (lower[1] === "backend" || lower[1] === "frontend")) {
+        return false;
+      }
+      if (parts.length === 1) {
+        // 主程序 exe 与卸载器 exe 内容相同，只需要后者。
+        if (lower[0].endsWith(".exe") && lower[0] !== keepExe) return false;
+        if (lower[0] === "install.json") return false;
+      }
+      return true;
+    },
+  });
+  for (const relative of [path.basename(process.execPath), "resources\\app.asar", "resources\\install\\uninstall-worker.ps1"]) {
+    if (!fs.existsSync(path.join(target, relative))) {
+      throw new Error(`卸载器副本缺少 ${relative}`);
+    }
+  }
+}
+
+// 安装目录里的卸载器无法删除正在运行的自己，所以复制一份到 %TEMP% 后从副本启动。
+// 返回 true 表示已经切换到副本（本进程应退出）。
+function relocateUninstaller() {
+  if (!IS_UNINSTALL) return false;
+  if (process.env[UNINSTALL_COPY_MARKER] === "1") return false;
+  if (process.env.ALEMBIC_UNINSTALL_DIR) return false; // 开发调试目录不复制
+  const source = path.dirname(process.execPath);
+  if (!fs.existsSync(path.join(source, "install.json"))) return false;
+
+  let target = "";
+  try {
+    target = fs.mkdtempSync(path.join(os.tmpdir(), "alembic-uninstaller-"));
+    copyUninstallerRuntime(source, target);
+  } catch (error) {
+    log(`准备卸载器副本失败：${error.message || error}`);
+    if (target) {
+      try { fs.rmSync(target, { recursive: true, force: true }); } catch (_) { /* 尽力清理 */ }
+    }
+    dialog.showErrorBox(
+      "无法启动卸载程序",
+      `准备卸载程序失败：${error.message || error}\n\n请确认磁盘空间充足后重试。`,
+    );
+    app.exit(1);
+    return true;
+  }
+
+  try {
+    const child = spawn(path.join(target, path.basename(process.execPath)), ["--uninstall"], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+      // 不能继承安装目录作为 cwd，否则卸载期间无法删除该目录。
+      cwd: os.tmpdir(),
+      env: {
+        ...process.env,
+        ALEMBIC_UNINSTALL_DIR: source,
+        [UNINSTALL_COPY_MARKER]: "1",
+        [UNINSTALL_COPY_DIR_ENV]: target,
+      },
+    });
+    child.unref();
+    log(`已切换到 %TEMP% 中的卸载器副本：${target}`);
+  } catch (error) {
+    log(`启动卸载器副本失败：${error.message || error}`);
+    dialog.showErrorBox("无法启动卸载程序", `启动卸载程序失败：${error.message || error}`);
+    app.exit(1);
+    return true;
+  }
+
+  // 启动器自己的临时 profile 也要清掉；副本目录由副本退出时清理。
+  scheduleRemovalAfterExit([USER_DATA]);
+  app.exit(0);
+  return true;
+}
+
+function scheduleUninstallerCopyCleanup() {
+  if (process.env[UNINSTALL_COPY_MARKER] !== "1") return;
+  const target = process.env[UNINSTALL_COPY_DIR_ENV] || "";
+  scheduleRemovalAfterExit([target, USER_DATA]);
 }
 
 function uninstallWorkerPath() {
@@ -680,7 +810,10 @@ function runElevatedPowerShell(workerPath, workerArgs, { progressFile, logPath, 
       "try {",
       `  $runFile = ${psQuote(runScript)}`,
       "  $runArg = '-NoProfile -ExecutionPolicy Bypass -File \"' + $runFile + '\"'",
-      "  $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $runArg -Verb RunAs -Wait -PassThru -WindowStyle Hidden",
+      "  $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $runArg -Verb RunAs -PassThru -WindowStyle Hidden",
+      // 不能用 -Wait：PowerShell 5.1 的 Start-Process -Wait 会连后代进程一起等，
+      // 卸载 worker 启动的清理进程会等主窗口退出，主窗口又在等这里 -> 死锁。
+      "  $p.WaitForExit()",
       "  $code = $p.ExitCode",
       "} catch {",
       "  $code = 1223",
@@ -692,7 +825,6 @@ function runElevatedPowerShell(workerPath, workerArgs, { progressFile, logPath, 
     ].join("\r\n");
     fs.writeFileSync(elevateScript, "\ufeff" + elevateBody, "utf8");
 
-    const watcher = onEvent ? watchJsonLines(progressFile, onEvent) : { stop() {} };
     const powershell = path.join(
       process.env.SystemRoot || "C:\\Windows",
       "System32",
@@ -706,6 +838,7 @@ function runElevatedPowerShell(workerPath, workerArgs, { progressFile, logPath, 
     });
 
     let settled = false;
+    let watcher = { stop() {} };
     const finish = (error) => {
       if (settled) return;
       settled = true;
@@ -716,6 +849,23 @@ function runElevatedPowerShell(workerPath, workerArgs, { progressFile, logPath, 
       if (error) reject(error);
       else resolve({ code, workDir, resultFile });
     };
+
+    if (onEvent) {
+      watcher = watchJsonLines(progressFile, (payload) => {
+        // worker 已经给出最终结果时，即使提权进程因为残留后代没退出，也必须
+        // 让界面离开「卸载中」；否则窗口会永远关不掉。
+        if (payload && payload.event === "result" && !settled) {
+          setTimeout(() => {
+            if (settled) return;
+            try {
+              child.kill();
+            } catch (_) { /* 已退出 */ }
+            finish(null);
+          }, 10000).unref();
+        }
+        onEvent(payload);
+      });
+    }
 
     child.on("error", (error) => finish(new Error(`无法启动安装程序：${error.message}`)));
     child.on("exit", () => finish(null));
@@ -873,6 +1023,11 @@ function registerUninstallIpc() {
     if (uninstallBusy) {
       return { ok: false, error: "卸载正在进行，完成后再关闭窗口。" };
     }
+    // 清理进程要等卸载器进程退出后才删除安装目录。如果 app.quit() 被窗口或
+    // 渲染进程拖住，目录就会一直留在磁盘上；这里加一个强制退出兜底。
+    const forceExit = setTimeout(() => app.exit(0), 3000);
+    forceExit.unref();
+    app.once("will-quit", () => clearTimeout(forceExit));
     app.quit();
     return { ok: true };
   });
@@ -976,6 +1131,8 @@ if (!gotLock && otherInstance) {
   app.whenReady().then(async () => {
     if (IS_UNINSTALL) {
       Menu.setApplicationMenu(null);
+      // 从安装目录启动时先切换到 %TEMP% 副本，安装目录才能在卸载过程中被删空。
+      if (relocateUninstaller()) return;
       createUninstallWindow();
       return;
     }
@@ -1021,6 +1178,8 @@ app.on("window-all-closed", () => app.quit());
 app.on("before-quit", () => {
   quitting = true;
   stopBackend();
+  // 卸载器副本退出后删除 %TEMP% 里的副本与自己的 profile。
+  scheduleUninstallerCopyCleanup();
 });
 process.on("exit", stopBackend);
 

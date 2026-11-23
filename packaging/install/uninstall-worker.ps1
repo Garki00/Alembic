@@ -276,33 +276,24 @@ function Remove-Registry {
     }
 }
 
-function Schedule-Cleanup {
-    param([string]$Directory, [int]$WaitPid)
-    $tempDir = if ($env:TEMP) { $env:TEMP } else { [IO.Path]::GetTempPath() }
-    # 不落地 .ps1 再提权执行，避免用户 temp 目录里被替换的 TOCTOU 风险。
-    $body = @"
-`$ErrorActionPreference = 'SilentlyContinue'
-try { Set-Location -LiteralPath ([IO.Path]::GetTempPath()) } catch { }
-`$install = '$($Directory.Replace("'", "''"))'
-`$wait = $WaitPid
-for (`$i = 0; `$i -lt 240; `$i++) {
-    if (`$wait -le 0 -or -not (Get-Process -Id `$wait -ErrorAction SilentlyContinue)) { break }
-    Start-Sleep -Milliseconds 500
-}
-for (`$i = 0; `$i -lt 15; `$i++) {
-    try {
-        Remove-Item -LiteralPath `$install -Recurse -Force -ErrorAction Stop
-        break
-    } catch {
-        Start-Sleep -Seconds 1
+function Remove-InstallDir {
+    param([string]$Directory)
+    $full = Get-SafeDirectory $Directory
+    if (-not $full) { throw "安装目录路径无效：$Directory" }
+    # 卸载器从 %TEMP% 副本运行，安装目录里没有正在执行的文件，所以这里可以同步
+    # 删除，页面不必等窗口关闭。杀软/索引器可能短暂占用，重试最多 60 秒。
+    for ($attempt = 1; $attempt -le 120; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop
+            Write-Log "已删除安装目录：$full"
+            return
+        } catch {
+            if ($attempt -eq 120) {
+                throw "无法删除安装目录 $full：$($_.Exception.Message)"
+            }
+            Start-Sleep -Milliseconds 500
+        }
     }
-}
-"@
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
-    Start-Process -FilePath "powershell.exe" `
-        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded" `
-        -WindowStyle Hidden -WorkingDirectory $tempDir | Out-Null
-    Write-Log "已安排安装目录清理：$Directory"
 }
 
 try {
@@ -348,9 +339,9 @@ try {
     Remove-Registry
     Complete-Step "registry" "注册信息已处理。" 76
 
-    Start-Step "cleanup" "安排删除安装目录…" 82
-    Schedule-Cleanup -Directory $script:FullInstallDir -WaitPid $UninstallerPid
-    Complete-Step "cleanup" "安装目录将在窗口关闭后删除。" 95
+    Start-Step "cleanup" "删除安装目录…" 82
+    Remove-InstallDir $script:FullInstallDir
+    Complete-Step "cleanup" "安装目录已删除。" 95
 
     $message = "ALEMBIC 已卸载。"
     if ($script:Warnings.Count -gt 0) {

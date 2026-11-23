@@ -149,8 +149,8 @@ async function start() {
       setProgress(100);
       const warnings = Array.isArray(result.warnings) ? result.warnings : [];
       el.doneMessage.textContent = warnings.length
-        ? `卸载完成，但有 ${warnings.length} 项需要手动处理。安装目录会在本窗口关闭后自动删除。`
-        : "应用文件已移除。安装目录会在本窗口关闭后几秒内自动删除；如有残留，可手动删除安装位置。";
+        ? `卸载完成，但有 ${warnings.length} 项需要手动处理。安装目录已删除，临时副本会在关闭窗口后清理。`
+        : "应用文件和安装目录已删除。关闭本窗口后，卸载程序会清理自己留在临时目录里的副本。";
       show("done");
     } else {
       const message = (result && result.error) || "卸载失败，请查看日志。";
