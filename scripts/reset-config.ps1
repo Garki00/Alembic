@@ -1,4 +1,4 @@
-# scripts/reset-config.ps1
+﻿# scripts/reset-config.ps1
 # 清除本机 Alembic（以及旧版 SmartAgent）的配置数据，方便重新查看初始化向导。
 #
 # 默认只删除配置目录（data/），保留会话历史（memory/）；

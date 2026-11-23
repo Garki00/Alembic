@@ -4,6 +4,7 @@
   "publisher": "Garki",
   "version": "0.1.0",
   "channel": "stable",
+  "arch": "x64",
   "installDir": "%ProgramFiles%\\ALEMBIC",
   "minimumWindows": "10.0.17763",
   "sandbox": {
@@ -15,7 +16,7 @@
     "type": "nsis",
     "perMachine": true,
     "requireAdmin": true,
-    "allowCustomDir": false,
+    "allowCustomDir": true,
     "desktopShortcutByDefault": true,
     "startMenuShortcutByDefault": true,
     "sandboxOptional": false

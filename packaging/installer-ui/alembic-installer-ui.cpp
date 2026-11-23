@@ -2,6 +2,7 @@
 #define NOMINMAX
 #define _WIN32_WINNT 0x0601
 #include <windows.h>
+#include <Unknwn.h>
 #include <windowsx.h>
 #include <commctrl.h>
 #include <dwmapi.h>
@@ -13,12 +14,20 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <cstdio>
+#include <cstdlib>
 
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
+
+// Stack node layout used by the NSIS plug-in ABI (see exdll.h).
+struct stack_t {
+    stack_t* next;
+    wchar_t text[1];
+};
 
 namespace {
 constexpr wchar_t kWindowClass[] = L"Alembic.NativeInstaller.UI";
@@ -37,6 +46,9 @@ constexpr UINT kPbmDeltaPos = WM_USER + 3;
 constexpr UINT kPbmSetStep = WM_USER + 4;
 constexpr UINT kPbmStepIt = WM_USER + 5;
 constexpr UINT kPbmSetRange32 = WM_USER + 6;
+// Cold start of a freshly extracted, unsigned DLL (GDI+ load, font enumeration,
+// anti-virus scan) can exceed a few seconds; give it real headroom.
+constexpr DWORD kStartupTimeoutMs = 15000;
 
 struct Palette {
     Gdiplus::Color paper;
@@ -58,6 +70,8 @@ struct SharedState {
     DWORD uiThreadId = 0;
     HHOOK progressHook = nullptr;
     HANDLE readyEvent = nullptr;
+    std::atomic<bool> cancelled{false};
+    std::atomic<bool> foregroundSet{false};
     std::atomic<int> mode{kWelcome};
     std::atomic<int> rawProgress{0};
     std::atomic<bool> progressKnown{false};
@@ -70,8 +84,10 @@ struct SharedState {
     std::wstring optionsPath;
     bool dark = false;
     ULONG_PTR gdiplusToken = 0;
+    std::unique_ptr<Gdiplus::FontFamily> fontFamily;
     HFONT editFont = nullptr;
     HBRUSH editBrush = nullptr;
+    HBRUSH backgroundBrush = nullptr;
 };
 
 SharedState g;
@@ -125,11 +141,18 @@ void DrawUiText(Gdiplus::Graphics& graphics, const wchar_t* text, float x, float
               float width, float height, float size, const Gdiplus::Color& color,
               Gdiplus::FontStyle style = Gdiplus::FontStyleRegular,
               Gdiplus::StringAlignment alignment = Gdiplus::StringAlignmentNear) {
-    std::unique_ptr<Gdiplus::FontFamily> family(new Gdiplus::FontFamily(L"Microsoft YaHei UI"));
-    if (family->GetLastStatus() != Gdiplus::Ok) {
-        family.reset(new Gdiplus::FontFamily(L"Microsoft YaHei"));
+    // Enumerating font families on every text run makes the first paint take
+    // seconds; the family is created once on the UI thread and reused.
+    std::unique_ptr<Gdiplus::FontFamily> fallback;
+    Gdiplus::FontFamily* family = g.fontFamily.get();
+    if (!family) {
+        fallback.reset(new Gdiplus::FontFamily(L"Microsoft YaHei UI"));
+        if (fallback->GetLastStatus() != Gdiplus::Ok) {
+            fallback.reset(new Gdiplus::FontFamily(L"Microsoft YaHei"));
+        }
+        family = fallback.get();
     }
-    Gdiplus::Font font(family.get(), size, style, Gdiplus::UnitPixel);
+    Gdiplus::Font font(family, size, style, Gdiplus::UnitPixel);
     Gdiplus::SolidBrush brush(color);
     Gdiplus::StringFormat format;
     format.SetAlignment(alignment);
@@ -351,7 +374,204 @@ void PersistOptions() {
     CloseHandle(file);
 }
 
+// --- GDI renderer -----------------------------------------------------------
+// The wizard is drawn with plain GDI on purpose: GDI+ start-up and font-family
+// enumeration can block for a long time inside a cold, elevated installer
+// process, which leaves the window unpainted and unresponsive.
+HFONT g_fontTitle = nullptr;
+HFONT g_fontBody = nullptr;
+HFONT g_fontSmall = nullptr;
+
+HFONT MakeUiFont(int height, bool bold) {
+    return CreateFontW(-height, 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+}
+
+void DestroyUiFonts() {
+    if (g_fontTitle) { DeleteObject(g_fontTitle); g_fontTitle = nullptr; }
+    if (g_fontBody) { DeleteObject(g_fontBody); g_fontBody = nullptr; }
+    if (g_fontSmall) { DeleteObject(g_fontSmall); g_fontSmall = nullptr; }
+}
+
+void GdiFill(HDC dc, int left, int top, int right, int bottom, COLORREF color, int radius) {
+    HBRUSH brush = CreateSolidBrush(color);
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    if (radius > 0) {
+        RoundRect(dc, left, top, right, bottom, radius, radius);
+    } else {
+        Rectangle(dc, left, top, right, bottom);
+    }
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(brush);
+}
+
+void GdiFrame(HDC dc, int left, int top, int right, int bottom, COLORREF color, int radius) {
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+    if (radius > 0) {
+        RoundRect(dc, left, top, right, bottom, radius, radius);
+    } else {
+        Rectangle(dc, left, top, right, bottom);
+    }
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void GdiText(HDC dc, HFONT font, COLORREF color, const wchar_t* text,
+             int left, int top, int right, int bottom, UINT format) {
+    HGDIOBJ old = SelectObject(dc, font);
+    SetTextColor(dc, color);
+    SetBkMode(dc, TRANSPARENT);
+    RECT rc{left, top, right, bottom};
+    DrawTextW(dc, text, -1, &rc, format | DT_SINGLELINE | DT_VCENTER);
+    SelectObject(dc, old);
+}
+
+void RenderGdi(HDC dc) {
+    const bool dark = g.dark;
+    const COLORREF paper = dark ? RGB(18, 23, 20) : RGB(250, 248, 241);
+    const COLORREF paperDeep = dark ? RGB(24, 32, 25) : RGB(244, 242, 232);
+    const COLORREF card = dark ? RGB(28, 36, 32) : RGB(255, 253, 248);
+    const COLORREF ink = dark ? RGB(230, 236, 225) : RGB(76, 85, 73);
+    const COLORREF muted = dark ? RGB(169, 182, 161) : RGB(101, 115, 95);
+    const COLORREF emerald = dark ? RGB(99, 185, 140) : RGB(57, 113, 87);
+    const COLORREF border = dark ? RGB(44, 56, 48) : RGB(222, 223, 212);
+    const COLORREF field = dark ? RGB(31, 40, 35) : RGB(255, 255, 252);
+    const COLORREF onEmerald = dark ? RGB(15, 21, 18) : RGB(251, 250, 243);
+
+    GdiFill(dc, 0, 0, kWidth, kHeight, paper, 0);
+    GdiFill(dc, 0, 0, kWidth, 58, paperDeep, 0);
+    GdiFill(dc, 0, 0, 3, 58, emerald, 0);
+    GdiText(dc, g_fontTitle, ink, L"ALEMBIC", 28, 8, 258, 48, DT_LEFT);
+    GdiFill(dc, 0, 56, kWidth, 58, border, 0);
+
+    // Window buttons: minimise bar and close cross.
+    {
+        HPEN pen = CreatePen(PS_SOLID, 2, muted);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        MoveToEx(dc, 490, 29, nullptr);
+        LineTo(dc, 504, 29);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+    }
+    {
+        HPEN pen = CreatePen(PS_SOLID, 2, ink);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        MoveToEx(dc, 527, 21, nullptr);
+        LineTo(dc, 539, 33);
+        MoveToEx(dc, 539, 21, nullptr);
+        LineTo(dc, 527, 33);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+    }
+
+    const int mode = g.mode.load();
+    if (mode == kWelcome) {
+        GdiText(dc, g_fontTitle, ink, L"安装 ALEMBIC", 36, 77, 476, 113, DT_LEFT);
+        GdiText(dc, g_fontSmall, muted, L"安装位置", 36, 126, 166, 148, DT_LEFT);
+
+        GdiFill(dc, 36, 157, 424, 195, field, 8);
+        GdiFrame(dc, 36, 157, 424, 195, border, 8);
+        GdiFill(dc, 444, 157, 524, 195, paperDeep, 8);
+        GdiFrame(dc, 444, 157, 524, 195, border, 8);
+        GdiText(dc, g_fontSmall, ink, L"浏览…", 444, 157, 524, 195, DT_CENTER);
+
+        GdiText(dc, g_fontSmall, muted, L"快捷方式", 36, 205, 166, 227, DT_LEFT);
+
+        const struct { int top; bool checked; const wchar_t* label; } options[] = {
+            {232, g.desktopShortcut.load(), L"桌面快捷方式"},
+            {273, g.startMenuShortcut.load(), L"开始菜单快捷方式"},
+        };
+        for (const auto& option : options) {
+            GdiFill(dc, 37, option.top, 55, option.top + 18, option.checked ? emerald : card, 5);
+            if (!option.checked) GdiFrame(dc, 37, option.top, 55, option.top + 18, border, 5);
+            else {
+                HPEN pen = CreatePen(PS_SOLID, 2, onEmerald);
+                HGDIOBJ oldPen = SelectObject(dc, pen);
+                MoveToEx(dc, 41, option.top + 9, nullptr);
+                LineTo(dc, 45, option.top + 13);
+                LineTo(dc, 52, option.top + 5);
+                SelectObject(dc, oldPen);
+                DeleteObject(pen);
+            }
+            GdiText(dc, g_fontBody, ink, option.label, 67, option.top - 4, 400, option.top + 23, DT_LEFT);
+        }
+
+        GdiFill(dc, 28, 309, 532, 310, border, 0);
+        GdiFill(dc, 356, 322, 524, 366, emerald, 10);
+        GdiText(dc, g_fontBody, onEmerald, L"安装", 356, 322, 524, 366, DT_CENTER);
+        return;
+    }
+
+    if (mode == kComplete) {
+        GdiText(dc, g_fontTitle, ink, L"安装完成", 36, 106, 476, 148, DT_LEFT);
+        GdiText(dc, g_fontBody, muted, L"ALEMBIC 已安装。", 36, 161, 476, 189, DT_LEFT);
+        GdiFill(dc, 388, 322, 524, 366, emerald, 10);
+        GdiText(dc, g_fontBody, onEmerald, L"完成", 388, 322, 524, 366, DT_CENTER);
+        return;
+    }
+
+    const wchar_t* status = mode == kPreparing ? L"正在准备安装…" :
+        mode == kFinalizing ? L"正在配置运行环境…" : L"正在安装 ALEMBIC…";
+    GdiText(dc, g_fontTitle, ink, L"安装 ALEMBIC", 36, 94, 476, 129, DT_LEFT);
+    GdiText(dc, g_fontBody, muted, status, 36, 166, 524, 194, DT_LEFT);
+
+    const int barLeft = 36, barTop = 210, barWidth = 488, barHeight = 10;
+    GdiFill(dc, barLeft, barTop, barLeft + barWidth, barTop + barHeight, border, barHeight);
+    if (mode == kExtracting && g.progressKnown.load()) {
+        const int percent = std::max(0, std::min(100, g.rawProgress.load()));
+        if (percent > 0) {
+            GdiFill(dc, barLeft, barTop, barLeft + barWidth * percent / 100, barTop + barHeight,
+                emerald, barHeight);
+        }
+        wchar_t text[8]{};
+        wsprintfW(text, L"%d%%", percent);
+        GdiText(dc, g_fontSmall, muted, text, 36, 229, 524, 251, DT_RIGHT);
+        return;
+    }
+
+    // Indeterminate sweep.
+    const int segment = barWidth / 5;
+    const int offset = animationOffset % (barWidth + segment) - segment;
+    int left = barLeft + offset;
+    int right = left + segment;
+    if (left < barLeft) left = barLeft;
+    if (right > barLeft + barWidth) right = barLeft + barWidth;
+    if (right > left) GdiFill(dc, left, barTop, right, barTop + barHeight, emerald, barHeight);
+    animationOffset = (animationOffset + 8) % (barWidth + segment);
+}
+
+// Temporary tracing: tells us exactly how far the UI thread gets.
+void TraceUi(const char* message) {
+    wchar_t path[MAX_PATH]{};
+    if (GetTempPathW(MAX_PATH, path) == 0) return;
+    lstrcatW(path, L"alembic-ui-trace.log");
+    HANDLE file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    wchar_t line[256]{};
+    MultiByteToWideChar(CP_ACP, 0, message, -1, line, 256);
+    lstrcatW(line, L"\r\n");
+    DWORD written = 0;
+    WriteFile(file, line, static_cast<DWORD>(lstrlenW(line) * sizeof(wchar_t)), &written, nullptr);
+    CloseHandle(file);
+}
+
+HBRUSH BackgroundBrush() {
+    if (!g.backgroundBrush) {
+        g.backgroundBrush = CreateSolidBrush(g.dark ? RGB(18, 23, 20) : RGB(250, 248, 241));
+    }
+    return g.backgroundBrush;
+}
+
 void PaintInstaller(HWND window) {
+    static bool traced = false;
+    if (!traced) { traced = true; TraceUi("paint"); }
     PAINTSTRUCT paint{};
     HDC hdc = BeginPaint(window, &paint);
     RECT client{};
@@ -360,42 +580,7 @@ void PaintInstaller(HWND window) {
         EndPaint(window, &paint);
         return;
     }
-    // Repaint into an off-screen bitmap: the progress animation repaints every
-    // 80 ms and drawing straight to the window flickers.
-    HDC buffer = CreateCompatibleDC(hdc);
-    HBITMAP bitmap = buffer ? CreateCompatibleBitmap(hdc, client.right, client.bottom) : nullptr;
-    if (buffer && bitmap) {
-        HGDIOBJ previous = SelectObject(buffer, bitmap);
-        {
-            Gdiplus::Graphics graphics(buffer);
-            graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-            graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
-            const Palette p = CurrentPalette();
-            graphics.Clear(p.paper);
-            DrawChrome(graphics, p);
-            switch (g.mode.load()) {
-                case kWelcome: DrawWelcome(graphics, p); break;
-                case kComplete: DrawComplete(graphics, p); break;
-                default: DrawProgress(graphics, p); break;
-            }
-        }
-        BitBlt(hdc, 0, 0, client.right, client.bottom, buffer, 0, 0, SRCCOPY);
-        SelectObject(buffer, previous);
-    } else {
-        Gdiplus::Graphics graphics(hdc);
-        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-        graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
-        const Palette p = CurrentPalette();
-        graphics.Clear(p.paper);
-        DrawChrome(graphics, p);
-        switch (g.mode.load()) {
-            case kWelcome: DrawWelcome(graphics, p); break;
-            case kComplete: DrawComplete(graphics, p); break;
-            default: DrawProgress(graphics, p); break;
-        }
-    }
-    if (bitmap) DeleteObject(bitmap);
-    if (buffer) DeleteDC(buffer);
+    RenderGdi(hdc);
     EndPaint(window, &paint);
 }
 
@@ -427,9 +612,21 @@ LRESULT CALLBACK InstallerWindowProc(HWND window, UINT message, WPARAM wParam, L
             return reinterpret_cast<LRESULT>(g.editBrush);
         }
         case WM_TIMER: {
+            static bool tracedTimer = false;
+            if (!tracedTimer) { tracedTimer = true; TraceUi("timer"); }
+            if (!g.foregroundSet.exchange(true)) SetForegroundWindow(window);
+            // NSIS re-shows its wizard when the page is displayed; keep it hidden
+            // while the frameless window owns the wizard.
+            const HWND parent = g.installer;
+            if (parent && IsWindowVisible(parent)) ShowWindow(parent, SW_HIDE);
+
             const HWND edit = g.directoryEdit.load();
             if (edit) ShowWindow(edit, g.mode.load() == kWelcome ? SW_SHOW : SW_HIDE);
-            InvalidateRect(window, nullptr, FALSE);
+
+            // Only the progress screens animate; repainting the welcome page every
+            // 80 ms would keep the UI thread busy for no visible gain.
+            const int mode = g.mode.load();
+            if (mode != kWelcome && mode != kComplete) InvalidateRect(window, nullptr, FALSE);
             return 0;
         }
         case kUiUpdate: {
@@ -509,8 +706,9 @@ LRESULT CALLBACK InstallerWindowProc(HWND window, UINT message, WPARAM wParam, L
 
 DWORD WINAPI UiThreadProc(void*) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    Gdiplus::GdiplusStartupInput startup;
-    Gdiplus::GdiplusStartup(&g.gdiplusToken, &startup, nullptr);
+    g_fontTitle = MakeUiFont(22, true);
+    g_fontBody = MakeUiFont(14, false);
+    g_fontSmall = MakeUiFont(13, false);
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -527,33 +725,39 @@ DWORD WINAPI UiThreadProc(void*) {
     HWND window = CreateWindowExW(WS_EX_APPWINDOW, kWindowClass, L"ALEMBIC Setup",
         WS_POPUP | WS_MINIMIZEBOX, x, y, kWidth, kHeight, nullptr, nullptr, g.module, nullptr);
     g.window = window;
-    if (window) {
-        using DwmSetWindowAttributeFn = HRESULT(WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
-        HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
-        if (dwm) {
-            auto setAttribute = reinterpret_cast<DwmSetWindowAttributeFn>(GetProcAddress(dwm, "DwmSetWindowAttribute"));
-            if (setAttribute) {
-                const DWORD cornerPreference = 2;
-                setAttribute(window, 33, &cornerPreference, sizeof(cornerPreference));
-                const DWORD darkMode = g.dark ? 1 : 0;
-                setAttribute(window, 20, &darkMode, sizeof(darkMode));
-            }
-            FreeLibrary(dwm);
-        }
-        ShowWindow(window, SW_SHOWNORMAL);
-        UpdateWindow(window);
-        SetForegroundWindow(window);
-    } else {
+    TraceUi(window ? "window-created" : "window-failed");
+    if (!window) {
         if (g.readyEvent) SetEvent(g.readyEvent);
-        if (g.gdiplusToken) Gdiplus::GdiplusShutdown(g.gdiplusToken);
+        DestroyUiFonts();
         CoUninitialize();
         return 1;
     }
+    if (g.cancelled.load()) {
+        // The caller already gave up waiting; do not show a window nobody owns.
+        DestroyWindow(window);
+        g.window.store(nullptr);
+        if (g.readyEvent) SetEvent(g.readyEvent);
+        DestroyUiFonts();
+        CoUninitialize();
+        return 1;
+    }
+    // Show the window and hand control straight to the message loop: nothing
+    // between here and GetMessage may block, or the window stays unpainted with
+    // a busy cursor. DWM attributes and forced z-order changes are deliberately
+    // not used here.
+    ShowWindow(window, SW_SHOWNORMAL);
     if (g.readyEvent) SetEvent(g.readyEvent);
+    InvalidateRect(window, nullptr, TRUE);
+    TraceUi("shown");
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-        if (g.directoryEdit && IsDialogMessageW(window, &message)) continue;
+        // Only a focused edit control needs dialog navigation; running it for the
+        // whole window swallows mouse and keyboard messages.
+        if (g.directoryEdit.load() && GetFocus() == g.directoryEdit.load() &&
+            IsDialogMessageW(window, &message)) {
+            continue;
+        }
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
@@ -561,7 +765,11 @@ DWORD WINAPI UiThreadProc(void*) {
     if (g.directoryEdit) DestroyWindow(g.directoryEdit);
     if (g.editFont) DeleteObject(g.editFont);
     if (g.editBrush) DeleteObject(g.editBrush);
-    if (g.gdiplusToken) Gdiplus::GdiplusShutdown(g.gdiplusToken);
+    if (g.backgroundBrush) {
+        DeleteObject(g.backgroundBrush);
+        g.backgroundBrush = nullptr;
+    }
+    DestroyUiFonts();
     CoUninitialize();
     return 0;
 }
@@ -629,40 +837,102 @@ LRESULT CALLBACK ProgressHook(int code, WPARAM wParam, LPARAM lParam) {
 
 } // namespace
 
-extern "C" __declspec(dllexport) int WINAPI AlembicUI_Create(HWND installer, LPCWSTR installDirectory,
-                                                              LPCWSTR optionsPath) {
-    if (!installer || g.uiThread) return 0;
+namespace {
+
+// The options INI lives next to this plug-in inside $PLUGINSDIR, so NSIS only has
+// to pass the installation directory.
+std::wstring ModuleDirectory() {
+    wchar_t path[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameW(g.module, path, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) return std::wstring();
+    std::wstring full(path, length);
+    const std::wstring::size_type slash = full.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return std::wstring();
+    return full.substr(0, slash);
+}
+
+// NSIS shows its own wizard again when the page is displayed. This short watchdog
+// keeps it hidden and, unlike the UI-thread timer, it works even if the first
+// paint is slow.
+DWORD WINAPI HideParentProc(void* parameter) {
+    HWND parent = static_cast<HWND>(parameter);
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        if (!IsWindow(parent)) break;
+        if (IsWindowVisible(parent)) ShowWindow(parent, SW_HIDE);
+        Sleep(100);
+    }
+    return 0;
+}
+
+void KeepParentHidden(HWND parent) {
+    if (!parent) return;
+    ShowWindow(parent, SW_HIDE);
+    HANDLE watchdog = CreateThread(nullptr, 0, HideParentProc, parent, 0, nullptr);
+    if (watchdog) CloseHandle(watchdog);
+}
+
+int CreateUi(HWND installer, const std::wstring& installDirectory) {
+    if (!installer) return 0;
+
+    // Idempotent: NSIS may create the same page more than once (for example when
+    // the wizard is re-shown). A second call must re-activate the existing window
+    // instead of reporting a failure that aborts the installation.
+    const HWND existing = g.window.load();
+    if (g.uiThread && existing) {
+        ShowWindow(installer, SW_HIDE);
+        ShowWindow(existing, SW_SHOWNORMAL);
+        SetForegroundWindow(existing);
+        return 1;
+    }
+    if (g.uiThread) return 0;
+
+    KeepParentHidden(installer);
+
     g.installer = installer;
-    g.initialDirectory = installDirectory ? installDirectory : L"";
-    g.optionsPath = optionsPath ? optionsPath : L"";
-    if (!g.optionsPath.empty()) DeleteFileW(g.optionsPath.c_str());
+    g.initialDirectory = installDirectory;
+    g.optionsPath = ModuleDirectory();
+    if (!g.optionsPath.empty()) {
+        g.optionsPath += L"\\alembic-ui.ini";
+        DeleteFileW(g.optionsPath.c_str());
+    }
     g.dark = ReadDarkMode();
+    g.cancelled.store(false);
     g.readyEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!g.readyEvent) return 0;
 
-    g.progressHook = SetWindowsHookExW(WH_CALLWNDPROC, ProgressHook, g.module, GetCurrentThreadId());
     g.uiThread = CreateThread(nullptr, 0, UiThreadProc, nullptr, 0, &g.uiThreadId);
     if (!g.uiThread) {
         CloseHandle(g.readyEvent);
         g.readyEvent = nullptr;
         return 0;
     }
-    WaitForSingleObject(g.readyEvent, 5000);
+
+    // Do not give up too early, and never tear down a window that already exists:
+    // the readiness event and window creation can be a few hundred milliseconds
+    // apart on a cold start.
+    WaitForSingleObject(g.readyEvent, kStartupTimeoutMs);
     CloseHandle(g.readyEvent);
     g.readyEvent = nullptr;
+
     if (!g.window) {
+        // Stop a late window from appearing after we already reported failure.
+        g.cancelled.store(true);
         // The window thread already exited; release its handle so a retry can start clean.
         if (g.uiThread) {
-            WaitForSingleObject(g.uiThread, INFINITE);
-            CloseHandle(g.uiThread);
-            g.uiThread = nullptr;
+            if (WaitForSingleObject(g.uiThread, 5000) == WAIT_OBJECT_0) {
+                CloseHandle(g.uiThread);
+                g.uiThread = nullptr;
+            }
         }
         return 0;
     }
+
+    // Installed only once the window exists, so a failed creation leaves no hook.
+    g.progressHook = SetWindowsHookExW(WH_CALLWNDPROC, ProgressHook, g.module, GetCurrentThreadId());
     return 1;
 }
 
-extern "C" __declspec(dllexport) void WINAPI AlembicUI_SetMode(int mode) {
+void ApplyMode(int mode) {
     if (mode < kWelcome || mode > kComplete) return;
     if (mode == kExtracting) {
         g.rawProgress.store(0);
@@ -673,7 +943,7 @@ extern "C" __declspec(dllexport) void WINAPI AlembicUI_SetMode(int mode) {
     if (g.window) PostMessageW(g.window, kUiUpdate, 0, 0);
 }
 
-extern "C" __declspec(dllexport) void WINAPI AlembicUI_Shutdown() {
+void ShutdownUi() {
     if (g.progressHook) {
         UnhookWindowsHookEx(g.progressHook);
         g.progressHook = nullptr;
@@ -686,6 +956,60 @@ extern "C" __declspec(dllexport) void WINAPI AlembicUI_Shutdown() {
             g.uiThread = nullptr;
         }
     }
+}
+
+// --- NSIS plug-in ABI -------------------------------------------------------
+// NSIS calls the exported entries directly (alembic-installer-ui::AlembicCreate),
+// so no argument marshalling library is involved. Only the tiny subset of the
+// documented exdll.h ABI that is actually used here is reproduced.
+
+int g_stringSize = 0;
+stack_t** g_stackTop = nullptr;
+
+void PopArg(std::wstring& value) {
+    value.clear();
+    if (!g_stackTop || !*g_stackTop) return;
+    stack_t* node = *g_stackTop;
+    value.assign(node->text);
+    *g_stackTop = node->next;
+    GlobalFree(node);
+}
+
+void PushInt(int value) {
+    if (!g_stackTop) return;
+    stack_t* node = static_cast<stack_t*>(
+        GlobalAlloc(GPTR, sizeof(stack_t) + static_cast<SIZE_T>(g_stringSize) * sizeof(wchar_t)));
+    if (!node) return;
+    swprintf_s(node->text, static_cast<size_t>(g_stringSize), L"%d", value);
+    node->next = *g_stackTop;
+    *g_stackTop = node;
+}
+
+} // namespace
+
+extern "C" void __cdecl AlembicCreate(HWND hwndParent, int stringSize, wchar_t*,
+                                      stack_t** stackTop, void*) {
+    g_stringSize = stringSize;
+    g_stackTop = stackTop;
+    std::wstring directory;
+    PopArg(directory);
+    PushInt(CreateUi(hwndParent, directory));
+}
+
+extern "C" void __cdecl AlembicSetMode(HWND, int stringSize, wchar_t*,
+                                       stack_t** stackTop, void*) {
+    g_stringSize = stringSize;
+    g_stackTop = stackTop;
+    std::wstring mode;
+    PopArg(mode);
+    ApplyMode(static_cast<int>(wcstol(mode.c_str(), nullptr, 10)));
+}
+
+extern "C" void __cdecl AlembicShutdown(HWND, int stringSize, wchar_t*,
+                                        stack_t** stackTop, void*) {
+    g_stringSize = stringSize;
+    g_stackTop = stackTop;
+    ShutdownUi();
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {

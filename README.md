@@ -71,8 +71,8 @@ powershell -ExecutionPolicy Bypass -File packaging\build-release.ps1 -Dev
 ```
 
 产物在 `build\release\out\ALEMBIC-Setup-<version>-x64.exe`。安装器是原生 NSIS，
-窗口无原生边框，选项页自绘纸色标题栏；第一页显示安装位置、两个快捷方式选项和
-安装内容，运行时与 Windows 命令沙盒始终安装。安装器和主程序都默认请求管理员权限。
+使用标准 Modern UI2 向导：安装位置在目录页修改，随后一页选项控制两个快捷方式；
+运行时与 Windows 命令沙盒始终安装。安装器和主程序都默认请求管理员权限。
 版本号、安装流程、开发版命名和代码签名说明见
 [桌面安装包与发布流程](docs/packaging.md)。
 
@@ -110,11 +110,12 @@ cd frontend
 npm run build
 ```
 
-扩展开发、可移植运行时和架构约定见：
+扩展开发、可移植运行时、仓库约定和界面规范见：
 
 - [扩展指南](docs/extensions.md)
 - [内置运行时](docs/runtimes.md)
-- [交接文档](docs/HANDOVER.md)
+- [仓库约定](AGENTS.md)
+- [界面设计系统](DESIGN.md)
 
 ## 配置与数据
 
