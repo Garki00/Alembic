@@ -900,6 +900,7 @@ class ToolStore:
                     "source": spec.source,
                     "source_id": spec.source_id,
                     "default_enabled": spec.default_enabled,
+                    "experimental": spec.experimental,
                     "enabled": entry["enabled"],
                     "fields": fields,
                 }

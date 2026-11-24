@@ -381,6 +381,7 @@ export const useChatStore = defineStore('chat', {
     todos: [] as TodoItem[],
     pendingContinuations: [] as ProcessInfo[],
     pendingSubagentContinuations: [] as SubagentContinuation[],
+    pendingPraise: [] as string[],
     // 正在流式输出的会话（全局同时只允许一个）
     runningSessionId: null as string | null,
     // 切走的会话的实时状态，回来时直接还原，避免再去拉不完整的服务端历史
@@ -448,6 +449,7 @@ export const useChatStore = defineStore('chat', {
       this.todos = []
       this.pendingContinuations = []
       this.pendingSubagentContinuations = []
+      this.pendingPraise = []
       this.bump()
     },
 
@@ -499,6 +501,7 @@ export const useChatStore = defineStore('chat', {
       }
       this.pendingContinuations = []
       this.pendingSubagentContinuations = []
+      this.pendingPraise = []
       abortController?.abort()
     },
 
@@ -514,6 +517,7 @@ export const useChatStore = defineStore('chat', {
       }
       this.pendingContinuations = []
       this.pendingSubagentContinuations = []
+      this.pendingPraise = []
       abortController?.abort()
     },
 
@@ -620,6 +624,7 @@ export const useChatStore = defineStore('chat', {
         this.setUsage(data.usage)
         this.pendingContinuations = []
       this.pendingSubagentContinuations = []
+      this.pendingPraise = []
         try {
           const todos = await api<TodosData>(
             `/api/sessions/${encodeURIComponent(sessionId)}/todos`,
@@ -660,6 +665,7 @@ export const useChatStore = defineStore('chat', {
       this.todos = []
       this.pendingContinuations = []
       this.pendingSubagentContinuations = []
+      this.pendingPraise = []
       this.bump()
     },
 
@@ -729,6 +735,10 @@ export const useChatStore = defineStore('chat', {
       const assistant = this.messages[this.messages.length - 1] as AssistantTurn
       assistant.startedAt = startedAt
       assistant.streaming = true
+      if (this.pendingPraise.length) {
+        assistant.praiseLines.push(...this.pendingPraise)
+        this.pendingPraise = []
+      }
       this.streaming = true
       // 记录本轮属于哪个会话：切换对话时流继续跑，事件仍然写回这里。
       const streamSessionId = this.sessionId
@@ -924,6 +934,16 @@ export const useChatStore = defineStore('chat', {
                 this.bump()
                 break
               }
+              case 'praise': {
+                const lines = Array.isArray(data.lines)
+                  ? data.lines.map((line) => String(line)).filter(Boolean)
+                  : []
+                if (lines.length) {
+                  assistant.praiseLines.push(...lines)
+                  this.bump()
+                }
+                break
+              }
               case 'approval': {
                 const request = data as unknown as ApprovalRequest
                 assistant.approvals.push({
@@ -1106,6 +1126,20 @@ export const useChatStore = defineStore('chat', {
     },
 
     /** Queue a finished background subagent; the server injects its notification. */
+    /** Attach a subagent note to the live turn, or hold it for the next one. */
+    appendPraise(sessionId: string, lines: string[]): void {
+      if (!sessionId || sessionId !== this.sessionId || !lines.length) return
+      const assistant = [...this.messages]
+        .reverse()
+        .find((turn): turn is AssistantTurn => turn.kind === 'assistant')
+      if (this.streaming && assistant?.streaming) {
+        assistant.praiseLines.push(...lines)
+        this.bump()
+        return
+      }
+      this.pendingPraise.push(...lines)
+    },
+
     queueSubagentContinuation(record: {
       id: string
       session_id: string

@@ -114,6 +114,7 @@ export interface ToolInfo {
   risk: 'read' | 'write' | 'exec' | string
   tool_names: string[]
   default_enabled: boolean
+  experimental?: boolean
   enabled: boolean
   fields: ToolFieldInfo[]
 }

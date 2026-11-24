@@ -103,6 +103,14 @@ export const useSubagentStore = defineStore('subagents', {
         while (!controller.signal.aborted) {
           try {
             await streamSubagentEvents((event, data) => {
+              if (event === 'praise') {
+                const lines = Array.isArray(data.lines)
+                  ? data.lines.map((line) => String(line)).filter(Boolean)
+                  : []
+                const sessionId = String(data.session_id || '')
+                if (sessionId) chat.appendPraise(sessionId, lines)
+                return
+              }
               if (event === 'approval') {
                 const request = data as unknown as ApprovalRequest & { agent_id?: string }
                 if (!this.approvals.some((item) => item.id === request.id)) {

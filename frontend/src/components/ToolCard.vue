@@ -132,6 +132,7 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
       <div>
         <div class="tool-title">
           {{ tool.label }} <code>{{ tool.name }}</code>
+          <span v-if="tool.experimental" class="tool-experimental">实验性</span>
         </div>
         <p class="tool-desc">{{ tool.description }}</p>
         <p class="tool-meta">
@@ -157,7 +158,7 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
     </div>
 
     <div v-if="view === 'list' || expanded" class="tool-details" @click.stop>
-      <div v-if="view === 'grid'" class="tool-includes">
+      <div v-if="view === 'grid' && tool.tool_names.length" class="tool-includes">
         <span class="tool-includes-label">包含工具</span>
         <code v-for="name in tool.tool_names" :key="name" class="tool-name">{{ name }}</code>
       </div>
@@ -272,6 +273,19 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
 </template>
 
 <style scoped>
+.tool-experimental {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--paper-deep);
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 400;
+  line-height: 16px;
+  vertical-align: 1px;
+}
 .field-muted { opacity: 0.45; }
 .field-muted :disabled { cursor: not-allowed; }
 .field-radio { display: flex; flex-wrap: wrap; gap: 8px; }

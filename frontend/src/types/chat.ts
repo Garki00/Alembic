@@ -108,6 +108,7 @@ export interface AssistantTurn {
   approvals: ChatApproval[]
   questions: ChatQuestion[]
   subagents: SubagentView[]
+  praiseLines: string[]
   error: string
   streaming: boolean
   stepsOpen: boolean
@@ -147,6 +148,7 @@ export function createAssistantTurn(): AssistantTurn {
     approvals: [],
     questions: [],
     subagents: [],
+    praiseLines: [],
     error: '',
     streaming: false,
     stepsOpen: true,

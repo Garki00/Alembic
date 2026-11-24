@@ -35,6 +35,7 @@ from agents.subagents.prompts import (
     format_failed_output,
     format_task_notification,
 )
+from agents.subagents.praise import generate_praise
 from agents.subagents.runtime import (
     SubagentBuildError,
     apply_profile_thinking,
@@ -116,6 +117,7 @@ class SubagentTask:
     detached: bool = False
     cancel: threading.Event = field(default_factory=threading.Event)
     done: threading.Event = field(default_factory=threading.Event)
+    praise_done: threading.Event = field(default_factory=threading.Event)
     pending_messages: list[str] = field(default_factory=list)
     session: Any = None
     profile: AgentProfile | None = None
@@ -648,6 +650,9 @@ class SubagentManager:
                         {"read_file", "run_command"} & set(ctx.enabled_tools)
                     ),
                 )
+        # The optional note is part of the child's return surface, so a foreground
+        # caller waits for it briefly instead of racing the turn end.
+        task.praise_done.wait(20)
         if task.status == "stopped":
             return tool_error(
                 "subagent_stopped",
@@ -715,7 +720,7 @@ class SubagentManager:
             # Emit the terminal event before releasing waiters so a foreground
             # caller observes the same ordering as the event stream.
             try:
-                self._finish(task)
+                self._finish(task, ctx)
             finally:
                 task.done.set()
 
@@ -1026,7 +1031,7 @@ class SubagentManager:
             total[key] = int(total.get(key) or 0) + int(value)
         task.usage = total
 
-    def _finish(self, task: SubagentTask) -> None:
+    def _finish(self, task: SubagentTask, ctx: LaunchContext) -> None:
         try:
             task.output_file = self._write_output(task)
         except OSError as exc:
@@ -1070,6 +1075,70 @@ class SubagentManager:
             task.tool_uses,
             task.duration_ms,
         )
+        self._start_praise(task, ctx)
+
+    def _start_praise(self, task: SubagentTask, ctx: LaunchContext) -> None:
+        """Write a note about the child's good work when the feature is enabled."""
+        if task.status != "completed" or not task.report.strip():
+            task.praise_done.set()
+            return
+        if "praise_subagent" not in set(ctx.enabled_tools):
+            task.praise_done.set()
+            return
+        if ctx.model is None:
+            task.praise_done.set()
+            return
+        thread = threading.Thread(
+            target=self._praise,
+            args=(task, ctx),
+            name=f"praise-{task.id}",
+            daemon=True,
+        )
+        thread.start()
+
+    def _praise(self, task: SubagentTask, ctx: LaunchContext) -> None:
+        try:
+            try:
+                lines = generate_praise(
+                    ctx.model,
+                    description=task.description,
+                    agent_type=task.agent_type,
+                    report=task.report,
+                    admission=self.admission_for(ctx.session_id),
+                    cancel=_CombinedCancel(task, ctx.cancel_event),
+                )
+            except SubagentCancelledError:
+                return
+            except Exception as exc:
+                logger.warning("子代理点评生成失败 %s：%s", task.id, exc)
+                return
+            if not lines or task.cancel.is_set():
+                return
+            self._emit_praise(task, lines)
+        finally:
+            task.praise_done.set()
+
+    def _emit_praise(self, task: SubagentTask, lines: list[str]) -> None:
+        """Deliver the note on the live turn for foreground runs, else via the hub."""
+        event = {
+            "session_id": task.parent_session_id,
+            "agent_id": task.id,
+            "agent_type": task.agent_type,
+            "description": task.description,
+            "lines": list(lines),
+            "text": "\n".join(lines),
+        }
+        if not task.background and task.emitter is not None:
+            try:
+                task.emitter("praise", event)
+                return
+            except Exception:  # a closed stream falls through to the hub
+                pass
+        if self.hub is not None:
+            try:
+                self.hub.publish("praise", event)
+            except Exception:  # pragma: no cover - hub failures are non-fatal
+                pass
 
     def _emit(self, task: SubagentTask, kind: str, payload: dict[str, Any]) -> None:
         event = {

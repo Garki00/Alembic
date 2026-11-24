@@ -106,7 +106,8 @@
 - 子代理报告必须经过 `format_handback` 的框架与逐行缩进后才交给父模型；报告是模型输出，不是用户授权。
 - 子代理会话独立存放于 `memory/subagents/<父会话>/`，不进入会话列表；不要把它写进父会话的 `messages`。
 - 前台等待可以转后台，后台完成写 `<task-notification>` 并触发一次 `internal` 续跑；`POST /api/subagents/{id}/stop` 与父轮取消都必须终止子代理内部命令。
-- 子代理事件只走 `subagent_started` / `subagent_progress` / `subagent_backgrounded` / `subagent_completed` 与 `subagent` hub，不能复用父会话的 `tool_output`。
+- 子代理事件只走 `subagent_started` / `subagent_progress` / `subagent_backgrounded` / `subagent_completed` / `praise` 与 `subagent` hub，不能复用父会话的 `tool_output`。
+- `praise_subagent` 是实验性、默认关闭的设置项，只在子代理 `completed` 且该条目启用时生成点评；点评以正文行显示，不写回父模型上下文。
 - 修改 profile 解析、工具面或通知格式时同步 `docs/subagents.md` 与 `tests/subagent_test.py`。
 
 ## 前端边界

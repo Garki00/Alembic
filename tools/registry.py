@@ -138,6 +138,7 @@ class ToolSpec:
         fields: Parameters the user needs to fill in.
         risk: Risk level, see RISK_*.
         default_enabled: Whether the entry is enabled by default when data/tools.json is first generated.
+        experimental: Whether the entry is marked experimental in the settings panel.
         tool_names: Names of the tool functions actually exposed to the model (one per entry).
         builder: Assembly function of type ``(config, ctx) -> Sequence[BaseTool]``.
         source: Built-in or externally installed source classification.
@@ -150,6 +151,7 @@ class ToolSpec:
     fields: tuple[ToolField, ...] = ()
     risk: str = RISK_READ
     default_enabled: bool = True
+    experimental: bool = False
     tool_names: tuple[str, ...] = ()
     builder: Builder | None = field(default=None, repr=False)
     source: str = "builtin"
@@ -498,6 +500,14 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         risk=RISK_READ,
         tool_names=("agent", "send_message"),
         builder=_build_subagent,
+    ),
+    "praise_subagent": ToolSpec(
+        name="praise_subagent",
+        label="夸夸子代理",
+        description="子代理完成后，点评其中完成得好的部分",
+        risk=RISK_READ,
+        default_enabled=False,
+        experimental=True,
     ),
     "tools_search": ToolSpec(
         name="tools_search",

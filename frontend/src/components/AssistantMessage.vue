@@ -122,6 +122,10 @@ function openFileLink(event: MouseEvent): void {
 
       <WorkSteps :turn="turn" />
 
+      <div v-if="turn.praiseLines.length" class="praise-lines">
+        <p v-for="(line, index) in turn.praiseLines" :key="index">{{ line }}</p>
+      </div>
+
       <div
         v-for="approval in resolvedApprovals"
         :key="approval.id"
