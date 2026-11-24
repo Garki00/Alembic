@@ -218,6 +218,10 @@ class Settings:
     subagent_max_depth = _env_int("SUBAGENT_MAX_DEPTH", 1)
     subagent_max_model_calls = _env_int("SUBAGENT_MAX_MODEL_CALLS", 12)
     subagent_max_tool_calls = _env_int("SUBAGENT_MAX_TOOL_CALLS", 30)
+    # 同一父会话内并发子代理模型请求的上限；超出的请求在会话内排队。
+    max_concurrent_subagent_model_requests = _env_int(
+        "MAX_CONCURRENT_SUBAGENT_MODEL_REQUESTS", 2
+    )
     subagent_auto_background = _env_nonneg_int("SUBAGENT_AUTO_BACKGROUND_SECONDS", 90)
     subagent_profiles_dir = os.getenv(
         "SUBAGENT_PROFILES_DIR", os.path.join(app_home, "agents")

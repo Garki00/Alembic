@@ -282,6 +282,9 @@ function returnUsage(event: SubagentReturnEvent): string {
                   :class="`status-${subagentFor(event)!.status}`"
                 >{{ subagentStatus(subagentFor(event)!) }}</span>
                 <span v-if="subagentFor(event)!.background" class="subagent-tag">后台</span>
+                <span v-if="subagentFor(event)!.model" class="subagent-model">
+                  {{ subagentFor(event)!.model }}<template v-if="subagentFor(event)!.thinking"> · {{ subagentFor(event)!.thinking }}</template>
+                </span>
                 <span class="subagent-usage">{{ subagentUsage(subagentFor(event)!) }}</span>
                 <button
                   v-if="subagentFor(event)!.status === 'running'"
@@ -374,6 +377,16 @@ function returnUsage(event: SubagentReturnEvent): string {
 .subagent-tag {
   font-size: 10px;
   color: var(--soft);
+}
+
+.subagent-model {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
 }
 
 .subagent-usage {

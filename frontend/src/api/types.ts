@@ -222,6 +222,8 @@ export interface Preferences {
   developer_tools: boolean
   /** Keep the first exchange verbatim when the context is compacted. */
   compact_keep_first_turn: boolean
+  /** Built-in subagent type -> `providerId/modelId`; empty inherits the active model. */
+  subagent_models: Record<string, string>
 }
 
 export interface HistoryMessage {

@@ -127,6 +127,8 @@ function ensureSubagent(
     description: String(data.description || ''),
     status: 'running',
     background: Boolean(data.background),
+    model: String(data.model || ''),
+    thinking: String(data.thinking || ''),
     steps: [],
     report: '',
     error: '',
@@ -195,6 +197,8 @@ function completeSubagent(view: SubagentView, data: Record<string, unknown>): vo
   view.durationMs = Number(data.duration_ms || 0)
   view.usage = (data.usage as Record<string, unknown>) || {}
   view.background = Boolean(data.background)
+  if (data.model) view.model = String(data.model)
+  if (data.thinking) view.thinking = String(data.thinking)
 }
 
 function addThought(assistant: AssistantTurn, text: string): void {
@@ -878,6 +882,8 @@ export const useChatStore = defineStore('chat', {
                 const view = ensureSubagent(assistant, data)
                 view.status = 'running'
                 view.background = Boolean(data.background)
+                if (data.model) view.model = String(data.model)
+                if (data.thinking) view.thinking = String(data.thinking)
                 if (data.tool_call_id) view.toolCallId = String(data.tool_call_id)
                 this.bump()
                 break

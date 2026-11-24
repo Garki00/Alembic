@@ -5,13 +5,15 @@ from __future__ import annotations
 import threading
 import time
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
 from langchain_core.messages import ToolMessage
 
+from agents.subagents.admission import ModelRequestAdmission, SubagentCancelledError
 from agents.subagents.manager import LaunchContext, SubagentManager
 from agents.subagents.profiles import (
     EXPLORE,
@@ -21,6 +23,12 @@ from agents.subagents.profiles import (
     parse_profile_markdown,
 )
 from agents.subagents.prompts import build_subagent_system_prompt
+from agents.subagents.runtime import (
+    SubagentBuildError,
+    apply_profile_thinking,
+    resolve_model_config,
+)
+from config.store import ModelConfig
 from tools.context import ToolContext
 from tools.subagent import build_subagent_tools
 
@@ -138,6 +146,14 @@ class ProfileTest(unittest.TestCase):
         profile = parse_profile_markdown("---\nname: [\n---\nbody", source="user")
         self.assertIsNone(profile)
 
+    def test_profile_thinking_is_parsed(self) -> None:
+        profile = parse_profile_markdown(
+            "---\nname: deep\nthinking: HIGH\n---\nbody",
+            source="user",
+        )
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile.thinking, "high")
+
     def test_child_surface_never_exposes_delegation(self) -> None:
         profile = find_profile(load_profiles(user_dir=self.tmp / "agents"), GENERAL_PURPOSE)
         tools = profile.child_tools({"agent", "send_message", "read_file"})
@@ -150,6 +166,201 @@ class ProfileTest(unittest.TestCase):
             base_prompt=base,
         )
         self.assertIn(base, prompt)
+
+
+class ModelSelectionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = make_tempdir()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+
+    def test_explicit_model_must_resolve(self) -> None:
+        with patch("config.store.ModelStore") as store_cls:
+            store_cls.return_value.providers.return_value = []
+            with self.assertRaises(SubagentBuildError) as caught:
+                resolve_model_config(None, "missing-model")
+        self.assertEqual(caught.exception.code, "subagent_model_unavailable")
+        self.assertIn("missing-model", str(caught.exception))
+
+    def test_matching_model_returns_its_configuration(self) -> None:
+        provider = SimpleNamespace(
+            id="p1",
+            name="Provider",
+            provider="openai",
+            base_url="https://example.test/v1",
+            api_key="secret",
+            api_mode="",
+            models=[
+                SimpleNamespace(
+                    id="m1",
+                    name="Model One",
+                    model="model-one",
+                    temperature=0.2,
+                    thinking="low",
+                    thinking_levels=["low", "high"],
+                    supports_reasoning=True,
+                    supports_images=False,
+                    context_length=64000,
+                    max_output_tokens=4096,
+                )
+            ],
+        )
+        with patch("config.store.ModelStore") as store_cls:
+            store_cls.return_value.providers.return_value = [provider]
+            store_cls.return_value.active_model_id.return_value = "other"
+            store_cls.return_value.active_provider_id.return_value = "other"
+            cfg = resolve_model_config(None, "model-one")
+        self.assertEqual(cfg.model, "model-one")
+        self.assertEqual(cfg.provider_id, "p1")
+        self.assertEqual(cfg.thinking, "low")
+
+    def test_thinking_override_and_validation(self) -> None:
+        cfg = ModelConfig(
+            id="m",
+            name="M",
+            provider="openai",
+            model="m",
+            thinking="low",
+            thinking_levels=["low", "high"],
+            supports_reasoning=True,
+        )
+        self.assertEqual(apply_profile_thinking(cfg, "high").thinking, "high")
+        self.assertEqual(apply_profile_thinking(cfg, "none").thinking, "none")
+        with self.assertRaises(SubagentBuildError) as unsupported:
+            apply_profile_thinking(cfg, "max")
+        self.assertEqual(unsupported.exception.code, "subagent_thinking_unavailable")
+        with self.assertRaises(SubagentBuildError) as no_reasoning:
+            apply_profile_thinking(replace(cfg, supports_reasoning=False), "high")
+        self.assertEqual(no_reasoning.exception.code, "subagent_thinking_unavailable")
+
+    def test_manager_rejects_unknown_profile_model(self) -> None:
+        directory = self.tmp / "agents"
+        directory.mkdir()
+        (directory / "reviewer.md").write_text(
+            "---\nname: reviewer\nmodel: absent-model\ntools: read_file\n---\nReview.\n",
+            encoding="utf-8",
+        )
+        manager = build_manager(self.tmp, FakeSession(["unused"]))
+        with patch("config.store.ModelStore") as store_cls:
+            store_cls.return_value.providers.return_value = []
+            result = manager.bind(launch_context(self.tmp)).run(
+                description="review", prompt="check", agent_type="reviewer"
+            )
+        self.assertIn("subagent_model_unavailable", result)
+        task = manager.list_tasks("session-1")[0]
+        self.assertEqual(task["status"], "failed")
+        self.assertIn("absent-model", task["error"])
+
+    def test_admission_limits_concurrency_and_honors_cancel(self) -> None:
+        admission = ModelRequestAdmission(1)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def hold() -> None:
+            with admission.slot():
+                entered.set()
+                release.wait(5)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        self.assertTrue(entered.wait(2))
+
+        acquired = threading.Event()
+
+        def compete() -> None:
+            with admission.slot():
+                acquired.set()
+
+        other = threading.Thread(target=compete)
+        other.start()
+        self.assertFalse(acquired.wait(0.2))
+        release.set()
+        holder.join(5)
+        self.assertTrue(acquired.wait(2))
+        other.join(5)
+        self.assertTrue(admission.wait_until_idle(2))
+
+        cancelled = threading.Event()
+        cancelled.set()
+        with self.assertRaises(SubagentCancelledError):
+            with admission.slot(cancelled):
+                pass
+
+    def test_builtin_model_override_applies_to_builtin_profile(self) -> None:
+        provider = SimpleNamespace(
+            id="p1",
+            name="Provider",
+            provider="openai",
+            base_url="https://example.test/v1",
+            api_key="secret",
+            api_mode="",
+            models=[
+                SimpleNamespace(
+                    id="m1",
+                    name="Model One",
+                    model="model-one",
+                    temperature=0.0,
+                    thinking="low",
+                    thinking_levels=["low", "high"],
+                    supports_reasoning=True,
+                    supports_images=False,
+                    context_length=64000,
+                    max_output_tokens=4096,
+                )
+            ],
+        )
+        manager = build_manager(self.tmp, FakeSession(["ok"]))
+        ctx = launch_context(self.tmp, builtin_model_overrides={"general-purpose": "p1/m1"})
+        with patch("config.store.ModelStore") as store_cls:
+            store_cls.return_value.providers.return_value = [provider]
+            store_cls.return_value.active_model_id.return_value = "other"
+            store_cls.return_value.active_provider_id.return_value = "other"
+            manager.bind(ctx).run(description="x", prompt="y")
+        task = manager.list_tasks("session-1")[0]
+        self.assertEqual(task["model"], "p1/model-one")
+        self.assertEqual(task["thinking"], "low")
+
+    def test_admission_queue_serves_waiters_in_order(self) -> None:
+        admission = ModelRequestAdmission(1)
+        release = threading.Event()
+        order: list[str] = []
+        lock = threading.Lock()
+
+        def hold() -> None:
+            with admission.slot():
+                release.wait(5)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        time.sleep(0.05)
+
+        def compete(name: str) -> None:
+            with admission.slot():
+                with lock:
+                    order.append(name)
+
+        first = threading.Thread(target=compete, args=("first",))
+        first.start()
+        deadline = time.time() + 2
+        while time.time() < deadline and admission.snapshot()["waiting"] < 1:
+            time.sleep(0.01)
+        second = threading.Thread(target=compete, args=("second",))
+        second.start()
+        deadline = time.time() + 2
+        while time.time() < deadline and admission.snapshot()["waiting"] < 2:
+            time.sleep(0.01)
+        release.set()
+        holder.join(5)
+        first.join(5)
+        second.join(5)
+        self.assertEqual(order, ["first", "second"])
+
+    def test_admission_is_shared_per_parent_session(self) -> None:
+        manager = build_manager(self.tmp, FakeSession(["x"]))
+        first = manager.admission_for("session-a")
+        second = manager.admission_for("session-a")
+        other = manager.admission_for("session-b")
+        self.assertIs(first, second)
+        self.assertIsNot(first, other)
 
 
 class ManagerTest(unittest.TestCase):

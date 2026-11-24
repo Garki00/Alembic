@@ -14,7 +14,7 @@ import logging
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from uuid import uuid4
@@ -22,6 +22,7 @@ from uuid import uuid4
 from langchain_core.messages import ToolMessage
 
 from agents.approval import ApprovalGate, ApprovalPolicy, permission_tools, tool_risks
+from agents.subagents.admission import ModelRequestAdmission, SubagentCancelledError
 from agents.subagents.profiles import (
     DEFAULT_SUBAGENT_TYPE,
     AgentProfile,
@@ -36,6 +37,7 @@ from agents.subagents.prompts import (
 )
 from agents.subagents.runtime import (
     SubagentBuildError,
+    apply_profile_thinking,
     build_child_agent,
     build_child_session,
     build_child_system_prompt,
@@ -66,6 +68,8 @@ class LaunchContext:
     model: Any = None
     model_cfg: Any = None
     model_factory: Callable[[Any], Any] | None = None
+    #: Model overrides for built-in profile names, from user preferences.
+    builtin_model_overrides: Mapping[str, str] = field(default_factory=dict)
     enabled_tools: set[str] = field(default_factory=set)
     visible_tools: set[str] = field(default_factory=set)
     tool_configs: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
@@ -106,6 +110,7 @@ class SubagentTask:
     duration_ms: int = 0
     output_file: str = ""
     model: str = ""
+    thinking: str = ""
     allowed_tools: tuple[str, ...] = ()
     notified: bool = False
     detached: bool = False
@@ -140,6 +145,7 @@ class SubagentTask:
             "duration_ms": self.duration_ms,
             "output_file": self.output_file,
             "model": self.model,
+            "thinking": self.thinking,
             "allowed_tools": list(self.allowed_tools),
             "notified": self.notified,
         }
@@ -230,9 +236,11 @@ class SubagentManager:
         max_concurrent: int | None = None,
         auto_background_seconds: float | None = None,
         session_factory: Callable[[SubagentTask, LaunchContext, AgentProfile], Any] | None = None,
+        model_store: Any = None,
     ) -> None:
         self.hub = hub
         self.approval_registry = approval_registry
+        self.model_store = model_store
         self.profiles_dir = Path(profiles_dir or settings.subagent_profiles_dir)
         self.store_dir = Path(store_dir or settings.subagent_store_dir)
         self.output_dir = Path(
@@ -249,12 +257,25 @@ class SubagentManager:
         self._tasks: dict[str, SubagentTask] = {}
         self._notifications: dict[str, list[tuple[str, str]]] = {}
         self._lock = threading.Lock()
+        self._admissions: dict[str, ModelRequestAdmission] = {}
+        self._admission_lock = threading.Lock()
 
     # -- binding ---------------------------------------------------------
 
     def bind(self, ctx: LaunchContext) -> SubagentService:
         """Create the per-turn service object injected into the tool context."""
         return SubagentService(self, ctx)
+
+    def admission_for(self, session_id: str) -> ModelRequestAdmission:
+        """Return the model request gate shared by every child of one parent session."""
+        with self._admission_lock:
+            admission = self._admissions.get(session_id)
+            if admission is None:
+                admission = ModelRequestAdmission(
+                    settings.max_concurrent_subagent_model_requests
+                )
+                self._admissions[session_id] = admission
+            return admission
 
     # -- query -----------------------------------------------------------
 
@@ -370,6 +391,7 @@ class SubagentManager:
             duration_ms=int(payload.get("duration_ms") or 0),
             output_file=str(payload.get("output_file") or ""),
             model=str(payload.get("model") or ""),
+            thinking=str(payload.get("thinking") or ""),
             allowed_tools=tuple(payload.get("allowed_tools") or ()),
             notified=bool(payload.get("notified")),
             detached=True,
@@ -440,6 +462,7 @@ class SubagentManager:
                 "subagent_unknown_type",
                 f"Unknown subagent type {agent_type!r}. Available types: {names}.",
             )
+        profile = self._apply_builtin_model(profile, ctx)
         task = self._new_task(
             ctx,
             profile=profile,
@@ -516,6 +539,7 @@ class SubagentManager:
                 "background": task.background,
                 "child_session_id": task.child_session_id,
                 "model": task.model,
+                "thinking": task.thinking,
                 "allowed_tools": list(task.allowed_tools),
                 "prompt": text,
                 "resumed": True,
@@ -559,6 +583,18 @@ class SubagentManager:
         )
         task.allowed_tools = profile.child_tools(ctx.visible_tools or ctx.enabled_tools)
         return task
+
+    @staticmethod
+    def _apply_builtin_model(profile: AgentProfile, ctx: LaunchContext) -> AgentProfile:
+        """Apply a user-selected model to a built-in profile only.
+
+        User and project profiles replace the built-in definition entirely, so
+        their explicit model always wins over the preference.
+        """
+        if profile.source != "built-in":
+            return profile
+        selected = str((ctx.builtin_model_overrides or {}).get(profile.name, "")).strip()
+        return replace(profile, model=selected) if selected else profile
 
     def _start(
         self,
@@ -655,6 +691,7 @@ class SubagentManager:
                         "background": task.background,
                         "child_session_id": task.child_session_id,
                         "model": task.model,
+                "thinking": task.thinking,
                         "allowed_tools": list(task.allowed_tools),
                         "prompt": task.prompt,
                         "tool_call_id": "",
@@ -663,7 +700,7 @@ class SubagentManager:
             self._run_prompt(task, prompt)
             if not task.cancel.is_set():
                 task.status = "completed"
-        except SubagentCancelled:
+        except (SubagentCancelled, SubagentCancelledError):
             task.status = "stopped"
         except SubagentBuildError as exc:
             task.status = "failed"
@@ -689,6 +726,7 @@ class SubagentManager:
         )
         if profile is None:
             raise SubagentBuildError("subagent_unknown_type", "No usable subagent profile.")
+        profile = self._apply_builtin_model(profile, ctx)
         tool_names = profile.child_tools(ctx.visible_tools or ctx.enabled_tools)
         if not tool_names:
             raise SubagentBuildError(
@@ -697,9 +735,15 @@ class SubagentManager:
             )
         task.allowed_tools = tool_names
 
+        # Resolve the model before any session is created: an explicit profile
+        # model or reasoning level that cannot be honored must fail the launch.
+        child_cfg = resolve_model_config(ctx.model_cfg, profile.model, self.model_store)
+        child_cfg = apply_profile_thinking(child_cfg, profile.thinking)
+
         if self._session_factory is not None:
             task.session = self._session_factory(task, ctx, profile)
-            task.model = _model_label(ctx.model_cfg)
+            task.model = _model_label(child_cfg)
+            task.thinking = str(getattr(child_cfg, "thinking", "") or "")
             return
 
         from tools.catalog import ToolActivation, entry_names_for_tools
@@ -711,16 +755,23 @@ class SubagentManager:
             if entry in TOOL_SPECS
         }
 
-        child_cfg = resolve_model_config(ctx.model_cfg, profile.model)
         if child_cfg is ctx.model_cfg or child_cfg == ctx.model_cfg:
             child_model = ctx.model
             child_vision = ctx.vision
-        elif ctx.model_factory is not None:
-            child_model = ctx.model_factory(child_cfg)
-            child_vision = _vision_for(ctx, child_model, child_cfg)
+        elif ctx.model_factory is None:
+            raise SubagentBuildError(
+                "subagent_model_unavailable",
+                "This runtime cannot build a client for the requested subagent model configuration.",
+            )
         else:
-            child_model = ctx.model
-            child_vision = ctx.vision
+            try:
+                child_model = ctx.model_factory(child_cfg)
+            except Exception as exc:
+                raise SubagentBuildError(
+                    "subagent_model_unavailable",
+                    f"Cannot build the subagent model {getattr(child_cfg, 'model', '')!r}: {exc}",
+                ) from exc
+            child_vision = _vision_for(ctx, child_model, child_cfg)
 
         child_ctx = ToolContext(
             workspace=ctx.workspace,
@@ -764,6 +815,8 @@ class SubagentManager:
             system_prompt=system_prompt,
             approval=gate,
             engine=ctx.engine,
+            admission=self.admission_for(ctx.session_id),
+            admission_cancel=_CombinedCancel(task, ctx.cancel_event),
         )
         store_dir = self.store_dir / _safe_slug(ctx.session_id)
         task.session = build_child_session(
@@ -776,6 +829,7 @@ class SubagentManager:
             model_cfg=child_cfg,
         )
         task.model = _model_label(child_cfg)
+        task.thinking = str(getattr(child_cfg, "thinking", "") or "")
 
     def _child_gate(
         self,
@@ -1070,6 +1124,7 @@ class SubagentManager:
             "child_session_id": task.child_session_id,
             "parent_session_id": task.parent_session_id,
             "model": task.model,
+            "thinking": task.thinking,
             "allowed_tools": list(task.allowed_tools),
             "tool_uses": task.tool_uses,
             "duration_ms": task.duration_ms,

@@ -47,6 +47,7 @@ EXPLORE_TOOLS = (
 
 PERMISSION_MODES = ("read_only", "approval_all", "workspace_write", "full_access")
 _MODE_RANK = {name: index for index, name in enumerate(PERMISSION_MODES)}
+THINKING_LEVELS = ("none", "low", "high", "max")
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class AgentProfile:
         tools: Explicit tool allowlist; ``None`` inherits every parent tool.
         disallowed: Tool names removed from the child surface after inheritance.
         model: Optional model id or display name; ``None`` inherits the parent.
+        thinking: Optional reasoning level override for the child model.
         permission_mode: Optional cap on the parent permission mode.
         inject_context: Whether project context files are injected for the child.
         background: Launch this profile in the background by default.
@@ -73,6 +75,7 @@ class AgentProfile:
     tools: tuple[str, ...] | None = None
     disallowed: tuple[str, ...] = ()
     model: str | None = None
+    thinking: str | None = None
     permission_mode: str | None = None
     inject_context: bool = True
     background: bool = False
@@ -187,6 +190,9 @@ def parse_profile_markdown(text: str, *, source: str, path: str = "") -> AgentPr
     tools = _split_list(tools_value) if tools_value not in (None, "*") else None
     disallowed = _split_list(pick("disallowedTools", "disallowed_tools"))
     model = str(pick("model") or "").strip() or None
+    thinking = str(
+        pick("thinking", "reasoningLevel", "reasoning_level") or ""
+    ).strip().lower() or None
     permission = str(pick("permissionMode", "permission_mode") or "").strip().lower() or None
     if permission not in PERMISSION_MODES:
         permission = None
@@ -197,6 +203,7 @@ def parse_profile_markdown(text: str, *, source: str, path: str = "") -> AgentPr
         tools=tools,
         disallowed=disallowed,
         model=model,
+        thinking=thinking,
         permission_mode=permission,
         inject_context=_parse_bool(
             pick("injectContext", "inject_context", "injectAgentsMd", "inject_agents_md"),

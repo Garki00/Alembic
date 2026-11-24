@@ -104,6 +104,7 @@ def build_runtime(
     sandbox_config: Mapping[str, Any] | None = None,
     subagents: SubagentManager | None = None,
     workspace_id: str = "",
+    subagent_models: Mapping[str, str] | None = None,
 ):
     """Return ``(agent, summarizer)`` for one conversation turn.
 
@@ -169,6 +170,7 @@ def build_runtime(
                 model=model,
                 model_cfg=model_cfg,
                 model_factory=create_chat_model,
+                builtin_model_overrides=dict(subagent_models or {}),
                 enabled_tools=enabled_entries,
                 visible_tools=set(visible),
                 tool_configs=dict(tool_configs or {}),

@@ -205,6 +205,7 @@ class PreferencesPayload(BaseModel):
     link_target: str | None = None
     developer_tools: bool | None = None
     compact_keep_first_turn: bool | None = None
+    subagent_models: dict[str, str] | None = None
 
 
 class SandboxConfigPayload(BaseModel):
@@ -486,6 +487,7 @@ def create_app(
         profiles_dir=paths.data_dir / "agents",
         store_dir=sessions.directory / "subagents",
         output_dir=Path(paths.data_dir) / "subagents",
+        model_store=models,
     )
     # 同一个后台子代理只允许由一个标签页触发自动续跑。
     app.state.continued_subagents: set[str] = set()
@@ -1410,6 +1412,7 @@ def create_app(
                 sandbox_config=sandbox_config.get(),
                 subagents=app.state.subagents,
                 workspace_id=workspace_id,
+                subagent_models=prefs.get("subagent_models") or {},
             )
         except Exception as exc:
             if "cancel_event" in locals():

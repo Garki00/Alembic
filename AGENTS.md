@@ -99,6 +99,9 @@
 - `agent` 与 `send_message` 由 `tools/subagent.py` 暴露；任务表、前后台、取消、通知与审批路由都在 `agents/subagents/manager.py`。
 - 子代理只有一层：`agent` / `send_message` 永远从子代理工具面移除，子代理的 `ToolContext.subagents` 必须是 `None`。
 - 子代理工具面 = 父会话当前可见工具 ∩ profile 工具面，再减去 `disallowedTools`；不要直接给子代理 `enabled_tools` 全量。
+- profile 的 `model` 与 `thinking` 是显式声明：解析不到模型或档位时必须让任务失败（`subagent_model_unavailable` / `subagent_thinking_unavailable`），不静默改用父模型或父档位。
+- 同一父会话的子代理共享一个 `ModelRequestAdmission` FIFO 队列，每个模型请求占一个槽位；新会话必须通过 `SubagentManager.admission_for(session_id)` 取队列，不要另建。
+- 设置里的 `subagent_models` 只覆盖内置类型（`general-purpose` / `Explore`）；用户或项目 profile 优先于该设置，不得把覆盖值写进自定义 profile。
 - 子代理共享父会话的审批策略、`始终允许` 记录与权限模式；profile 只能收紧模式（`restrict_mode`），不能放宽。
 - 子代理报告必须经过 `format_handback` 的框架与逐行缩进后才交给父模型；报告是模型输出，不是用户授权。
 - 子代理会话独立存放于 `memory/subagents/<父会话>/`，不进入会话列表；不要把它写进父会话的 `messages`。

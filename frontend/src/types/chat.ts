@@ -45,6 +45,8 @@ export interface SubagentView {
   description: string
   status: SubagentStatus
   background: boolean
+  model: string
+  thinking: string
   steps: SubagentStep[]
   report: string
   error: string

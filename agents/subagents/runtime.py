@@ -10,6 +10,7 @@ summarizer so a child turn keeps provider cache behaviour intact.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -24,6 +25,7 @@ from agents.approval import ApprovalGate, ApprovalMiddleware
 from agents.compaction import PrefixSummarizer
 from agents.context import ChatSession, SessionStore
 from agents.react import ReActAgent
+from agents.subagents.admission import ModelAdmissionMiddleware, ModelRequestAdmission
 from config.settings import settings
 from prompts.system import build_system_prompt
 from tools.model_view import with_compact_descriptions
@@ -40,11 +42,18 @@ class SubagentBuildError(RuntimeError):
         self.code = code
 
 
-def resolve_model_config(parent: Any, name: str | None):
+def resolve_model_config(parent: Any, name: str | None, store: Any = None):
     """Resolve a profile model name against the stored providers.
 
-    A profile may name a model id or display name. When it cannot be resolved the
-    parent model is used, so a stale profile never breaks delegation.
+    An explicit name must resolve. Falling back to the parent model would run the
+    task on a different model than the profile promised, so a missing model raises
+    ``SubagentBuildError`` with the configured identifiers instead.
+
+    Args:
+        parent: Configuration inherited when the profile names no model.
+        name: Model id, display name, or upstream model id from the profile.
+        store: Optional ModelStore; callers pass the app's store when it differs
+            from the process default.
     """
     if not name:
         return parent
@@ -52,22 +61,85 @@ def resolve_model_config(parent: Any, name: str | None):
     if not wanted:
         return parent
     try:
-        from config.store import ModelStore
+        if store is None:
+            from config.store import ModelStore
 
-        store = ModelStore()
-    except Exception:  # pragma: no cover - storage issues fall back to the parent
-        return parent
+            store = ModelStore()
+    except Exception as exc:  # storage failure must not silently change the model
+        raise SubagentBuildError(
+            "subagent_model_unavailable",
+            f"Cannot read model configuration for subagent model {wanted!r}: {exc}",
+        ) from exc
     target = wanted.lower()
+    provider_filter = ""
+    model_target = target
+    if "/" in target:
+        provider_part, _, rest = target.partition("/")
+        if provider_part and rest:
+            provider_filter = provider_part
+            model_target = rest
+    available: list[str] = []
     for provider in store.providers():
+        if provider_filter and provider.id.lower() != provider_filter:
+            continue
         for model in provider.models:
-            if target in {model.id.lower(), (model.name or "").lower(), model.model.lower()}:
+            label = f"{provider.id}/{model.model}"
+            available.append(label)
+            if model_target in {
+                model.id.lower(),
+                (model.name or "").lower(),
+                model.model.lower(),
+            }:
                 if (
                     model.id == store.active_model_id()
                     and provider.id == store.active_provider_id()
                 ):
-                    return store.active() or parent
+                    active = store.active()
+                    if active is None:
+                        raise SubagentBuildError(
+                            "subagent_model_unavailable",
+                            f"Model {wanted!r} is the active model but has no usable configuration.",
+                        )
+                    return active
                 return _config_from_provider(provider, model)
-    return parent
+    listing = ", ".join(sorted(set(available))[:10]) or "(none configured)"
+    raise SubagentBuildError(
+        "subagent_model_unavailable",
+        f"Subagent model {wanted!r} is not configured. Available: {listing}.",
+    )
+
+
+def apply_profile_thinking(cfg: Any, thinking: str | None):
+    """Return a configuration with the profile reasoning level applied.
+
+    ``none`` is always accepted. Other levels must be declared by the model and
+    require reasoning support; otherwise the profile is rejected instead of
+    silently running at a different level.
+    """
+    if not thinking:
+        return cfg
+    level = str(thinking).strip().lower()
+    if level == "none":
+        return replace(cfg, thinking="none") if cfg is not None else cfg
+    if cfg is None:
+        raise SubagentBuildError(
+            "subagent_thinking_unavailable",
+            f"Profile reasoning level {level!r} requires a resolvable model configuration.",
+        )
+    levels = {str(item).lower() for item in (getattr(cfg, "thinking_levels", None) or [])}
+    if level not in levels:
+        supported = ", ".join(sorted(levels | {"none"}))
+        raise SubagentBuildError(
+            "subagent_thinking_unavailable",
+            f"Reasoning level {level!r} is not supported by model "
+            f"{getattr(cfg, 'model', '')!r}; supported: {supported}.",
+        )
+    if not getattr(cfg, "supports_reasoning", False):
+        raise SubagentBuildError(
+            "subagent_thinking_unavailable",
+            f"Model {getattr(cfg, 'model', '')!r} does not support reasoning levels.",
+        )
+    return replace(cfg, thinking=level)
 
 
 def _config_from_provider(provider: Any, model: Any):
@@ -103,6 +175,8 @@ def build_child_agent(
     max_model_calls: int | None = None,
     max_tool_calls: int | None = None,
     engine: str | None = None,
+    admission: ModelRequestAdmission | None = None,
+    admission_cancel: Any = None,
 ):
     """Assemble the child agent and its compaction summarizer.
 
@@ -114,6 +188,8 @@ def build_child_agent(
         max_model_calls: Per-run model call budget.
         max_tool_calls: Per-run tool call budget.
         engine: ``tool_calling`` or ``react``; defaults to the runtime setting.
+        admission: Optional per-parent-session model request gate.
+        admission_cancel: Cancellation event observed while waiting for a slot.
 
     Returns:
         ``(agent, summarizer)`` compatible with :class:`ChatSession`.
@@ -133,6 +209,8 @@ def build_child_agent(
             max_tool_calls=tool_limit,
             model_max_retries=settings.model_max_retries,
             max_output_chars=settings.max_tool_output_chars,
+            admission=admission,
+            admission_cancel=admission_cancel,
         )
         summarizer = PrefixSummarizer(
             model=model,
@@ -142,11 +220,15 @@ def build_child_agent(
         )
         return agent, summarizer
 
-    middleware = [
-        ModelRetryMiddleware(max_retries=settings.model_max_retries),
-        ModelCallLimitMiddleware(run_limit=model_limit, exit_behavior="end"),
-        ToolCallLimitMiddleware(run_limit=tool_limit, exit_behavior="continue"),
-    ]
+    middleware = [ModelRetryMiddleware(max_retries=settings.model_max_retries)]
+    if admission is not None:
+        middleware.append(ModelAdmissionMiddleware(admission, admission_cancel))
+    middleware.extend(
+        [
+            ModelCallLimitMiddleware(run_limit=model_limit, exit_behavior="end"),
+            ToolCallLimitMiddleware(run_limit=tool_limit, exit_behavior="continue"),
+        ]
+    )
     if approval is not None:
         middleware.append(ApprovalMiddleware(approval))
     agent = create_agent(

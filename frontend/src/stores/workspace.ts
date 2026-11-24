@@ -33,6 +33,7 @@ const DEFAULT_PREFERENCES: Preferences = {
   link_target: 'sidebar',
   developer_tools: false,
   compact_keep_first_turn: false,
+  subagent_models: {},
 }
 
 export const useWorkspaceStore = defineStore('workspace', {
