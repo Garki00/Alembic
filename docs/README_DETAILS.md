@@ -802,8 +802,8 @@ scripts/
   hide-sandbox-users.ps1 隐藏/恢复沙盒账户在登录界面的显示
   verify-sandbox.ps1    校验沙盒用户、防火墙与配置
   reset-config.ps1      重置配置
-desktop/                Electron 外壳（暂未适配当前前端）
-packaging/              PyInstaller 后端打包
+desktop/                Electron 外壳（静态前端 + /api 代理 + 卸载界面）
+packaging/              PyInstaller、NSIS 页面/位图、发布编排、安装/卸载脚本
 tests/                  *_test.py，全部离线
 ```
 
@@ -822,10 +822,21 @@ npm run build
 
 ### 9.3 桌面外壳与打包
 
-桌面版尚未适配当前的前后端分离结构：
+桌面版已经恢复，安装器改为原生 NSIS：
 
-- `desktop/main.js` 启动后端后加载后端根地址，而根地址现在只返回 API JSON，不会显示对话界面。
-- `packaging/build.ps1` 可以构建后端可执行文件，产物只提供 `/api`，不包含网页资源。
-- 恢复桌面版时，需要让外壳加载 `frontend/dist`（开发时启动 Vite），并重新设计 sidecar 的静态资源路径。
+- `desktop/frontend-server.js` 提供 `frontend/dist`，把 `/api` 反向代理到 Python
+  sidecar；首次 `/?token=` 设置 HttpOnly Cookie 并正常返回页面。
+- 主窗口无边框自定义标题栏（关于 / 最小化 / 最大化还原 / 关闭），关于窗口显示
+  名称和版本；标题栏不显示 ALEMBIC，应用菜单移除。
+- `packaging/build-release.ps1` 串联前端、PyInstaller 后端、Electron 应用、
+  NSIS 位图和安装器；`-Dev` 只改变安装包 / exe / 安装目录名称，产物在
+  `build/release/out`。
+- `packaging/nsis/installer.nsh` 提供无原生边框、自绘纸色标题栏的 NSIS 选项页，显示
+  安装位置和桌面 / 开始菜单两个快捷方式；运行时和 Windows 命令沙盒固定安装。
+- `packaging/install/nsis-postinstall.ps1` 校验运行时、创建沙盒、写快捷方式 /
+  卸载项 / `install.json`。卸载界面在 `desktop/uninstall.html`。
+- 安装器和主程序默认管理员；版本、扩展点、代码签名和故障排查见
+  [packaging.md](packaging.md)。
 
-浏览器使用不受影响。Electron 环境坑与打包细节保留在 [desktop/README.md](desktop/README.md) 和 [HANDOVER.md](HANDOVER.md)。前端自己的说明见 [frontend/README.md](frontend/README.md)。
+Electron 环境坑保留在 [desktop/README.md](desktop/README.md) 和
+[HANDOVER.md](HANDOVER.md)。前端自己的说明见 [frontend/README.md](frontend/README.md)。

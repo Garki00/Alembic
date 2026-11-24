@@ -1,4 +1,4 @@
-# scripts/setup-sandbox.ps1
+﻿# scripts/setup-sandbox.ps1
 # 一次性管理员初始化：创建两个专用低权限用户、防火墙规则和 App 可读的凭据文件。
 # 日常运行不需要管理员；应用本身不会以管理员身份运行。
 param(
@@ -368,8 +368,28 @@ if (-not (Test-Path -LiteralPath $sandboxFile)) {
 }
 
 # 凭据文件只允许当前用户和 SYSTEM 读取。
-& icacls $usersFile /inheritance:r /grant:r "$currentUser:F" /grant:r "SYSTEM:F" | Out-Null
-& icacls $setupFile /inheritance:r /grant:r "$currentUser:F" /grant:r "SYSTEM:F" | Out-Null
+# 用 .NET ACL API 而不是 icacls：icacls 在部分环境（含中文账户名/特殊路径）会
+# 报“无效参数 /grant:r”，而这里只需要设置固定的两条规则。
+function Protect-SandboxFile([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    try {
+        $acl = Get-Acl -LiteralPath $Path
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($rule in @($acl.Access)) {
+            [void]$acl.RemoveAccessRule($rule)
+        }
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            $currentUser, "FullControl", "Allow")))
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            "SYSTEM", "FullControl", "Allow")))
+        Set-Acl -LiteralPath $Path -AclObject $acl
+    } catch {
+        Write-Warning "无法为 $Path 设置权限：$($_.Exception.Message)"
+    }
+}
+
+Protect-SandboxFile $usersFile
+Protect-SandboxFile $setupFile
 
 Write-Host ""
 Write-Host "沙盒初始化完成。" -ForegroundColor Green

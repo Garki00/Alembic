@@ -39,7 +39,7 @@ function tabId(prefix: string): string {
 }
 
 const INSPECTOR_WIDTH_KEY = 'alembic.inspector-width'
-const INSPECTOR_MIN = 300
+export const INSPECTOR_MIN = 300
 const INSPECTOR_MAX = 640
 
 function storedWidth(): number {
