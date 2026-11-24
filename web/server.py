@@ -74,7 +74,10 @@ from agents.subagents.manager import SubagentManager
 
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
+=======
+>>>>>>> bf63714e09c266e1b2c1f51d1bf60c3928816b09
 def _default_runtime_factory(*args, **kwargs):
     """Import the LangChain runtime lazily so backend startup stays light."""
     from web.runtime import build_runtime
@@ -82,7 +85,10 @@ def _default_runtime_factory(*args, **kwargs):
     return build_runtime(*args, **kwargs)
 
 
+<<<<<<< HEAD
 >>>>>>> feature/subagent
+=======
+>>>>>>> bf63714e09c266e1b2c1f51d1bf60c3928816b09
 def _pick_directory(initial: str, title: str) -> dict:
     """Open the system folder picker and return the chosen directory."""
     try:
