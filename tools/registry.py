@@ -32,6 +32,7 @@ from tools.processes import build_process_tools
 from tools.questions import build_question_tools
 from tools.search import build_search_tools
 from tools.shell import build_shell_tools
+from tools.subagent import build_subagent_tools
 from tools.time import get_current_time, list_timezones
 from tools.todo import build_todo_tools
 from tools.weather import build_weather_tools
@@ -232,6 +233,10 @@ def _build_git_commit(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
 
 def _build_shell(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
     return build_shell_tools(ctx)
+
+
+def _build_subagent(_config: Mapping[str, str], ctx: ToolContext) -> Sequence:
+    return build_subagent_tools(ctx)
 
 
 def _build_mock(config: Mapping[str, str], _ctx: ToolContext) -> Sequence:
@@ -485,6 +490,14 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         risk=RISK_READ,
         tool_names=("ask_user_question",),
         builder=_build_questions,
+    ),
+    "agent": ToolSpec(
+        name="agent",
+        label="子代理",
+        description="把独立任务委派给子代理并汇报结果",
+        risk=RISK_READ,
+        tool_names=("agent", "send_message"),
+        builder=_build_subagent,
     ),
     "tools_search": ToolSpec(
         name="tools_search",

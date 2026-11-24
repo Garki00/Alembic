@@ -222,6 +222,8 @@ export interface Preferences {
   developer_tools: boolean
   /** Keep the first exchange verbatim when the context is compacted. */
   compact_keep_first_turn: boolean
+  /** Built-in subagent type -> `providerId/modelId`; empty inherits the active model. */
+  subagent_models: Record<string, string>
 }
 
 export interface HistoryMessage {
@@ -300,6 +302,36 @@ export interface ProcessListData {
 export interface ProcessDetailData {
   process: ProcessInfo
   log: string
+}
+
+export interface SubagentInfo {
+  id: string
+  parent_session_id: string
+  agent_type: string
+  description: string
+  prompt?: string
+  child_session_id: string
+  status: 'running' | 'completed' | 'failed' | 'stopped' | string
+  background: boolean
+  started_at: number
+  finished_at: number | null
+  report: string
+  error: string
+  usage: Record<string, unknown>
+  tool_uses: number
+  duration_ms: number
+  output_file: string
+  model: string
+  allowed_tools: string[]
+  notified: boolean
+}
+
+export interface SubagentListData {
+  subagents: SubagentInfo[]
+}
+
+export interface SubagentDetailData {
+  subagent: SubagentInfo & { messages?: HistoryMessage[] }
 }
 
 export interface AttachmentInfo {

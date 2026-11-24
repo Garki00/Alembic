@@ -32,13 +32,14 @@ class PreferencesStoreTest(unittest.TestCase):
             self.store.get(),
             {
                 "theme": "light",
-                "transcript_view": "detailed",
+                "transcript_view": "standard",
                 "collapse_timing": "completion",
                 "permission_mode": "workspace_write",
                 "terminal": "powershell",
                 "link_target": "sidebar",
                 "developer_tools": False,
                 "compact_keep_first_turn": False,
+                "subagent_models": {},
             },
         )
 
@@ -96,6 +97,25 @@ class PreferencesStoreTest(unittest.TestCase):
         self.assertEqual(updated["transcript_view"], "compact")
         self.assertEqual(updated["collapse_timing"], "completion")
 
+    def test_subagent_models_keep_known_types_only(self):
+        updated = self.store.update(
+            {
+                "subagent_models": {
+                    "general-purpose": "provider-1/model-1",
+                    "Explore": "",
+                    "unknown": "provider-1/model-2",
+                }
+            }
+        )
+        self.assertEqual(updated["subagent_models"], {"general-purpose": "provider-1/model-1"})
+        reopened = PreferencesStore(self.tmp / "preferences.json")
+        self.assertEqual(reopened.get()["subagent_models"], {"general-purpose": "provider-1/model-1"})
+        self.assertEqual(self.store.update({"subagent_models": {}})["subagent_models"], {})
+
+    def test_invalid_subagent_models_payload_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.store.update({"subagent_models": ["general-purpose"]})
+
     def test_invalid_values_are_rejected(self):
         with self.assertRaises(ValueError):
             self.store.update({"transcript_view": "huge"})
@@ -114,7 +134,7 @@ class PreferencesApiTest(unittest.TestCase):
 
     def test_bootstrap_contains_preferences(self):
         data = self.client.get("/api/bootstrap").json()
-        self.assertEqual(data["preferences"]["transcript_view"], "detailed")
+        self.assertEqual(data["preferences"]["transcript_view"], "standard")
         self.assertEqual(data["preferences"]["collapse_timing"], "completion")
         self.assertEqual(data["preferences"]["permission_mode"], "workspace_write")
         self.assertFalse(data["preferences"]["developer_tools"])
@@ -136,6 +156,17 @@ class PreferencesApiTest(unittest.TestCase):
     def test_invalid_value_returns_400(self):
         response = self.client.put("/api/preferences", json={"transcript_view": "huge"})
         self.assertEqual(response.status_code, 400)
+
+    def test_subagent_models_round_trip(self):
+        response = self.client.put(
+            "/api/preferences",
+            json={"subagent_models": {"general-purpose": "provider-1/model-1"}},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["preferences"]["subagent_models"],
+            {"general-purpose": "provider-1/model-1"},
+        )
 
 
 if __name__ == "__main__":

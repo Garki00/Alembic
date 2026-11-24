@@ -27,6 +27,35 @@ export interface ToolResultView {
   content: string
 }
 
+export type SubagentStatus = 'running' | 'completed' | 'failed' | 'stopped'
+
+export interface SubagentStep {
+  id: string
+  phase: string
+  label: string
+  detail: string
+}
+
+export interface SubagentView {
+  /** agentId returned by the backend. */
+  id: string
+  /** Tool call that launched this run; used to nest the row under the tool event. */
+  toolCallId: string
+  agentType: string
+  description: string
+  status: SubagentStatus
+  background: boolean
+  model: string
+  thinking: string
+  steps: SubagentStep[]
+  report: string
+  error: string
+  outputFile: string
+  toolUses: number
+  durationMs: number
+  usage: Record<string, unknown>
+}
+
 export type WorkEvent =
   | { kind: 'thought'; id: string; text: string }
   | {
@@ -37,6 +66,20 @@ export type WorkEvent =
       result: string
       error: boolean
       liveOutput?: string
+    }
+  | {
+      kind: 'subagent'
+      id: string
+      agentId: string
+      agentType: string
+      description: string
+      status: 'completed' | 'failed' | 'stopped'
+      report: string
+      error: string
+      toolUses: number
+      durationMs: number
+      outputFile: string
+      usage: Record<string, unknown>
     }
 
 export interface UserAttachment {
@@ -64,6 +107,7 @@ export interface AssistantTurn {
   toolResults: ToolResultView[]
   approvals: ChatApproval[]
   questions: ChatQuestion[]
+  subagents: SubagentView[]
   error: string
   streaming: boolean
   stepsOpen: boolean
@@ -102,6 +146,7 @@ export function createAssistantTurn(): AssistantTurn {
     toolResults: [],
     approvals: [],
     questions: [],
+    subagents: [],
     error: '',
     streaming: false,
     stepsOpen: true,

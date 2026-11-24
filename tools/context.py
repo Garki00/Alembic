@@ -93,6 +93,9 @@ class ToolContext:
     #: runtime with the current model; when ``None``, ``read_image`` returns
     #: ``vision_unavailable``.
     vision: Callable[[str, str], str] | None = None
+    #: Subagent service for this turn. ``None`` disables delegation, which is how
+    #: child agents and unsupported entry points stay single-level.
+    subagents: Any = None
 
     @property
     def session_id(self) -> str:

@@ -1,0 +1,24 @@
+{
+  "product": "ALEMBIC",
+  "appId": "com.garki.alembic",
+  "publisher": "Garki",
+  "version": "0.1.0",
+  "channel": "stable",
+  "arch": "x64",
+  "installDir": "%ProgramFiles%\\ALEMBIC",
+  "minimumWindows": "10.0.17763",
+  "sandbox": {
+    "createByDefault": true,
+    "hideAccountsByDefault": true,
+    "proxyPort": 47831
+  },
+  "installer": {
+    "type": "nsis",
+    "perMachine": true,
+    "requireAdmin": true,
+    "allowCustomDir": true,
+    "desktopShortcutByDefault": true,
+    "startMenuShortcutByDefault": true,
+    "sandboxOptional": false
+  }
+}

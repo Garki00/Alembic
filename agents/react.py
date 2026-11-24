@@ -243,8 +243,12 @@ class ReActAgent:
         max_output_chars: int = 20000,
         max_protocol_errors: int = 2,
         stop_sequences: Sequence[str] | None = None,
+        admission=None,
+        admission_cancel=None,
     ) -> None:
         self.model = model
+        self.admission = admission
+        self.admission_cancel = admission_cancel
         self.tools = list(tools)
         self.tools_by_name: dict[str, Any] = {
             str(getattr(tool, "name", "")): tool for tool in self.tools
@@ -526,6 +530,12 @@ class ReActAgent:
         step itself. Test doubles and a few providers only accept ``invoke``
         without extra kwargs, so fall back to the plain call once.
         """
+        if self.admission is not None:
+            with self.admission.slot(self.admission_cancel):
+                return self._invoke_model_once(messages)
+        return self._invoke_model_once(messages)
+
+    def _invoke_model_once(self, messages: list[BaseMessage]):
         if not self.stop_sequences:
             return self.model.invoke(messages)
         try:

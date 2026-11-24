@@ -1213,13 +1213,27 @@ PERMISSION_MODES = ("read_only", "approval_all", "workspace_write", "full_access
 TERMINAL_CHOICES = ("powershell", "cmd", "gitbash", "wsl")
 LINK_TARGETS = ("sidebar", "browser")
 THEME_MODES = ("light", "dark", "system")
-DEFAULT_TRANSCRIPT_VIEW = "detailed"
+DEFAULT_TRANSCRIPT_VIEW = "standard"
 DEFAULT_COLLAPSE_TIMING = "completion"
 DEFAULT_PERMISSION_MODE = "workspace_write"
 DEFAULT_TERMINAL = "powershell"
 DEFAULT_LINK_TARGET = "sidebar"
 DEFAULT_THEME = "light"
 PREFERENCES_VERSION = 2
+#: Built-in subagent types whose default model can be chosen in Settings.
+SUBAGENT_MODEL_KEYS = ("general-purpose", "Explore")
+
+
+def normalize_subagent_models(value: Any) -> dict[str, str]:
+    """Keep only known built-in agent types with a non-empty model value."""
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for key in SUBAGENT_MODEL_KEYS:
+        raw = value.get(key)
+        if isinstance(raw, str) and raw.strip():
+            result[key] = raw.strip()[:200]
+    return result
 
 
 def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -1264,6 +1278,7 @@ def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
         "link_target": link_target,
         "developer_tools": bool(developer),
         "compact_keep_first_turn": bool(keep_first),
+        "subagent_models": normalize_subagent_models(data.get("subagent_models")),
     }
 
 
@@ -1290,6 +1305,7 @@ class PreferencesStore:
                     "link_target": DEFAULT_LINK_TARGET,
                     "developer_tools": False,
                     "compact_keep_first_turn": False,
+                    "subagent_models": {},
                 }
             )
         )
@@ -1338,6 +1354,11 @@ class PreferencesStore:
             current["compact_keep_first_turn"] = value if isinstance(value, bool) else (
                 str(value).strip().lower() in {"1", "true", "on", "yes"}
             )
+        if "subagent_models" in patch:
+            value = patch["subagent_models"]
+            if not isinstance(value, Mapping):
+                raise ValueError("subagent_models 需要对象")
+            current["subagent_models"] = normalize_subagent_models(value)
         payload = dict(current)
         payload["version"] = PREFERENCES_VERSION
         self.file.save(payload)

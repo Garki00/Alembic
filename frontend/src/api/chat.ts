@@ -7,6 +7,7 @@ export interface ChatPayload {
   attachments?: string[]
   internal?: boolean
   process_id?: string
+  subagent_id?: string
 }
 
 export type ChatEventHandler = (event: string, data: Record<string, unknown>) => void
@@ -32,6 +33,7 @@ export async function streamChat(
       attachments: payload.attachments || [],
       internal: Boolean(payload.internal),
       process_id: payload.process_id || '',
+      subagent_id: payload.subagent_id || '',
     }),
     signal,
   })
@@ -55,6 +57,27 @@ export async function streamProcessEvents(
   signal: AbortSignal,
 ): Promise<void> {
   const response = await fetch(apiUrl('/api/processes/events'), {
+    method: 'GET',
+    headers: {
+      Accept: 'text/event-stream',
+      ...authHeaders(),
+    },
+    credentials: 'include',
+    signal,
+  })
+  if (!response.ok) {
+    throw new ApiError(response.statusText || `HTTP ${response.status}`, response.status)
+  }
+  if (!response.body) throw new Error('当前浏览器不支持流式响应')
+  await readSSE(response.body.getReader(), onEvent)
+}
+
+/** Subscribe to subagent lifecycle events (progress, completion, background approvals). */
+export async function streamSubagentEvents(
+  onEvent: ChatEventHandler,
+  signal: AbortSignal,
+): Promise<void> {
+  const response = await fetch(apiUrl('/api/subagents/events'), {
     method: 'GET',
     headers: {
       Accept: 'text/event-stream',

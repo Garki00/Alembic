@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ALEMBIC 应用图标：纸色底 + 祖母绿太阳，和前端 SunIcon / 品牌色一致。
+     electron-builder 会把 SVG 光栅化后转换 Windows .ico。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <rect x="24" y="24" width="976" height="976" rx="210" fill="#faf8f1" stroke="#dedfd4" stroke-width="12"/>
+  <g fill="none" stroke="#397157" stroke-width="46" stroke-linecap="round">
+    <circle cx="512" cy="512" r="205"/>
+    <path d="M512 220v-72M512 804v72M220 512h-72M804 512h72M306 306l-51-51M718 718l51 51M718 306l51-51M306 718l-51 51"/>
+  </g>
+</svg>

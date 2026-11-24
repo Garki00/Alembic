@@ -75,6 +75,7 @@ class ChatCLI:
         approval: ApprovalPolicy | None = None,
         session_ref: SessionRef | None = None,
         todo_store: TodoStore | None = None,
+        subagents=None,
     ) -> None:
         self.agent = agent
         self.summarizer = summarizer
@@ -84,6 +85,7 @@ class ChatCLI:
         self.session_ref = session_ref or SessionRef(session_id or settings.session_id)
         self.session_ref.session_id = session_id or settings.session_id
         self.todo_store = todo_store or TodoStore()
+        self.subagents = subagents
         self.session = ChatSession(
             agent,
             self.session_ref.session_id,
@@ -119,6 +121,10 @@ class ChatCLI:
 
     # ---- 内部实现 ----
     def _ask(self, question: str) -> None:
+        if self.subagents is not None:
+            pending = self.subagents.drain_notifications(self.session.session_id)
+            if pending:
+                question = "\n\n".join([*pending, question])
         result = self.session.ask(question)
         if self.debug:
             self._print_trace(result)
@@ -345,9 +351,21 @@ def main() -> None:
         sandbox=sandbox,
         sandbox_policy=policy,
     )
+    from agents.subagents.manager import SubagentManager
+
+    subagents = SubagentManager(
+        profiles_dir=Path(settings.data_dir) / "agents",
+        store_dir=SessionStore().directory / "subagents",
+        output_dir=Path(settings.data_dir) / "subagents",
+    )
     try:
         model = build_model()
-        agent, summarizer = assemble_agent(model=model, approval=gate, ctx=ctx)
+        agent, summarizer = assemble_agent(
+            model=model,
+            approval=gate,
+            ctx=ctx,
+            subagents=subagents,
+        )
     except RuntimeError as exc:  # 缺少 API Key 等配置问题
         print(f"[配置错误] {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
@@ -360,6 +378,7 @@ def main() -> None:
         approval=gate.policy if gate else None,
         session_ref=session_ref,
         todo_store=todo_store,
+        subagents=subagents,
     )
     if args.new:
         cli.session.reset()

@@ -213,6 +213,23 @@ class Settings:
     agent_roles = os.getenv("AGENT_ROLES", "planner,coder,reviewer,tester,documenter").split(",")
     enable_agent_communication = _env_bool("ENABLE_AGENT_COMMUNICATION", True)
 
+    # 子代理：默认继承父轮模型与权限；深度 1 表示子代理不能再启动子代理。
+    subagents_enabled = _env_bool("SUBAGENTS_ENABLED", True)
+    subagent_max_depth = _env_int("SUBAGENT_MAX_DEPTH", 1)
+    subagent_max_model_calls = _env_int("SUBAGENT_MAX_MODEL_CALLS", 12)
+    subagent_max_tool_calls = _env_int("SUBAGENT_MAX_TOOL_CALLS", 30)
+    # 同一父会话内并发子代理模型请求的上限；超出的请求在会话内排队。
+    max_concurrent_subagent_model_requests = _env_int(
+        "MAX_CONCURRENT_SUBAGENT_MODEL_REQUESTS", 2
+    )
+    subagent_auto_background = _env_nonneg_int("SUBAGENT_AUTO_BACKGROUND_SECONDS", 90)
+    subagent_profiles_dir = os.getenv(
+        "SUBAGENT_PROFILES_DIR", os.path.join(app_home, "agents")
+    )
+    subagent_store_dir = os.getenv(
+        "SUBAGENT_STORE_DIR", os.path.join(memory_dir, "subagents")
+    )
+
     # ============================================================================
     # 错误恢复与重试
     # ============================================================================

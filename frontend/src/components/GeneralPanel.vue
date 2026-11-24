@@ -59,6 +59,36 @@ const currentLinkHint = computed(() => (
   LINKS.find((item) => item.value === preferences.value.link_target)?.hint || ''
 ))
 
+const subagentModelOptions = computed(() => {
+  const options: Array<{ value: string; label: string }> = []
+  for (const provider of store.providers) {
+    for (const model of provider.models) {
+      options.push({
+        value: `${provider.id}/${model.id}`,
+        label: `${provider.name} · ${model.name || model.model}`,
+      })
+    }
+  }
+  return options
+})
+
+function subagentModelHint(key: string): string {
+  const value = preferences.value.subagent_models?.[key] || ''
+  if (!value) return '继承当前模型'
+  return subagentModelOptions.value.find((item) => item.value === value)?.label || value
+}
+
+async function setSubagentModel(key: string, event: Event): Promise<void> {
+  const element = event.target as HTMLSelectElement
+  const value = element.value
+  const next = { ...(preferences.value.subagent_models || {}) }
+  if (value) next[key] = value
+  else delete next[key]
+  if (!(await save({ subagent_models: next }, '子代理模型已更新'))) {
+    element.value = preferences.value.subagent_models?.[key] || ''
+  }
+}
+
 async function save(patch: Partial<Preferences>, message: string): Promise<boolean> {
   try {
     await store.savePreferences(patch)
@@ -199,6 +229,51 @@ async function setCompaction(event: Event): Promise<void> {
               </option>
             </select>
             <div class="general-hint">{{ currentTerminalHint }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-title">子代理</div>
+      <div class="general-list">
+        <div class="general-row">
+          <div class="general-text">
+            <div class="general-title">通用子代理模型</div>
+            <div class="general-desc">通用子代理使用的模型</div>
+          </div>
+          <div class="general-control">
+            <select
+              class="general-select"
+              :value="preferences.subagent_models?.['general-purpose'] || ''"
+              @change="setSubagentModel('general-purpose', $event)"
+            >
+              <option value="">继承当前模型</option>
+              <option v-for="item in subagentModelOptions" :key="item.value" :value="item.value">
+                {{ item.label }}
+              </option>
+            </select>
+            <div class="general-hint">{{ subagentModelHint('general-purpose') }}</div>
+          </div>
+        </div>
+
+        <div class="general-row">
+          <div class="general-text">
+            <div class="general-title">检索子代理模型</div>
+            <div class="general-desc">只读检索子代理使用的模型</div>
+          </div>
+          <div class="general-control">
+            <select
+              class="general-select"
+              :value="preferences.subagent_models?.['Explore'] || ''"
+              @change="setSubagentModel('Explore', $event)"
+            >
+              <option value="">继承当前模型</option>
+              <option v-for="item in subagentModelOptions" :key="item.value" :value="item.value">
+                {{ item.label }}
+              </option>
+            </select>
+            <div class="general-hint">{{ subagentModelHint('Explore') }}</div>
           </div>
         </div>
       </div>

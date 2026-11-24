@@ -24,6 +24,8 @@ TOOL_MODEL_DESCRIPTIONS = {
     "download_file": "Download a remote file into the workspace.",
     "todo_write": "Replace the session todo list; statuses are pending, in_progress, completed.",
     "ask_user_question": "Ask for missing input or a choice, then wait.",
+    "agent": "Delegate a self-contained task to a subagent and return its report.",
+    "send_message": "Continue an existing subagent with its context intact.",
     "tools_search": "Search and load extended tools for this session.",
     "run_command": "Run shell commands (tests, builds, Git, scripts). Prefer file tools; use the shell as a fallback.",
     "start_process": "Start a background command and return its process ID.",

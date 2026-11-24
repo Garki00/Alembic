@@ -31,6 +31,9 @@ dist/
 frontend/dist/
 desktop/dist/
 desktop/out/
+build/release/
+packaging/assets/alembic.ico
+packaging/assets/alembic.png
 
 # ---------- Node / Electron ----------
 node_modules/

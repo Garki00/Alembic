@@ -46,6 +46,7 @@ class RegistryTest(unittest.TestCase):
                 "download_file",
                 "todo_write",
                 "ask_user_question",
+                "agent",
                 "tools_search",
                 "run_command",
                 "start_process",

@@ -119,6 +119,47 @@ def build_model() -> ChatDeepSeek:
     )
 
 
+def cli_subagent_models() -> dict[str, str]:
+    """Read the built-in subagent model preferences for CLI delegation."""
+    try:
+        from config.store import PreferencesStore
+
+        value = PreferencesStore().get().get("subagent_models")
+    except Exception:  # preferences are optional for the CLI
+        return {}
+    return {str(key): str(item) for key, item in value.items()} if isinstance(value, dict) else {}
+
+
+def cli_model_config():
+    """Describe the CLI's env model as a ModelConfig for child agents.
+
+    Returns ``None`` when the CLI has no model name, which keeps delegation on the
+    parent model and lets a profile that names a model fail explicitly.
+    """
+    if not settings.model_name:
+        return None
+    from config.store import ModelConfig
+
+    from agents.model_factory import PROVIDER_BASE_URLS
+
+    return ModelConfig(
+        id="cli",
+        name=settings.model_name,
+        provider="deepseek",
+        provider_id="deepseek",
+        provider_name="DeepSeek",
+        model=settings.model_name,
+        base_url=PROVIDER_BASE_URLS["deepseek"],
+        api_key=settings.deepseek_api_key or "",
+        thinking="none",
+        thinking_levels=["low", "high", "max"],
+        supports_reasoning=True,
+        supports_images=False,
+        context_length=settings.model_context_window,
+        max_output_tokens=0,
+    )
+
+
 def build_middleware(
     approval: "ApprovalGate | None" = None,
     *,
@@ -161,6 +202,7 @@ def build_agent(
     approval: ApprovalGate | None = None,
     ctx: ToolContext | None = None,
     engine: str | None = None,
+    subagents=None,
 ):
     """Assemble the agent; dependencies are injectable for tests or model substitution.
 
@@ -176,6 +218,7 @@ def build_agent(
         approval=approval,
         ctx=ctx,
         engine=engine,
+        subagents=subagents,
     )
     return agent
 
@@ -188,6 +231,7 @@ def assemble_agent(
     approval: ApprovalGate | None = None,
     ctx: ToolContext | None = None,
     engine: str | None = None,
+    subagents=None,
 ):
     """Return ``(agent, summarizer)`` so compaction can replay the live prefix.
 
@@ -213,6 +257,44 @@ def assemble_agent(
         updates["enabled_tool_names"] = enabled_names
     if updates:
         tool_ctx = replace(tool_ctx, **updates)
+    visible = (
+        visible_tool_names(enabled_names, activation)
+        if managed
+        else {str(getattr(tool, "name", "")) for tool in (tools or [])}
+    )
+    if subagents is not None and tool_ctx.subagents is None:
+        from agents.model_factory import create_chat_model
+        from agents.subagents.manager import LaunchContext
+
+        tool_ctx = replace(
+            tool_ctx,
+            subagents=subagents.bind(
+                LaunchContext(
+                    session_id=tool_ctx.session_id,
+                    workspace=tool_ctx.workspace or Path.cwd(),
+                    model=chat_model,
+                    model_cfg=cli_model_config(),
+                    model_factory=create_chat_model,
+                    builtin_model_overrides=cli_subagent_models(),
+                    enabled_tools=set(enabled_entries),
+                    visible_tools=set(visible),
+                    tool_configs={},
+                    approval=approval,
+                    asker=tool_ctx.asker,
+                    emit=tool_ctx.emit,
+                    terminal=tool_ctx.terminal,
+                    surface=SURFACE_CLI,
+                    engine=resolved_engine,
+                    activation=activation,
+                    sandbox=tool_ctx.sandbox,
+                    sandbox_policy=tool_ctx.sandbox_policy,
+                    cancel_event=tool_ctx.cancel_event,
+                    vision=tool_ctx.vision,
+                    todo_store=tool_ctx.todo_store,
+                    process_manager=tool_ctx.process_manager,
+                )
+            ),
+        )
     if managed:
         tools = build_default_tools(tool_ctx)
     tool_names = (

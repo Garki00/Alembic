@@ -711,11 +711,15 @@ class ChatSession:
         workspace_id: str = "",
         workspace_path: str = "",
         hydrate: bool = True,
+        generate_title: bool = True,
     ) -> None:
         self.agent = agent
         self.session_id = session_id or settings.session_id
         self.store = store or SessionStore()
         self.summarizer = summarizer
+        # Subagent sessions are internal: their titles are never shown, so the
+        # extra title request is skipped instead of spending a model call.
+        self.generate_title = bool(generate_title)
 
         self.model_context_window = model_context_window or settings.model_context_window
         self.max_output_tokens = int(
@@ -1172,7 +1176,7 @@ class ChatSession:
 
         self.meta.turns += 1
         self.meta.updated_at = _now()
-        if self.meta.turns == 1 and not self.meta.title:
+        if self.generate_title and self.meta.turns == 1 and not self.meta.title:
             self.meta.title = self._first_turn_title()
         self._persist()
         tokens, source = self.usage()

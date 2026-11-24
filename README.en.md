@@ -10,11 +10,12 @@ The backend is built with Python, FastAPI, and LangChain; the frontend uses Vue,
 
 - Configure multiple providers and models, including per-model context, output, and reasoning settings.
 - Use native model tool calling for file operations, search, Git, commands, and background processes.
+- Delegate self-contained multi-step work to subagents with their own context and tool surface, including background completion and follow-up messages.
 - Work with documents, images, web content, and conversation attachments.
 - Persist conversations, compact context, track tasks, stream output, and receive background-task updates.
 - Review tool approvals and use read-only mode, command policies, and credential-path protections.
 - Extend the workspace with tool plugins, MCP servers, and Agent Skills.
-- Use the browser workspace or command-line entry point.
+- Use the browser workspace, command-line entry point, or the Windows desktop installer.
 
 ## Quick Start
 
@@ -55,6 +56,29 @@ npm run dev
 
 Sandbox initialization can be skipped when command tools are not needed. To run commands, initialize the sandbox and review the approval and network policies first.
 
+### Desktop Installer
+
+```powershell
+# One-time build dependencies
+uv sync
+cd frontend;  npm install; cd ..
+cd desktop;   npm install; cd ..
+
+# Build the NSIS installer
+powershell -ExecutionPolicy Bypass -File packaging\build-release.ps1
+
+# Developer build (the artifact/exe names get a 开发版 suffix; the UI stays unlabeled)
+powershell -ExecutionPolicy Bypass -File packaging\build-release.ps1 -Dev
+```
+
+The artifact is `build\release\out\ALEMBIC-Setup-<version>-x64.exe`. The installer is
+native NSIS and runs the standard Modern UI2 wizard: the target directory is chosen on
+the directory page, followed by one options page for the two shortcuts. The bundled
+runtimes and the Windows command sandbox are always installed. Both the installer and
+the app default to administrator elevation. See
+[Desktop packaging and release](docs/packaging.md) for versioning, the install flow,
+developer naming, extension points, and code signing.
+
 ### Command Line
 
 ```powershell
@@ -89,7 +113,7 @@ cd frontend
 npm run build
 ```
 
-See the [extension guide](docs/extensions.md), [portable runtimes](docs/runtimes.md), and [handover document](docs/HANDOVER.md) for implementation details and conventions.
+See the [extension guide](docs/extensions.md), [subagents](docs/subagents.md), [portable runtimes](docs/runtimes.md), repository conventions in [AGENTS.md](AGENTS.md), and the UI design system in [DESIGN.md](DESIGN.md).
 
 ## Configuration and Data
 

@@ -1,9 +1,10 @@
 # ALEMBIC 交接文档（HANDOVER）
 
 > 给接手的智能体 / 开发者：先读这一份，再动代码。
-> 最后更新：2026-11-13，新增 Windows 原生命令沙盒（专用本地用户 + ACL + Job Object +
-> 按用户防火墙 + 域名代理）、命令失败关闭、沙盒状态 API 与设置面板；同步更新后台任务、
-> 前后台取消、实时输出、附件、压缩和上下文圆环；467 个后端测试全绿（1 个跳过）。
+> 最后更新：2026-11-21，恢复 Electron 桌面版（本地静态前端 + `/api` 代理），安装器改为
+> 原生 NSIS，主程序和安装器默认管理员；安装时自动创建命令沙盒、校验内置运行时。
+> 发布流程见 [packaging.md](packaging.md)。此前一轮完成 Windows 原生命令沙盒、
+> 后台任务、附件与上下文压缩，467 个后端测试全绿（1 个跳过）。
 
 ## 1. 这是什么
 
@@ -35,16 +36,19 @@
 - 前端：Vue 3.5 + Vite 7 + TypeScript + Pinia（`frontend/`）；
 - 两者通过 `/api` 通信：开发时前端跑 5173，后端跑 8000，Vite 代理 `/api`；
 - 后端**不再提供 HTML / 静态资源**，只提供 JSON 与 SSE；
-- Electron 外壳（`desktop/`）与 PyInstaller 打包（`packaging/`）**暂未适配**
-  这次的前后端分离，恢复桌面版时需要单独改造。
+- Electron 外壳（`desktop/`）在 sidecar 之外再起一个本地静态服务器，提供
+  `frontend/dist` 并把 `/api` 反向代理到后端；PyInstaller 后端作为 sidecar 随包分发；
+- 安装器是**原生 NSIS**（`packaging/nsis/`），带与前端一致的纸色 / 祖母绿页面；
+  postinstall 在 `packaging/install/nsis-postinstall.ps1`，发布流程见
+  [packaging.md](packaging.md)。主程序和安装器都默认请求管理员权限。
 
 数据（模型配置、工具开关、工作区、会话历史）全部存放在用户目录，
 `%APPDATA%\Alembic\{data,memory}`，不在代码目录里。旧的 `%APPDATA%\SmartAgent`
 会在首次启动时由 `config/storage.py` 复制到新目录，原目录保留。
 
 > 注意区分两个目录：`%APPDATA%\Alembic` 是**业务数据**（Python 后端写）；
-> `%LOCALAPPDATA%\Alembic` 是 **Electron 自己的 profile**（缓存、`runtime/*.log`，
-> 当前桌面版暂停，后者暂时用不到）。
+> `%LOCALAPPDATA%\Alembic` 是 **Electron 自己的 profile**（缓存、`runtime/*.log`）。
+> 安装版的卸载器可以选择同时删除这两处。
 
 ## 2. 30 秒上手
 
@@ -159,8 +163,8 @@ scripts/
   setup-sandbox.ps1      管理员一次性初始化 Windows 命令沙盒
   verify-sandbox.ps1     校验沙盒用户、防火墙与配置
   reset-config.ps1/.cmd  清除 Alembic / SmartAgent 配置，重新查看初始化向导
-desktop/                 Electron 外壳（旧版，未适配 Vue 前端）
-packaging/               PyInstaller（已移除 web/static；桌面打包未适配）
+desktop/                 Electron 外壳（静态前端 + /api 代理 + 卸载界面）
+packaging/               PyInstaller、发布编排、NSIS 页面 / 位图与安装/卸载脚本
 tests/                   *_test.py，全部离线（不调真实模型）
 ```
 
@@ -527,16 +531,32 @@ run_command / start_process
 | `memory/` 写入被拒 | 受限沙箱只允许工作区部分路径 | 验证时用 `ALEMBIC_HOME=<工作区>\.tmp\...` |
 | 中文测试输出乱码 | Windows 控制台编码 | 不影响结果；需要时 `chcp 65001` |
 
-## 7. 已知问题（最重要的一条）
+## 7. 桌面版与安装包
 
-**Electron / 打包尚未适配 Vue 前端。** 后端根地址现在返回 API 说明 JSON，
-而 `desktop/main.js` 仍然 loadURL 这个地址，所以桌面版会显示 JSON 而不是界面；
-`packaging/browser-launcher.cmd` 已改成提示信息。恢复时的方向：
+**Electron 已适配 Vue 前端。** `desktop/main.js` 启动 sidecar 后启动
+`desktop/frontend-server.js`，由它提供 `resources/frontend` 并把 `/api` 反向代理到
+后端；`/?token=` 在静态服务器设置 HttpOnly Cookie，并继续返回页面让前端读取
+token。开发时指向 `frontend/dist`，
+可用 `ALEMBIC_FRONTEND` 覆盖。`packaging/browser-launcher.cmd` 仍是旧提示文件，
+可以忽略或删除。
 
-1. 前端 `npm run build` 产出 `frontend/dist`；
-2. 由 Electron 或一个独立的静态服务器提供 `dist`（SPA 需要 `/` 回退到 `index.html`）；
-3. 开发模式可让 Electron 指向 `http://127.0.0.1:5173`，生产模式指向打包后的静态目录；
-4. 后端继续只跑 `/api`，保留 token / 随机端口 / sidecar 逻辑。
+**安装包**由 `packaging/build-release.ps1` 组装：
+
+1. 同步前端 / desktop 版本；
+2. 前端构建；
+3. PyInstaller 后端 + 内置运行时；
+4. electron-builder 生成 `desktop/dist/win-unpacked`；
+5. 生成 NSIS 位图，`electron-builder --win nsis --prepackaged` 打出安装器；
+6. 复制到 `build/release/out`，写 `release.json` / `SHA256SUMS.txt`。
+
+安装器是 `perMachine` NSIS，启动即请求管理员；窗口无原生边框，第一页自绘标题栏，
+显示安装位置和两个快捷方式选项，安装内容列出主程序、内置运行时和 Windows 命令沙盒
+（后两者始终安装）。安装完成后调用
+`packaging/install/nsis-postinstall.ps1` 做运行时校验、沙盒、快捷方式、卸载器复制和
+注册表 / `install.json`。卸载界面在 `desktop/uninstall.html`，通过
+`uninstall-worker.ps1` 提权清理。`-Dev` 只把“开发版”加到安装包 / exe / 安装目录 /
+快捷方式名称，页面不显示发布通道。完整说明、版本管理、代码签名和扩展点见
+[packaging.md](packaging.md)。
 
 另：`run_command` 是流式执行（当前 Windows 沙盒使用管道），并且只能通过
 `ToolContext.sandbox` 启动；停止生成会结束当前前台命令的进程树，并停止当前会话由
@@ -546,8 +566,8 @@ run_command / start_process
 ## 8. 还没做的
 
 - 前端组件/单元测试（当前只做 `vue-tsc` + 构建 + 手动验证）；
-- Electron 适配、安装包、代码签名、应用图标；
-- 生产部署的静态资源服务（Nginx / Caddy / 一个独立静态服务器）；
+- 代码签名、自动更新、托盘 / 系统通知；
+- 生产部署的独立静态资源服务（桌面版已由 Electron 内置静态服务器解决）；
 - Windows 原生 ConPTY（当前 Windows 沙盒用管道）、审批卡片 diff 视图、
   `apply_patch` 的跨文件事务回滚（`batch_edit` 已具备）；
 - 文本 ReAct 是单步串行（每轮一个工具），提示词每步重发历史；默认的
@@ -565,7 +585,7 @@ run_command / start_process
 5. 数据目录迁到 `%APPDATA%\Alembic`（含一次性迁移）；
 6. Electron 外壳 + token 鉴权 + 随机端口 + 打包；
 7. **前端整体迁移到 Vue 3 + Vite + Pinia + TypeScript，后端改为 API-only + CORS，
-   新增一键开发脚本，桌面/打包暂时搁置。**
+   新增一键开发脚本，桌面/打包暂时搁置（后续已恢复，见第 29 条）。**
 8. **新增 `read_document`、`fetch_url`、文件生命周期工具、`todo_write`、
    `ask_user_question`、后台进程工具；网页端增加问答卡与任务清单，
    审批键拆分 delete/move。**
@@ -644,6 +664,21 @@ run_command / start_process
     九列与列表视图；新增图片文件预览（PNG/JPEG/GIF/WebP/SVG）；设置 → 工具加入
     网格 / 列表视图；左右侧栏开关与布局过渡、搜索展开动画、空目录提示对齐、
     图标 hover 与确认弹窗样式统一。**
+29. **桌面版恢复 + Windows 安装包：Electron 静态服务器提供 Vue 构建并代理
+    `/api`；提权 worker 自动创建 Windows 命令沙盒、校验内置 Node/Python/pnpm、
+    写快捷方式与卸载项；`packaging/build-release.ps1` 统一版本和 SHA256 校验和。
+    详见 [packaging.md](packaging.md)。**
+30. **安装器改为原生 NSIS：** 安装器窗口无原生边框，选项页自绘纸色标题栏
+    （最小化 / 关闭），显示安装位置和桌面 / 开始菜单两个快捷方式选项；运行时与
+    Windows 命令沙盒固定安装；安装器和主程序默认管理员。
+    主窗口改为无边框自定义标题栏（不含 ALEMBIC，含关于 / 最小化 / 最大化还原 / 关闭），
+    关于窗口显示名称与版本；对话和左右侧栏加入最小宽度和窗口缩放钳制；`-Dev` 只在
+    安装包 / exe / 安装目录名称后加“开发版”，页面不标注发布通道；启动时先显示外壳、
+    后端惰性导入、关闭 GPU 合成。
+
+## 当前扩展与运行时验证
+
+本轮完整后端测试运行 631 项，结果通过（其中 2 项因宿主无法创建符号链接而跳过）；前端 `vue-tsc` 类型检查及 Vite 生产构建通过。实际原生命令沙盒在不依赖宿主 PATH 的条件下验证了内置 Node、Python、venv/pip 和 pnpm。真实 PyInstaller 打包及冻结产物冒烟检查通过：在隔离的 `ALEMBIC_HOME` 中启动后，`/api/extensions` 返回已启用的内置 `code-review`、正确的打包资源路径及空错误列表。MCP 已验证本地 SDK 传输，不将其视为外部身份提供商 OAuth 授权的端到端验证。
 
 ## 当前扩展与运行时验证
 
@@ -660,4 +695,7 @@ run_command / start_process
    首次启动会自动进入初始化向导：选供应商模板 → 填模型/密钥 → 设置工作步骤；
 5. 要加工具：写 `tools/xxx.py` + 注册表条目即可，前端设置面板按字段自动派生；
 6. 改任何写入路径前，先确认 `settings.app_home`，别把用户数据写回代码目录；
-7. 不要为了让桌面版「先跑起来」而把静态资源重新塞回 FastAPI —— 先想清楚部署形态。
+7. 不要为了让桌面版「先跑起来」而把静态资源重新塞回 FastAPI —— 桌面版由
+   `desktop/frontend-server.js` 提供静态资源并代理 `/api`，后端保持 API-only；
+8. 打包前先读 [packaging.md](packaging.md)；改安装步骤时同步
+   `packaging/nsis/installer.nsh`、`packaging/install/nsis-postinstall.ps1` 和文档。
