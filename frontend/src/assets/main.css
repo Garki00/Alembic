@@ -3639,3 +3639,70 @@ html.resizing .sidebar-toggle { transition: none; }
     background: #7c3b2c;
     color: #fbfaf3;
 }
+
+/* ---------- 子代理 ---------- */
+.subagent-entry { margin-left: 6px; }
+.subagent-entry + .topbar-inspector { margin-left: 8px; }
+
+.subagent-panel .process-command {
+    font-family: inherit;
+    font-size: 12px;
+}
+
+.subagent-row-line {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.subagent-row-line .process-summary {
+    flex: 1;
+    min-width: 0;
+}
+
+.subagent-open {
+    flex: none;
+    width: 26px;
+    height: 26px;
+    margin-right: 2px;
+    color: var(--soft);
+}
+
+.subagent-open svg {
+    width: 14px;
+    height: 14px;
+}
+
+.subagent-open:hover {
+    color: var(--emerald);
+}
+
+.subagent-meta {
+    margin: 0 0 8px;
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.subagent-error {
+    margin: 0 0 8px;
+    font-size: 11px;
+    color: var(--danger);
+}
+
+@media (max-width: 1400px) {
+    .app.subagent-inspector .inspector {
+        position: fixed;
+        inset: 0 0 0 auto;
+        z-index: 30;
+        width: min(100vw, max(560px, var(--inspector-width, 560px)));
+        box-shadow: var(--shadow);
+    }
+    .app.subagent-inspector .sidebar-resizer,
+    .app.subagent-inspector .inspector-resizer { display: none; }
+}
+
+@media (min-width: 961px) and (max-width: 1400px) {
+    .app.subagent-inspector.inspector-open {
+        grid-template-columns: var(--sidebar-track) minmax(0, 1fr);
+    }
+}

@@ -64,8 +64,11 @@ from tools.terminals import available_terminals
 from tools.todo import TodoStore
 from web.approvals import ApprovalBroker, ApprovalRegistry
 from web.auth import install_auth
+from web.event_hub import EventHub
 from web.process_events import ProcessEventHub
 from web.questions import QuestionBroker, QuestionRegistry
+
+from agents.subagents.manager import SubagentManager
 
 # 前后端分离后，后端只提供 /api；页面由 frontend/ 的 Vite 应用提供。
 
@@ -158,6 +161,7 @@ class ChatPayload(BaseModel):
     attachments: list[str] = []
     internal: bool = False
     process_id: str = ""
+    subagent_id: str = ""
 
 
 class AddWorkspacePayload(BaseModel):
@@ -474,6 +478,17 @@ def create_app(
     # 审批：待回执表（跨请求）+ 每个会话已记住的「始终允许」
     app.state.approvals = ApprovalRegistry()
     app.state.approval_memo: dict[str, dict[str, dict]] = {}
+    # 子代理：事件走独立 hub，任务表由应用级 manager 持有。
+    app.state.subagent_events = EventHub()
+    app.state.subagents = SubagentManager(
+        hub=app.state.subagent_events,
+        approval_registry=app.state.approvals,
+        profiles_dir=paths.data_dir / "agents",
+        store_dir=sessions.directory / "subagents",
+        output_dir=Path(paths.data_dir) / "subagents",
+    )
+    # 同一个后台子代理只允许由一个标签页触发自动续跑。
+    app.state.continued_subagents: set[str] = set()
     # 每个会话的扩展工具激活状态；基础工具常驻，扩展工具由 tools_search 加载。
     app.state.session_activations: dict[str, ToolActivation] = {}
     # 提问：与审批同构的中继，回答走 POST /api/questions/{id}
@@ -648,6 +663,51 @@ def create_app(
             raise HTTPException(404, "后台任务不存在")
         stopped = app.state.processes.stop(record.id)
         return {"ok": True, "process": stopped.public() if stopped else None}
+
+    # ---- 子代理视图 ----
+    @app.get("/api/subagents/events")
+    def subagent_events():
+        """Subagent lifecycle stream: progress, completion, and background approvals."""
+
+        def event_stream():
+            yield ": connected\n\n"
+            for item in app.state.subagent_events.listen():
+                if item is None:
+                    yield ": ping\n\n"
+                    continue
+                kind, data = item
+                yield _sse(kind, data)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/subagents")
+    def list_subagents(session_id: str = ""):
+        sid = (session_id or "").strip()
+        if not sid:
+            raise HTTPException(400, "缺少 session_id")
+        return {"subagents": app.state.subagents.list_tasks(sid)}
+
+    @app.get("/api/subagents/{agent_id}")
+    def subagent_detail(agent_id: str):
+        task = app.state.subagents.get(agent_id)
+        if task is None:
+            raise HTTPException(404, "子代理不存在")
+        payload = task.snapshot()
+        payload["messages"] = _serialize_messages(
+            app.state.subagents.load_messages(task)
+        )
+        return {"subagent": payload}
+
+    @app.post("/api/subagents/{agent_id}/stop")
+    def stop_subagent(agent_id: str):
+        stopped = app.state.subagents.stop(agent_id, initiator="user")
+        if not stopped:
+            raise HTTPException(409, "子代理已结束或不存在")
+        return {"ok": True, "subagent": app.state.subagents.get(agent_id).snapshot()}  # type: ignore[union-attr]
 
     # ---- 初始化数据 ----
     @app.get("/api/bootstrap")
@@ -1224,7 +1284,7 @@ def create_app(
     @app.post("/api/chat")
     def chat(payload: ChatPayload):
         message = (payload.message or "").strip()
-        if not message and not payload.attachments:
+        if not message and not payload.attachments and not payload.subagent_id:
             raise HTTPException(400, "消息不能为空")
 
         model_cfg = models.active()
@@ -1259,6 +1319,24 @@ def create_app(
                 if payload.process_id in app.state.continued_processes:
                     raise HTTPException(409, "这个后台任务已经触发过续跑")
                 app.state.continued_processes.add(payload.process_id)
+
+        # 子代理的完成通知要进入父模型上下文；即使用户先发了新消息，也一并带上。
+        pending_notifications = app.state.subagents.drain_notifications(session_id)
+
+        if payload.subagent_id:
+            with app.state.continued_lock:
+                if payload.subagent_id in app.state.continued_subagents:
+                    raise HTTPException(409, "这个子代理已经触发过续跑")
+                app.state.continued_subagents.add(payload.subagent_id)
+            if not any(payload.subagent_id in text for text in pending_notifications):
+                raise HTTPException(409, "这个子代理没有待处理的完成通知")
+            if not message:
+                message = "A background subagent finished. Review its result and continue the task."
+            payload.internal = True
+
+        if pending_notifications:
+            message = "\n\n".join([*pending_notifications, message])
+            payload.internal = payload.internal or bool(payload.subagent_id)
 
         # 审批要在「流还在 yield」的时候等浏览器回执，所以把对话放进工作线程，
         # 主线程只负责从队列里取事件往外发；否则工具线程一阻塞，事件就发不出去。
@@ -1330,6 +1408,8 @@ def create_app(
                 cancel_event=cancel_event,
                 sandbox=app.state.sandbox,
                 sandbox_config=sandbox_config.get(),
+                subagents=app.state.subagents,
+                workspace_id=workspace_id,
             )
         except Exception as exc:
             if "cancel_event" in locals():

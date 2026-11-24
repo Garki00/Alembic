@@ -10,6 +10,7 @@ The backend is built with Python, FastAPI, and LangChain; the frontend uses Vue,
 
 - Configure multiple providers and models, including per-model context, output, and reasoning settings.
 - Use native model tool calling for file operations, search, Git, commands, and background processes.
+- Delegate self-contained multi-step work to subagents with their own context and tool surface, including background completion and follow-up messages.
 - Work with documents, images, web content, and conversation attachments.
 - Persist conversations, compact context, track tasks, stream output, and receive background-task updates.
 - Review tool approvals and use read-only mode, command policies, and credential-path protections.
@@ -112,7 +113,7 @@ cd frontend
 npm run build
 ```
 
-See the [extension guide](docs/extensions.md), [portable runtimes](docs/runtimes.md), repository conventions in [AGENTS.md](AGENTS.md), and the UI design system in [DESIGN.md](DESIGN.md).
+See the [extension guide](docs/extensions.md), [subagents](docs/subagents.md), [portable runtimes](docs/runtimes.md), repository conventions in [AGENTS.md](AGENTS.md), and the UI design system in [DESIGN.md](DESIGN.md).
 
 ## Configuration and Data
 

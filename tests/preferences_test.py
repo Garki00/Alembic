@@ -32,7 +32,7 @@ class PreferencesStoreTest(unittest.TestCase):
             self.store.get(),
             {
                 "theme": "light",
-                "transcript_view": "detailed",
+                "transcript_view": "standard",
                 "collapse_timing": "completion",
                 "permission_mode": "workspace_write",
                 "terminal": "powershell",
@@ -114,7 +114,7 @@ class PreferencesApiTest(unittest.TestCase):
 
     def test_bootstrap_contains_preferences(self):
         data = self.client.get("/api/bootstrap").json()
-        self.assertEqual(data["preferences"]["transcript_view"], "detailed")
+        self.assertEqual(data["preferences"]["transcript_view"], "standard")
         self.assertEqual(data["preferences"]["collapse_timing"], "completion")
         self.assertEqual(data["preferences"]["permission_mode"], "workspace_write")
         self.assertFalse(data["preferences"]["developer_tools"])

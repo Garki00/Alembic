@@ -11,13 +11,16 @@ import OnboardingModal from './components/OnboardingModal.vue'
 import PanelToggle from './components/PanelToggle.vue'
 import ProcessPanel from './components/ProcessPanel.vue'
 import SettingsModal from './components/SettingsModal.vue'
+import SubagentApprovalBar from './components/SubagentApprovalBar.vue'
+import SubagentPanel from './components/SubagentPanel.vue'
 import ToastHost from './components/ToastHost.vue'
 import WorkspaceModal from './components/WorkspaceModal.vue'
 import { errorMessage } from './api/client'
 import { applyTheme, watchSystemTheme } from './lib/theme'
 import { useChatStore } from './stores/chat'
-import { INSPECTOR_MIN, useInspectorStore } from './stores/inspector'
+import { useInspectorStore } from './stores/inspector'
 import { useProcessStore } from './stores/processes'
+import { useSubagentStore } from './stores/subagents'
 import { SIDEBAR_MIN, useUiStore } from './stores/ui'
 import { useWorkspaceStore } from './stores/workspace'
 
@@ -26,6 +29,7 @@ const chat = useChatStore()
 const ui = useUiStore()
 const inspector = useInspectorStore()
 const processes = useProcessStore()
+const subagents = useSubagentStore()
 
 const bootError = ref('')
 const mainEl = ref<HTMLElement | null>(null)
@@ -46,8 +50,20 @@ function clampLayout(): void {
   let overflow = sidebarWidth + inspectorWidth + MIN_CHAT_WIDTH - viewport
   if (overflow <= 0) return
 
+  // Below this width the subagent page overlays the conversation, so the grid
+  // columns do not compete for space.
+  if (
+    inspector.open
+    && inspector.activeTab?.kind === 'subagent'
+    && window.matchMedia('(max-width: 1400px)').matches
+  ) {
+    return
+  }
+
+  const inspectorMin = inspector.open ? inspector.activeMinWidth : MIN_CHAT_WIDTH
+
   if (inspector.open) {
-    const target = Math.max(INSPECTOR_MIN, inspectorWidth - overflow)
+    const target = Math.max(inspectorMin, inspectorWidth - overflow)
     if (target !== inspectorWidth) {
       inspector.setWidth(target)
       overflow -= inspectorWidth - target
@@ -64,10 +80,16 @@ function clampLayout(): void {
     }
   }
 
-  if (overflow > 0 && inspector.open) {
+  if (overflow <= 0) return
+  if (inspector.open && inspectorMin >= MIN_CHAT_WIDTH) {
+    // A subagent page keeps the main conversation's minimum width; narrowing
+    // the window collapses the left sidebar and the inspector overlays instead.
+    if (!ui.sidebarCollapsed) ui.sidebarCollapsed = true
+    return
+  }
+  if (inspector.open) {
     inspector.hide()
-    overflow -= inspectorWidth
-  } else if (overflow > 0 && !ui.sidebarCollapsed) {
+  } else if (!ui.sidebarCollapsed) {
     ui.sidebarCollapsed = true
   }
 }
@@ -84,6 +106,22 @@ watch(
   () => [ui.sidebarWidth, ui.sidebarCollapsed, inspector.open, inspector.width],
   queueClamp,
   { flush: 'post' },
+)
+
+watch(
+  () => inspector.activeId,
+  () => {
+    queueClamp()
+    inspector.setWidth(inspector.width)
+  },
+  { flush: 'post' },
+)
+
+watch(
+  () => chat.sessionId,
+  () => {
+    void subagents.refresh()
+  },
 )
 
 watch(
@@ -176,6 +214,7 @@ onMounted(() => {
   window.addEventListener('resize', queueClamp)
   queueClamp()
   processes.init()
+  subagents.init()
   void initialize()
 })
 
@@ -190,6 +229,7 @@ onBeforeUnmount(() => {
   dockObserver = null
   stopSystemThemeWatch?.()
   processes.disconnectEvents()
+  subagents.disconnectEvents()
 })
 </script>
 
@@ -202,6 +242,7 @@ onBeforeUnmount(() => {
         'sidebar-open': ui.sidebarOpen,
         'sidebar-collapsed': ui.sidebarCollapsed,
         'inspector-open': inspector.open,
+        'subagent-inspector': inspector.activeTab?.kind === 'subagent',
       }"
       :style="{
         '--sidebar-width': `${ui.sidebarWidth}px`,
@@ -218,6 +259,7 @@ onBeforeUnmount(() => {
     <main ref="mainEl" class="main">
       <ChatTopbar />
       <ProcessPanel v-if="processes.panelOpen" />
+      <SubagentPanel v-if="subagents.panelOpen" />
       <ChatTranscript />
       <div ref="composerDock" class="composer-dock">
         <ChatComposer />
@@ -244,6 +286,7 @@ onBeforeUnmount(() => {
   <OnboardingModal v-if="workspace.ready && workspace.firstRun" />
   <SettingsModal v-else-if="ui.settingsOpen" />
   <WorkspaceModal v-if="ui.workspaceModalOpen" />
+  <SubagentApprovalBar />
   <GlobalTooltip />
   <ToastHost />
 </template>

@@ -21,6 +21,7 @@ import {
   type ChatApproval,
   type ChatQuestion,
   type ChatTurn,
+  type SubagentView,
   type UserAttachment,
   type WorkEvent,
 } from '../types/chat'
@@ -31,6 +32,15 @@ interface SendOptions {
   attachments?: UserAttachment[]
   internal?: boolean
   processId?: string
+  subagentId?: string
+}
+
+/** A finished background subagent waiting for its continuation turn. */
+export interface SubagentContinuation {
+  id: string
+  sessionId: string
+  description: string
+  status: string
 }
 
 /** 切走的对话在内存里的实时状态：包含正在流式输出的那一条。 */
@@ -92,6 +102,101 @@ function thoughtKey(text: string): string {
   return text.replace(/\s+/g, '')
 }
 
+/** Newest subagent view for one agent id; a resumed agent gets a new run view. */
+function findSubagent(turn: AssistantTurn, agentId: string): SubagentView | undefined {
+  for (let index = turn.subagents.length - 1; index >= 0; index -= 1) {
+    if (turn.subagents[index].id === agentId) return turn.subagents[index]
+  }
+  return undefined
+}
+
+function ensureSubagent(
+  turn: AssistantTurn,
+  data: Record<string, unknown>,
+): SubagentView {
+  const agentId = String(data.agent_id || '')
+  const toolCallId = String(data.tool_call_id || '')
+  const existing = findSubagent(turn, agentId)
+  if (existing && (existing.status === 'running' || !toolCallId || existing.toolCallId === toolCallId)) {
+    return existing
+  }
+  const view: SubagentView = {
+    id: agentId,
+    toolCallId,
+    agentType: String(data.agent_type || ''),
+    description: String(data.description || ''),
+    status: 'running',
+    background: Boolean(data.background),
+    steps: [],
+    report: '',
+    error: '',
+    outputFile: '',
+    toolUses: 0,
+    durationMs: 0,
+    usage: {},
+  }
+  turn.subagents.push(view)
+  return view
+}
+
+const SUBAGENT_PHASE_LABELS: Record<string, string> = {
+  thinking: '思考',
+  tool: '调用工具',
+  tool_result: '工具结果',
+  output: '命令输出',
+  compacted: '压缩上下文',
+  stopping: '停止中',
+}
+
+function appendSubagentStep(view: SubagentView, data: Record<string, unknown>): void {
+  const phase = String(data.phase || 'progress')
+  const callId = data.id ? String(data.id) : ''
+  if (callId) {
+    const existing = view.steps.find((step) => step.id === callId)
+    if (existing) {
+      if (phase === 'tool_result') {
+        existing.detail = String(data.content || '').slice(0, 1200)
+      }
+      return
+    }
+  }
+  const name = String(data.name || '')
+  let detail = ''
+  if (phase === 'tool') {
+    detail = name
+    const args = data.args
+    if (args && typeof args === 'object') {
+      const raw = JSON.stringify(args)
+      if (raw && raw !== '{}') detail = `${name} ${raw.slice(0, 240)}`
+    }
+  } else if (phase === 'tool_result') {
+    detail = String(data.content || '').slice(0, 1200)
+  } else {
+    detail = String(data.text || '').slice(0, 1200)
+  }
+  view.steps.push({
+    id: callId || newId('substep'),
+    phase,
+    label: SUBAGENT_PHASE_LABELS[phase] || phase,
+    detail,
+  })
+  if (view.steps.length > 80) view.steps.splice(0, view.steps.length - 80)
+}
+
+function completeSubagent(view: SubagentView, data: Record<string, unknown>): void {
+  const status = String(data.status || 'completed')
+  view.status = status === 'completed' || status === 'failed' || status === 'stopped'
+    ? status
+    : 'completed'
+  view.report = String(data.report || '')
+  view.error = String(data.error || '')
+  view.outputFile = String(data.output_file || '')
+  view.toolUses = Number(data.tool_uses || 0)
+  view.durationMs = Number(data.duration_ms || 0)
+  view.usage = (data.usage as Record<string, unknown>) || {}
+  view.background = Boolean(data.background)
+}
+
 function addThought(assistant: AssistantTurn, text: string): void {
   const clean = text.trim()
   if (!clean) return
@@ -103,7 +208,33 @@ function addThought(assistant: AssistantTurn, text: string): void {
   assistant.workEvents.push({ kind: 'thought', id: newId('thought'), text: clean })
 }
 
-function mapHistory(items: HistoryMessage[]): ChatTurn[] {
+/** Restore the separate return step from a persisted subagent tool result. */
+function addSubagentReturn(
+  assistant: AssistantTurn,
+  event: ToolWorkEvent,
+  content: string,
+): void {
+  if (event.name !== 'agent') return
+  if (!content.includes('[Subagent hand-back]')) return
+  const agentId = /agentId:\s*(subagent-[A-Za-z0-9-]+)/.exec(content)?.[1] || ''
+  const failed = content.startsWith('Error:')
+  assistant.workEvents.push({
+    kind: 'subagent',
+    id: newId('subreturn'),
+    agentId,
+    agentType: '',
+    description: String(event.args?.description || event.args?.subagent_type || ''),
+    status: failed ? 'failed' : 'completed',
+    report: content,
+    error: '',
+    toolUses: 0,
+    durationMs: 0,
+    outputFile: '',
+    usage: {},
+  })
+}
+
+export function mapHistory(items: HistoryMessage[]): ChatTurn[] {
   const turns: ChatTurn[] = []
   let assistant: AssistantTurn | null = null
   let lastUserTime: number | undefined
@@ -197,15 +328,18 @@ function mapHistory(items: HistoryMessage[]): ChatTurn[] {
       if (event) {
         event.result = content
         event.error = content.startsWith('Error:')
+        addSubagentReturn(assistant, event, content)
       } else {
-        assistant.workEvents.push({
+        const created: ToolWorkEvent = {
           kind: 'tool',
           id: message.tool_call_id || newId('tool'),
           name: message.tool_name || '工具',
           args: {},
           result: content,
           error: content.startsWith('Error:'),
-        })
+        }
+        assistant.workEvents.push(created)
+        addSubagentReturn(assistant, created, content)
       }
     }
     // system / 摘要消息不进入对话流（与原前端一致）
@@ -242,6 +376,7 @@ export const useChatStore = defineStore('chat', {
     streamTick: 0,
     todos: [] as TodoItem[],
     pendingContinuations: [] as ProcessInfo[],
+    pendingSubagentContinuations: [] as SubagentContinuation[],
     // 正在流式输出的会话（全局同时只允许一个）
     runningSessionId: null as string | null,
     // 切走的会话的实时状态，回来时直接还原，避免再去拉不完整的服务端历史
@@ -308,6 +443,7 @@ export const useChatStore = defineStore('chat', {
       this.resetUsage()
       this.todos = []
       this.pendingContinuations = []
+      this.pendingSubagentContinuations = []
       this.bump()
     },
 
@@ -358,6 +494,7 @@ export const useChatStore = defineStore('chat', {
         }).catch(() => { /* 断流时的兜底，服务端也会在 finally 里取消 */ })
       }
       this.pendingContinuations = []
+      this.pendingSubagentContinuations = []
       abortController?.abort()
     },
 
@@ -372,6 +509,7 @@ export const useChatStore = defineStore('chat', {
         }).catch(() => { /* 切换会话失败时仍只断开本地流 */ })
       }
       this.pendingContinuations = []
+      this.pendingSubagentContinuations = []
       abortController?.abort()
     },
 
@@ -477,6 +615,7 @@ export const useChatStore = defineStore('chat', {
         this.setContext(data.tokens, data.max_tokens)
         this.setUsage(data.usage)
         this.pendingContinuations = []
+      this.pendingSubagentContinuations = []
         try {
           const todos = await api<TodosData>(
             `/api/sessions/${encodeURIComponent(sessionId)}/todos`,
@@ -516,6 +655,7 @@ export const useChatStore = defineStore('chat', {
       this.resetUsage()
       this.todos = []
       this.pendingContinuations = []
+      this.pendingSubagentContinuations = []
       this.bump()
     },
 
@@ -539,7 +679,7 @@ export const useChatStore = defineStore('chat', {
     async send(message: string, workspaceId?: string, options: SendOptions = {}): Promise<void> {
       const text = message.trim()
       // 同一时刻只跑一轮：哪怕它属于另一个对话（切走后仍在跑）
-      if (!text || this.streaming || this.runningSessionId) return
+      if ((!text && !options.subagentId) || this.streaming || this.runningSessionId) return
 
       const ui = useUiStore()
       const workspace = useWorkspaceStore()
@@ -570,7 +710,7 @@ export const useChatStore = defineStore('chat', {
         this.messages.push({
           kind: 'note',
           id: newId('note'),
-          text: '后台任务已完成，继续处理…',
+          text: options.subagentId ? '子代理已完成，继续处理…' : '后台任务已完成，继续处理…',
         })
       } else {
         this.messages.push({
@@ -635,6 +775,7 @@ export const useChatStore = defineStore('chat', {
             attachments: options.attachments?.map((item) => item.path) || [],
             internal: Boolean(options.internal),
             process_id: options.processId || '',
+            subagent_id: options.subagentId || '',
           },
           (event, data) => {
             if (!isCurrent()) return
@@ -730,6 +871,50 @@ export const useChatStore = defineStore('chat', {
                     error: content.startsWith('Error:'),
                   })
                 }
+                this.bump()
+                break
+              }
+              case 'subagent_started': {
+                const view = ensureSubagent(assistant, data)
+                view.status = 'running'
+                view.background = Boolean(data.background)
+                if (data.tool_call_id) view.toolCallId = String(data.tool_call_id)
+                this.bump()
+                break
+              }
+              case 'subagent_progress': {
+                if (String(data.phase || '') === 'text') break
+                const view = findSubagent(assistant, String(data.agent_id || ''))
+                if (!view) break
+                appendSubagentStep(view, data)
+                this.bump()
+                break
+              }
+              case 'subagent_backgrounded': {
+                const view = findSubagent(assistant, String(data.agent_id || ''))
+                if (!view) break
+                view.background = true
+                view.status = 'running'
+                this.bump()
+                break
+              }
+              case 'subagent_completed': {
+                const view = ensureSubagent(assistant, data)
+                completeSubagent(view, data)
+                assistant.workEvents.push({
+                  kind: 'subagent',
+                  id: newId('subreturn'),
+                  agentId: view.id,
+                  agentType: view.agentType,
+                  description: view.description,
+                  status: view.status === 'running' ? 'completed' : view.status,
+                  report: view.report,
+                  error: view.error,
+                  toolUses: view.toolUses,
+                  durationMs: view.durationMs,
+                  outputFile: view.outputFile,
+                  usage: view.usage,
+                })
                 this.bump()
                 break
               }
@@ -861,7 +1046,10 @@ export const useChatStore = defineStore('chat', {
           this.bump()
           // 后台任务续跑只属于这个会话，切走了就不要在别的对话里发
           if (isActive()) {
-            window.setTimeout(() => { void this.drainContinuations() }, 0)
+            window.setTimeout(() => {
+              void this.drainContinuations()
+              void this.drainSubagentContinuations()
+            }, 0)
           }
         }
       }
@@ -909,6 +1097,58 @@ export const useChatStore = defineStore('chat', {
         internal: true,
         processId: record.id,
       })
+    },
+
+    /** Queue a finished background subagent; the server injects its notification. */
+    queueSubagentContinuation(record: {
+      id: string
+      session_id: string
+      description?: string
+      status?: string
+    }): void {
+      if (!record.session_id || record.session_id !== this.sessionId) return
+      if (this.pendingSubagentContinuations.some((item) => item.id === record.id)) return
+      this.pendingSubagentContinuations.push({
+        id: record.id,
+        sessionId: record.session_id,
+        description: record.description || '',
+        status: record.status || 'completed',
+      })
+      if (!this.streaming && !this.runningSessionId) void this.drainSubagentContinuations()
+    },
+
+    async drainSubagentContinuations(): Promise<void> {
+      if (this.streaming || this.runningSessionId) return
+      const item = this.pendingSubagentContinuations.shift()
+      if (!item) return
+      // The notification may already have been delivered with a user message;
+      // in that case the task is marked notified and no extra turn is needed.
+      try {
+        const data = await api<{ subagent?: { notified?: boolean } }>(
+          `/api/subagents/${encodeURIComponent(item.id)}`,
+        )
+        if (data.subagent?.notified) {
+          void this.drainSubagentContinuations()
+          return
+        }
+      } catch (_) {
+        return
+      }
+      const workspace = useWorkspaceStore()
+      await this.send('', workspace.activeWorkspaceId || undefined, {
+        internal: true,
+        subagentId: item.id,
+      })
+    },
+
+    async stopSubagent(agentId: string): Promise<void> {
+      const ui = useUiStore()
+      try {
+        await api(`/api/subagents/${encodeURIComponent(agentId)}/stop`, { method: 'POST' })
+        ui.showToast('已请求停止子代理')
+      } catch (error) {
+        ui.showToast(errorMessage(error), true)
+      }
     },
 
     async compactContext(): Promise<void> {

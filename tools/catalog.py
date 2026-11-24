@@ -41,6 +41,9 @@ BASIC_TOOLS: tuple[str, ...] = (
     # Planning and interaction
     "todo_write",
     "ask_user_question",
+    # Delegation
+    "agent",
+    "send_message",
     # Skill discovery and resources
     "load_skill",
     "read_skill_resource",

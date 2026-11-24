@@ -26,7 +26,7 @@ interface ToolUpdatePayload {
 
 const DEFAULT_PREFERENCES: Preferences = {
   theme: 'light',
-  transcript_view: 'detailed',
+  transcript_view: 'standard',
   collapse_timing: 'completion',
   permission_mode: 'workspace_write',
   terminal: 'powershell',

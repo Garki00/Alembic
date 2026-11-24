@@ -5,6 +5,7 @@ import { useInspectorStore } from '../stores/inspector'
 import BrowserView from './BrowserView.vue'
 import FileExplorer from './FileExplorer.vue'
 import FileViewer from './FileViewer.vue'
+import SubagentConversation from './SubagentConversation.vue'
 
 const inspector = useInspectorStore()
 const addOpen = ref(false)
@@ -89,7 +90,7 @@ onBeforeUnmount(() => {
           @click="inspector.setActive(tab.id)"
         >
           <span class="inspector-tab-icon">
-            {{ tab.kind === 'files' ? '▤' : tab.kind === 'browser' ? '◎' : tab.diff ? '±' : '·' }}
+            {{ tab.kind === 'files' ? '▤' : tab.kind === 'subagent' ? '◫' : tab.kind === 'browser' ? '◎' : tab.diff ? '±' : '·' }}
           </span>
           <span class="inspector-tab-title">{{ tab.title }}</span>
           <button
@@ -164,6 +165,7 @@ onBeforeUnmount(() => {
 
       <FileExplorer v-else-if="activeTab.kind === 'files'" />
       <FileViewer v-else-if="activeTab.kind === 'file'" :path="activeTab.path" :diff="activeTab.diff" />
+      <SubagentConversation v-else-if="activeTab.kind === 'subagent'" :agent-id="activeTab.agentId" />
       <BrowserView v-else :tab="activeTab" />
     </div>
   </aside>

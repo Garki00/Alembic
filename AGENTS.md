@@ -15,7 +15,7 @@
 | --- | --- |
 | `main.py` | CLI 入口（argparse + `ChatCLI`），含 `/status`、`/compact`、`/approvals` 等命令 |
 | `run_backend.py` | PyInstaller 入口，等价于 `python -m web` |
-| `agents/` | 模型/工具/引擎装配、会话与压缩、审批、用量与缓存、可选文本 ReAct |
+| `agents/` | 模型/工具/引擎装配、会话与压缩、审批、用量与缓存、可选文本 ReAct、`agents/subagents/` 子代理 |
 | `config/` | 环境变量与路径解析、数据目录迁移、供应商/工具/工作区/偏好持久化 |
 | `prompts/` | 分层系统提示词、项目上下文加载、ReAct 模板、工具描述 |
 | `tools/` | 工具实现与注册表、路径与命令策略、终端与进程、`tools/sandbox/` 命令沙盒 |
@@ -94,6 +94,18 @@
 - 审批、提问通道异常、超时、断流、EOF 一律按拒绝或未回答处理，不默认放行，不伪造用户回答。
 - 提问与审批的回执分别走 `POST /api/approvals/{id}` 与 `POST /api/questions/{id}`；前端只渲染结果，不把待处理按钮留在正文。
 
+## 子代理
+
+- `agent` 与 `send_message` 由 `tools/subagent.py` 暴露；任务表、前后台、取消、通知与审批路由都在 `agents/subagents/manager.py`。
+- 子代理只有一层：`agent` / `send_message` 永远从子代理工具面移除，子代理的 `ToolContext.subagents` 必须是 `None`。
+- 子代理工具面 = 父会话当前可见工具 ∩ profile 工具面，再减去 `disallowedTools`；不要直接给子代理 `enabled_tools` 全量。
+- 子代理共享父会话的审批策略、`始终允许` 记录与权限模式；profile 只能收紧模式（`restrict_mode`），不能放宽。
+- 子代理报告必须经过 `format_handback` 的框架与逐行缩进后才交给父模型；报告是模型输出，不是用户授权。
+- 子代理会话独立存放于 `memory/subagents/<父会话>/`，不进入会话列表；不要把它写进父会话的 `messages`。
+- 前台等待可以转后台，后台完成写 `<task-notification>` 并触发一次 `internal` 续跑；`POST /api/subagents/{id}/stop` 与父轮取消都必须终止子代理内部命令。
+- 子代理事件只走 `subagent_started` / `subagent_progress` / `subagent_backgrounded` / `subagent_completed` 与 `subagent` hub，不能复用父会话的 `tool_output`。
+- 修改 profile 解析、工具面或通知格式时同步 `docs/subagents.md` 与 `tests/subagent_test.py`。
+
 ## 前端边界
 
 - Vue 3 + Vite + TypeScript + Pinia。组件在 `frontend/src/components/`，状态在 `frontend/src/stores/`，接口封装在 `frontend/src/api/`，纯函数在 `frontend/src/lib/`。
@@ -136,5 +148,6 @@
 - `AGENTS.md`：本文件，仓库级约定与命令入口。
 - `DESIGN.md`：界面设计系统；改 UI 前阅读。
 - `docs/packaging.md`：安装包结构、构建、安装/卸载与故障排查。
+- `docs/subagents.md`：子代理类型、运行语义、事件与接口。
 - `docs/extensions.md`：插件、MCP 与 Skills；`docs/runtimes.md`：内置运行时版本与校验。
 - 接口、工具或安装步骤变化时同步对应文档；工具清单以 `tools/registry.py` 为准，不在多处维护副本。

@@ -30,7 +30,18 @@ export interface BrowserTab {
   userCreated?: boolean
 }
 
-export type InspectorTab = FilesTab | FileTab | BrowserTab
+export interface SubagentTab {
+  id: string
+  kind: 'subagent'
+  title: string
+  agentId: string
+  /** Reading width matches the main conversation, so the page never gets narrower. */
+  minWidth: number
+  /** Whether the user created this tab explicitly (via the plus button) rather than the app opening it. */
+  userCreated?: boolean
+}
+
+export type InspectorTab = FilesTab | FileTab | BrowserTab | SubagentTab
 
 let counter = 0
 function tabId(prefix: string): string {
@@ -40,7 +51,9 @@ function tabId(prefix: string): string {
 
 const INSPECTOR_WIDTH_KEY = 'alembic.inspector-width'
 export const INSPECTOR_MIN = 300
-const INSPECTOR_MAX = 640
+/** Subagent conversations use the main conversation's minimum content width. */
+export const SUBAGENT_MIN_WIDTH = 560
+const INSPECTOR_MAX = 900
 
 function storedWidth(): number {
   try {
@@ -93,11 +106,21 @@ export const useInspectorStore = defineStore('inspector', {
     canAddTab(): boolean {
       return this.userCreatedTabCount < 3
     },
+    activeMinWidth(): number {
+      return this.activeTab?.kind === 'subagent'
+        ? this.activeTab.minWidth
+        : INSPECTOR_MIN
+    },
+    activeMaxWidth(): number {
+      return this.activeTab?.kind === 'subagent' ? INSPECTOR_MAX : 640
+    },
   },
 
   actions: {
     setWidth(width: number): void {
-      this.width = Math.min(INSPECTOR_MAX, Math.max(INSPECTOR_MIN, Math.round(width)))
+      const min = this.activeMinWidth
+      const max = Math.max(min, this.activeMaxWidth)
+      this.width = Math.min(max, Math.max(min, Math.round(width)))
       try {
         window.localStorage.setItem(INSPECTOR_WIDTH_KEY, String(this.width))
       } catch (_) {
@@ -189,6 +212,31 @@ export const useInspectorStore = defineStore('inspector', {
         },
         true, // userCreated = true (手动打开浏览器)
       )
+    },
+
+    openSubagent(agentId: string, title: string): void {
+      const id = String(agentId || '').trim()
+      if (!id) return
+      const existing = this.tabs.find(
+        (tab): tab is SubagentTab => tab.kind === 'subagent' && tab.agentId === id,
+      )
+      if (existing) {
+        this.activeId = existing.id
+        this.open = true
+        if (this.width < existing.minWidth) this.setWidth(existing.minWidth)
+        return
+      }
+      const added = this.addTab(
+        {
+          id: tabId('subagent'),
+          kind: 'subagent',
+          title: String(title || '子代理').slice(0, 40),
+          agentId: id,
+          minWidth: SUBAGENT_MIN_WIDTH,
+        },
+        false,
+      )
+      if (added && this.width < SUBAGENT_MIN_WIDTH) this.setWidth(SUBAGENT_MIN_WIDTH)
     },
 
     /** Open a web link from the conversation: reuse an existing tab with the same URL and don't count it toward the user's tab quota. */

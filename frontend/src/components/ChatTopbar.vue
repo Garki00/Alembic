@@ -4,6 +4,7 @@ import PanelToggle from './PanelToggle.vue'
 import { useChatStore } from '../stores/chat'
 import { useInspectorStore } from '../stores/inspector'
 import { useProcessStore } from '../stores/processes'
+import { useSubagentStore } from '../stores/subagents'
 import { useUiStore } from '../stores/ui'
 import { useWorkspaceStore } from '../stores/workspace'
 
@@ -12,6 +13,19 @@ const chat = useChatStore()
 const ui = useUiStore()
 const inspector = useInspectorStore()
 const processes = useProcessStore()
+const subagents = useSubagentStore()
+
+function toggleProcesses(): void {
+  const opening = !processes.panelOpen
+  if (opening) subagents.closePanel()
+  processes.togglePanel()
+}
+
+function toggleSubagents(): void {
+  const opening = !subagents.panelOpen
+  if (opening) processes.closePanel()
+  subagents.togglePanel()
+}
 
 const title = computed(() => {
   const group = workspace.sessions.find((item) => item.id === chat.sessionId)
@@ -36,11 +50,19 @@ const path = computed(() => workspace.activeWorkspace?.path || '')
       type="button"
       class="process-entry"
       data-process-entry
-      title="查看后台任务"
       :class="{ active: processes.panelOpen }"
-      @click.stop="processes.togglePanel()"
+      @click.stop="toggleProcesses()"
     >
       {{ processes.items.length }}个后台任务
+    </button>
+    <button
+      type="button"
+      class="process-entry subagent-entry"
+      data-subagent-entry
+      :class="{ active: subagents.panelOpen }"
+      @click.stop="toggleSubagents()"
+    >
+      {{ subagents.items.length }}个子代理
     </button>
     <PanelToggle
       class="topbar-inspector"
