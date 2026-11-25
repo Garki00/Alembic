@@ -13,7 +13,7 @@ The backend is built with Python, FastAPI, and LangChain; the frontend uses Vue,
 - Delegate self-contained multi-step work to subagents with their own context and tool surface, including background completion and follow-up messages.
 - Work with documents, images, web content, and conversation attachments.
 - Persist conversations, compact context, track tasks, stream output, and receive background-task updates.
-- Review tool approvals and use read-only mode, command policies, and credential-path protections.
+- Review tool approvals with plan, build, edit, and yolo modes, permission rules, a tool capability matrix, command policies, and credential-path protections.
 - Extend the workspace with tool plugins, MCP servers, and Agent Skills.
 - Use the browser workspace, command-line entry point, or the Windows desktop installer.
 

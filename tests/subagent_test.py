@@ -129,7 +129,7 @@ class ProfileTest(unittest.TestCase):
             "name: reviewer\n"
             "description: Reviews diffs\n"
             "tools: read_file, search_files\n"
-            "permissionMode: read_only\n"
+            "permissionMode: plan\n"
             "model: reviewer-model\n"
             "---\n"
             "You review changes carefully.\n",
@@ -139,8 +139,11 @@ class ProfileTest(unittest.TestCase):
         reviewer = find_profile(profiles, "reviewer")
         self.assertIsNotNone(reviewer)
         self.assertEqual(reviewer.tools, ("read_file", "search_files"))
-        self.assertEqual(reviewer.restrict_mode("workspace_write"), "read_only")
-        self.assertEqual(reviewer.restrict_mode("read_only"), "read_only")
+        self.assertEqual(reviewer.restrict_mode("build"), "plan")
+        self.assertEqual(reviewer.restrict_mode("plan"), "plan")
+        # A declaration can never widen the parent mode.
+        self.assertEqual(reviewer.restrict_mode("yolo"), "plan")
+        self.assertEqual(reviewer.restrict_mode("plan"), "plan")
 
     def test_invalid_markdown_is_skipped(self) -> None:
         profile = parse_profile_markdown("---\nname: [\n---\nbody", source="user")
@@ -509,7 +512,7 @@ class ManagerTest(unittest.TestCase):
 
         memo: dict = {}
         parent = ApprovalGate(
-            policy=ApprovalPolicy({"run_command": "exec"}, memo, mode="workspace_write"),
+            policy=ApprovalPolicy(mode="build", memo=memo),
             ask=lambda _request: "allow",
         )
         manager = build_manager(self.tmp, FakeSession(["x"]))
@@ -525,9 +528,9 @@ class ManagerTest(unittest.TestCase):
             background=False,
             tool_call_id="",
         )
-        gate = manager._child_gate(task, ctx, "read_only", ("read_file",))
+        gate = manager._child_gate(task, ctx, "plan", ("read_file",))
         self.assertIsNotNone(gate)
-        self.assertEqual(gate.policy.mode, "read_only")
+        self.assertEqual(gate.policy.mode, "plan")
         self.assertIs(gate.policy.memo, memo)
 
     def test_detached_approval_uses_persistent_channel(self) -> None:

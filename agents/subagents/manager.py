@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from langchain_core.messages import ToolMessage
 
-from agents.approval import ApprovalGate, ApprovalPolicy, permission_tools, tool_risks
+from agents.approval import ApprovalGate, ApprovalPolicy
 from agents.subagents.admission import ModelRequestAdmission, SubagentCancelledError
 from agents.subagents.profiles import (
     DEFAULT_SUBAGENT_TYPE,
@@ -845,24 +845,17 @@ class SubagentManager:
     ) -> ApprovalGate | None:
         if ctx.approval is None:
             return None
-        from tools.catalog import entry_names_for_tools
-        from tools.registry import TOOL_SPECS
-
-        # ``enabled_tools`` normally holds entry names, but callers may pass
-        # concrete tool names; map both to registry entries before building risks.
-        mapped = entry_names_for_tools(set(tool_names))
-        entries = {
-            entry
-            for entry in set(ctx.enabled_tools) | mapped
-            if entry in TOOL_SPECS
-            and set(TOOL_SPECS[entry].tool_names) & set(tool_names)
-        }
         parent_policy = ctx.approval.policy
+        # The child shares the parent's persistent rules, workspace rules, and session
+        # grants; only its mode is narrowed by the profile.
         policy = ApprovalPolicy(
-            permission_tools(entries, mode),
-            parent_policy.memo,
             mode=mode,
-            risks=tool_risks(entries),
+            memo=parent_policy.memo,
+            rules=parent_policy.rules,
+            project_rules=parent_policy.project_rules,
+            config=parent_policy.config,
+            prompts_enabled=parent_policy.prompts_enabled,
+            shell=parent_policy.shell,
         )
         return ApprovalGate(
             policy=policy,
@@ -1214,8 +1207,8 @@ class SubagentManager:
 
 def _parent_mode(ctx: LaunchContext) -> str:
     if ctx.approval is None:
-        return "full_access"
-    return str(getattr(ctx.approval.policy, "mode", "workspace_write"))
+        return "yolo"
+    return str(getattr(ctx.approval.policy, "mode", "build"))
 
 
 def _vision_for(ctx: LaunchContext, model: Any, cfg: Any):

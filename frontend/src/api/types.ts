@@ -105,6 +105,18 @@ export interface ToolFieldInfo {
   hint: string
 }
 
+export interface ToolCapability {
+  entry: string
+  read_only: boolean
+  destructive: boolean
+  side_effect_scope: string
+  risk_level: 'low' | 'medium' | 'high' | 'critical' | string
+  needs_approval: boolean
+  always_ask: boolean
+  allowed_in_plan_mode: boolean
+  permission_name: string
+}
+
 export interface ToolInfo {
   source?: 'builtin' | 'plugin'
   source_id?: string
@@ -112,11 +124,29 @@ export interface ToolInfo {
   label: string
   description: string
   risk: 'read' | 'write' | 'exec' | string
+  capability?: ToolCapability
   tool_names: string[]
   default_enabled: boolean
   experimental?: boolean
   enabled: boolean
   fields: ToolFieldInfo[]
+}
+
+export type PermissionBehavior = 'allow' | 'ask' | 'deny'
+
+export interface PermissionRuleInfo {
+  tool: string
+  content?: string
+}
+
+export interface PermissionRulesetInfo {
+  version?: number
+  rules: Record<PermissionBehavior, PermissionRuleInfo[]>
+}
+
+export interface PermissionRulesResponse {
+  rules: PermissionRulesetInfo
+  project_rules: PermissionRulesetInfo
 }
 
 export interface WorkspaceInfo {
@@ -201,7 +231,7 @@ export interface SandboxConfig {
 
 export type TranscriptViewMode = 'compact' | 'standard' | 'detailed' | 'verbose'
 export type CollapseTiming = 'completion' | 'next_input'
-export type PermissionMode = 'read_only' | 'approval_all' | 'workspace_write' | 'full_access'
+export type PermissionMode = 'plan' | 'build' | 'edit' | 'yolo'
 export type TerminalKind = 'powershell' | 'cmd' | 'gitbash' | 'wsl'
 export type LinkTarget = 'sidebar' | 'browser'
 export type ThemeMode = 'light' | 'dark' | 'system'

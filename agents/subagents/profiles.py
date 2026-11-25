@@ -45,7 +45,14 @@ EXPLORE_TOOLS = (
     "tools_search",
 )
 
-PERMISSION_MODES = ("read_only", "approval_all", "workspace_write", "full_access")
+#: Strictest first; a profile may only narrow the parent mode.
+PERMISSION_MODES = ("plan", "build", "edit", "yolo")
+LEGACY_PERMISSION_MODES = {
+    "read_only": "plan",
+    "approval_all": "build",
+    "workspace_write": "build",
+    "full_access": "yolo",
+}
 _MODE_RANK = {name: index for index, name in enumerate(PERMISSION_MODES)}
 THINKING_LEVELS = ("none", "low", "high", "max")
 
@@ -97,7 +104,7 @@ class AgentProfile:
         requested = self.permission_mode
         if requested not in _MODE_RANK:
             return parent_mode
-        parent = parent_mode if parent_mode in _MODE_RANK else "workspace_write"
+        parent = parent_mode if parent_mode in _MODE_RANK else "build"
         return requested if _MODE_RANK[requested] < _MODE_RANK[parent] else parent
 
 
@@ -194,6 +201,8 @@ def parse_profile_markdown(text: str, *, source: str, path: str = "") -> AgentPr
         pick("thinking", "reasoningLevel", "reasoning_level") or ""
     ).strip().lower() or None
     permission = str(pick("permissionMode", "permission_mode") or "").strip().lower() or None
+    if permission is not None:
+        permission = LEGACY_PERMISSION_MODES.get(permission, permission)
     if permission not in PERMISSION_MODES:
         permission = None
     return AgentProfile(

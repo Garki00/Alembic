@@ -12,9 +12,10 @@ import ProviderIcon from './ProviderIcon.vue'
 const store = useWorkspaceStore()
 const ui = useUiStore()
 
-const formOpen = ref(false)
+const creating = ref(false)
 const editing = ref<ProviderInfo | null>(null)
 const saving = ref(false)
+const activating = ref('')
 
 const confirming = ref(false)
 const pending = ref<ProviderInfo | null>(null)
@@ -27,16 +28,29 @@ function providerTitle(provider: ProviderInfo): string {
 
 function openCreate(): void {
   editing.value = null
-  formOpen.value = true
+  creating.value = true
 }
 
 function openEdit(provider: ProviderInfo): void {
   editing.value = provider
-  formOpen.value = true
+  creating.value = false
+}
+
+async function selectProvider(provider: ProviderInfo): Promise<void> {
+  const first = provider.models[0]
+  if (!first || provider.id === store.activeProviderId) return
+  activating.value = provider.id
+  try {
+    await store.activateModel(provider.id, first.id)
+  } catch (error) {
+    ui.showToast(errorMessage(error), true)
+  } finally {
+    activating.value = ''
+  }
 }
 
 function closeForm(): void {
-  formOpen.value = false
+  creating.value = false
   editing.value = null
 }
 
@@ -93,45 +107,63 @@ async function confirmRemove(): Promise<void> {
       </div>
     </div>
 
-    <div class="provider-list">
-      <p v-if="!store.providers.length" class="muted">
-        还没有供应商，点「添加供应商」创建第一个。
-      </p>
-      <div
-        v-for="provider in store.providers"
-        :key="provider.id"
-        class="provider-card"
-        :class="{ active: provider.id === store.activeProviderId }"
-      >
-        <ProviderIcon :provider="provider.provider" :size="34" />
-        <div class="provider-main">
-          <div class="model-title">
-            {{ providerTitle(provider) }}
-            <span v-if="provider.id === store.activeProviderId" class="tag">当前</span>
-            <span class="provider-type">{{ providerName(provider.provider) }}</span>
-          </div>
-          <div class="model-meta">
-            {{ [provider.base_url,
-                 provider.api_key_set ? provider.api_key_hint : '未配置 Key',
-                 `${provider.models.length} 个模型`].filter(Boolean).join(' · ') }}
-          </div>
-        </div>
-        <div class="model-actions">
-          <button type="button" class="btn-mini" @click="openEdit(provider)">编辑</button>
-          <button type="button" class="btn-mini danger" @click="remove(provider)">删除</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="formOpen" class="model-form">
+    <div v-if="creating" class="model-form">
       <ProviderEditor
-        :key="editing?.id || 'new'"
-        :initial="editing"
+        key="new"
+        :initial="null"
         :busy="saving"
         submit-label="保存供应商"
         @submit="save"
         @cancel="closeForm"
       />
+    </div>
+
+    <div class="provider-list">
+      <p v-if="!store.providers.length" class="muted">
+        还没有供应商，点「添加供应商」创建第一个。
+      </p>
+      <template v-for="provider in store.providers" :key="provider.id">
+        <div
+          class="provider-card"
+          :class="{ active: provider.id === store.activeProviderId }"
+        >
+          <ProviderIcon :provider="provider.provider" :size="34" />
+          <div class="provider-main">
+            <div class="model-title">
+              {{ providerTitle(provider) }}
+              <span v-if="provider.id === store.activeProviderId" class="tag">当前</span>
+              <span class="provider-type">{{ providerName(provider.provider) }}</span>
+            </div>
+            <div class="model-meta">
+              {{ [provider.base_url,
+                   provider.api_key_set ? provider.api_key_hint : '未配置 Key',
+                   `${provider.models.length} 个模型`].filter(Boolean).join(' · ') }}
+            </div>
+          </div>
+          <div class="model-actions">
+            <button
+              type="button"
+              class="btn-mini"
+              :disabled="!provider.models.length || provider.id === store.activeProviderId || activating === provider.id"
+              @click="selectProvider(provider)"
+            >
+              选择
+            </button>
+            <button type="button" class="btn-mini" @click="openEdit(provider)">编辑</button>
+            <button type="button" class="btn-mini danger" @click="remove(provider)">删除</button>
+          </div>
+        </div>
+        <div v-if="editing?.id === provider.id" class="model-form">
+          <ProviderEditor
+            :key="editing.id"
+            :initial="editing"
+            :busy="saving"
+            submit-label="保存供应商"
+            @submit="save"
+            @cancel="closeForm"
+          />
+        </div>
+      </template>
     </div>
 
     <ConfirmDialog

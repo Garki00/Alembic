@@ -3,13 +3,13 @@
 
 import unittest
 
-from agents.approval import ApprovalPolicy, describe_call, gated_tools
-from tools.registry import TOOL_SPECS
+from agents.approval import ApprovalPolicy, describe_call
+from agents.permission_service import evaluate
 
 
 class ApprovalTargetTest(unittest.TestCase):
     def policy(self) -> ApprovalPolicy:
-        return ApprovalPolicy(gated_tools(set(TOOL_SPECS)), {})
+        return ApprovalPolicy(mode="build")
 
     def test_write_and_edit_share_file_key(self):
         policy = self.policy()
@@ -42,7 +42,6 @@ class ApprovalTargetTest(unittest.TestCase):
         self.assertIn("old.txt", preview)
 
     def test_new_write_and_process_tools_are_gated(self):
-        gated = gated_tools(set(TOOL_SPECS))
         for name in (
             "delete_file",
             "move_file",
@@ -55,12 +54,12 @@ class ApprovalTargetTest(unittest.TestCase):
             "download_file",
             "git_commit",
         ):
-            self.assertIn(name, gated, name)
+            args = {"command": "echo x"} if name in {"start_process", "stop_process"} else {}
+            self.assertEqual(evaluate(name, args, mode="build").behavior, "ask", name)
         for name in (
             "file_stat",
             "read_document",
             "read_image",
-            "fetch_url",
             "web_search",
             "git_status",
             "git_diff",
@@ -68,7 +67,12 @@ class ApprovalTargetTest(unittest.TestCase):
             "ask_user_question",
             "wait_process",
         ):
-            self.assertNotIn(name, gated, name)
+            self.assertEqual(evaluate(name, {}, mode="build").behavior, "allow", name)
+        # URL fetching is a read that still asks: the network target is user-visible.
+        self.assertEqual(
+            evaluate("fetch_url", {"url": "https://example.com"}, mode="build").behavior,
+            "ask",
+        )
 
     def test_patch_and_download_have_readable_summaries(self):
         target, summary, preview = describe_call(

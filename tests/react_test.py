@@ -291,7 +291,7 @@ class PromptTest(unittest.TestCase):
 
 class ApprovalTest(unittest.TestCase):
     def gate(self, decision: str) -> tuple[ApprovalGate, ApprovalPolicy]:
-        policy = ApprovalPolicy({"echo": "write"}, {})
+        policy = ApprovalPolicy(mode="build")
         gate = ApprovalGate(policy=policy, ask=lambda _request: decision)
         return gate, policy
 

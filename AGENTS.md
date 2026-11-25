@@ -89,7 +89,13 @@
 
 ## 审批与权限
 
-- 权限模式决定是否弹审批：只读 / 全部审批 / 工作区内修改（默认）/ 完全权限。只读模式在审批前拒绝写入与执行。
+- 判定顺序固定为：拒绝规则 → 询问规则 → 计划闸门 → alwaysAsk → 免审批放行 → 允许规则 → 模式默认。规则按「工具 + 命令 / 路径 / 域名」匹配，支持 `prefix:*`、`*` 通配与 `*` 工具名。
+- 权限模式决定是否弹审批：计划 / 构建（默认）/ 编辑 / 免审批。计划模式在审批前拒绝非只读能力；编辑模式只豁免工作区内 `permission_name=edit` 的文件编辑；免审批仍受规则、命令策略与工作区路径限制。
+- 工具能力矩阵（`read_only` / `destructive` / `side_effect_scope` / `risk_level` / `needs_approval` / `always_ask` / `allowed_in_plan_mode` / `permission_name`）只在 `tools/registry.py` 派发；新增工具必须给出准确 `risk`，不要在各处另写工具风险表。
+- `run_command` 会尝试按命令内容判定只读：仅 Git Bash / WSL（POSIX）生效，解析器 + 命令/参数白名单，任何动态语法、未知命令或写选项都失败关闭；判定通过时本次调用按只读能力处理，规则仍优先。
+- 用户规则存 `data/permissions.json`（可 allow / ask / deny）；工作区 `.alembic/permissions.json` 只读取 deny / ask，项目不能给自己授权。网页端在「设置 → 权限」编辑，接口为 `GET/PUT /api/permissions`。
+- 模式属于会话：输入框右侧的模式按钮只改当前会话，设置里的权限模式是新会话的默认值；`POST /api/chat` 可带 `permission_mode` 单轮覆盖。
+- `APPROVAL_ENABLED=false` 只去掉人工通道：模式或能力产生的询问按放行处理，显式询问规则按拒绝处理。
 - 审批选项：允许本次 / 始终允许（本会话「工具 + 对象」）/ 拒绝。授权键按对象区分，写文件两种工具共用文件键，删除、移动、复制、建目录、下载各自独立。
 - 审批、提问通道异常、超时、断流、EOF 一律按拒绝或未回答处理，不默认放行，不伪造用户回答。
 - 提问与审批的回执分别走 `POST /api/approvals/{id}` 与 `POST /api/questions/{id}`；前端只渲染结果，不把待处理按钮留在正文。
@@ -127,7 +133,7 @@
 - 数据根目录默认 `%APPDATA%\Alembic`（Windows）/ `~/Library/Application Support/Alembic`（macOS）/ `$XDG_DATA_HOME/Alembic`（Linux），`ALEMBIC_HOME` 可覆盖。
 - 业务数据与 Electron 自身 profile 分属两个目录：`%APPDATA%\Alembic` 存配置与会话，`%LOCALAPPDATA%\Alembic` 存缓存与运行日志。
 - 首次启动把仓库里的 `data/`、`memory/` 复制到数据目录；只复制、不删除。
-- 配置文件包括 `models.json`、`tools.json`、`workspace.json`、`preferences.json`、`sandbox.json`、`sandbox-users.json`、`sandbox-setup.json` 与会话目录 `memory/`。
+- 配置文件包括 `models.json`、`tools.json`、`workspace.json`、`preferences.json`、`permissions.json`、`sandbox.json`、`sandbox-users.json`、`sandbox-setup.json` 与会话目录 `memory/`。
 - 主要环境变量：`ALEMBIC_HOME`、`DATA_DIR`、`MEMORY_DIR`、`WORKSPACE_DIR`、`SESSION_ID`、`MODEL_NAME`、`DEEPSEEK_API_KEY`、`AGENT_ENGINE`、`ALEMBIC_TOKEN`、`WEB_HOST`/`WEB_PORT`、`CORS_ORIGINS`、`APPROVAL_TIMEOUT`、`QUESTION_TIMEOUT`。完整列表与默认值见 `README.md` 与 `config/settings.py`。
 
 ## 桌面外壳与打包

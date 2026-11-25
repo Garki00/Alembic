@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted } from 'vue'
 import GeneralPanel from './GeneralPanel.vue'
 import ModelsPanel from './ModelsPanel.vue'
+import PermissionsPanel from './PermissionsPanel.vue'
 import ToolsPanel from './ToolsPanel.vue'
 import { useUiStore } from '../stores/ui'
 
@@ -54,6 +55,16 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
           <button
             type="button"
             class="tab"
+            :class="{ active: ui.settingsTab === 'permissions' }"
+            role="tab"
+            :aria-selected="ui.settingsTab === 'permissions'"
+            @click="ui.settingsTab = 'permissions'"
+          >
+            权限
+          </button>
+          <button
+            type="button"
+            class="tab"
             :class="{ active: ui.settingsTab === 'tools' }"
             role="tab"
             :aria-selected="ui.settingsTab === 'tools'"
@@ -65,6 +76,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
 
         <GeneralPanel v-if="ui.settingsTab === 'general'" />
         <ModelsPanel v-else-if="ui.settingsTab === 'models'" />
+        <PermissionsPanel v-else-if="ui.settingsTab === 'permissions'" />
         <ToolsPanel v-else />
       </div>
     </div>

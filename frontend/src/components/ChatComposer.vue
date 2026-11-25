@@ -3,12 +3,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type {
   ApprovalDecision,
   AttachmentInfo,
+  PermissionMode,
   ProviderInfo,
   ProviderModelInfo,
   ThinkingLevel,
 } from '../api/types'
 import { apiUrl, authHeaders, errorMessage } from '../api/client'
 import { providerName } from '../lib/providers'
+import { PERMISSION_MODES } from '../lib/preferences'
 import {
   normalizeThinkingLevels,
   thinkingLabel,
@@ -18,6 +20,7 @@ import { useChatStore } from '../stores/chat'
 import { useUiStore } from '../stores/ui'
 import { useWorkspaceStore } from '../stores/workspace'
 import ApprovalCard from './ApprovalCard.vue'
+import FloatingMenu from './FloatingMenu.vue'
 import ProviderIcon from './ProviderIcon.vue'
 import QuestionCard from './QuestionCard.vue'
 
@@ -32,6 +35,8 @@ const menuOpen = ref(false)
 const menuProviderId = ref('')
 const thinkingSwitcher = ref<HTMLElement | null>(null)
 const thinkingOpen = ref(false)
+const modeButton = ref<HTMLElement | null>(null)
+const modeOpen = ref(false)
 const toolsOpen = ref(false)
 const toolsMenu = ref<HTMLElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -100,6 +105,11 @@ const thinkingIndex = computed(() => Math.max(
   thinkingLevels.value.indexOf(currentThinking.value),
 ))
 
+const currentModeOption = computed(
+  () => PERMISSION_MODES.find((item) => item.value === chat.permissionMode)
+    ?? PERMISSION_MODES[1],
+)
+
 const modelTitle = computed(() => {
   const model = workspace.activeModel
   if (!model) return '在设置里添加供应商与模型'
@@ -132,6 +142,7 @@ function send(): void {
   draft.value = ''
   attachments.value = []
   toolsOpen.value = false
+  modeOpen.value = false
   void nextTick(() => resize())
   void chat.send(text, workspace.activeWorkspaceId || undefined, { attachments: files })
 }
@@ -147,6 +158,25 @@ function toggleTools(): void {
   toolsOpen.value = !toolsOpen.value
   menuOpen.value = false
   thinkingOpen.value = false
+  modeOpen.value = false
+}
+
+function toggleModeMenu(): void {
+  modeOpen.value = !modeOpen.value
+  menuOpen.value = false
+  thinkingOpen.value = false
+  toolsOpen.value = false
+}
+
+function chooseMode(mode: PermissionMode): void {
+  if (mode === 'yolo' && chat.permissionMode !== 'yolo') {
+    const confirmed = window.confirm(
+      '免审批模式会让 Agent 无需审批执行普通工具和命令。确认切换吗？',
+    )
+    if (!confirmed) return
+  }
+  chat.setPermissionMode(mode)
+  modeOpen.value = false
 }
 
 function chooseFile(): void {
@@ -244,6 +274,7 @@ function answerQuestion(value: string): void {
 function toggleMenu(): void {
   menuOpen.value = !menuOpen.value
   thinkingOpen.value = false
+  modeOpen.value = false
   if (menuOpen.value) {
     menuProviderId.value = workspace.activeProviderId || workspace.providers[0]?.id || ''
   }
@@ -252,6 +283,7 @@ function toggleMenu(): void {
 function toggleThinking(): void {
   thinkingOpen.value = !thinkingOpen.value
   menuOpen.value = false
+  modeOpen.value = false
 }
 
 async function setThinking(level: ThinkingLevel): Promise<void> {
@@ -316,6 +348,7 @@ function onDocumentKeydown(event: KeyboardEvent): void {
     menuOpen.value = false
     thinkingOpen.value = false
     toolsOpen.value = false
+    modeOpen.value = false
     cacheOpen.value = false
   }
 }
@@ -359,6 +392,18 @@ watch(
   () => {
     attachments.value = []
     toolsOpen.value = false
+    modeOpen.value = false
+    chat.restorePermissionMode(workspace.preferences.permission_mode)
+  },
+)
+
+// 设置里改默认模式时，还没单独选过的会话跟着更新
+watch(
+  () => workspace.preferences.permission_mode,
+  (mode) => {
+    if (!chat.sessionId || chat.sessionModes[chat.sessionId] === undefined) {
+      chat.restorePermissionMode(mode)
+    }
   },
 )
 
@@ -416,6 +461,7 @@ watch(formEl, (element) => {
 onMounted(() => {
   document.addEventListener('click', onDocumentClick)
   document.addEventListener('keydown', onDocumentKeydown)
+  chat.restorePermissionMode(workspace.preferences.permission_mode)
   resize()
   void nextTick(syncComposerLayout)
   composerObserver = new ResizeObserver(() => syncComposerLayout())
@@ -626,6 +672,42 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="composer-bar-right">
+          <div>
+            <button
+              ref="modeButton"
+              type="button"
+              class="mode-switch"
+              :class="{ active: modeOpen }"
+              aria-haspopup="menu"
+              :aria-expanded="modeOpen"
+              @click.stop="toggleModeMenu"
+            >
+              <span>{{ currentModeOption.label }}</span>
+              <span class="caret" aria-hidden="true">▴</span>
+            </button>
+            <FloatingMenu
+              :open="modeOpen"
+              :anchor="modeButton"
+              :width="224"
+              :height="200"
+              placement="top"
+              @close="modeOpen = false"
+            >
+              <button
+                v-for="mode in PERMISSION_MODES"
+                :key="mode.value"
+                type="button"
+                class="mode-option"
+                :class="{ active: mode.value === chat.permissionMode }"
+                role="menuitemradio"
+                :aria-checked="mode.value === chat.permissionMode"
+                @click="chooseMode(mode.value)"
+              >
+                <span class="mode-option-name">{{ mode.label }}</span>
+                <span class="mode-option-hint">{{ mode.hint }}</span>
+              </button>
+            </FloatingMenu>
+          </div>
           <button
             v-if="chat.streaming"
             type="button"

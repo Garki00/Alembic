@@ -26,11 +26,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agents.approval import (
+    PERMISSION_MODES,
     VALID_DECISIONS,
     ApprovalGate,
     ApprovalPolicy,
-    permission_tools,
-    tool_risks,
+    normalize_permission_mode,
 )
 from agents.context import (
     ChatSession,
@@ -49,6 +49,7 @@ from tools.paths import (
     resolve_in_workspace,
     resolve_readable_path,
 )
+from config.permission_rules import PermissionRulesStore, PermissionRuleset, load_project_rules
 from config.store import (
     AppPaths,
     ModelStore,
@@ -160,6 +161,8 @@ class ChatPayload(BaseModel):
     internal: bool = False
     process_id: str = ""
     subagent_id: str = ""
+    #: Per-turn override of the default permission mode; empty inherits preferences.
+    permission_mode: str | None = None
 
 
 class AddWorkspacePayload(BaseModel):
@@ -210,6 +213,12 @@ class SandboxConfigPayload(BaseModel):
     network: str | None = None
     allowed_domains: list[str] | None = None
     allowed_ports: list[int] | None = None
+
+
+class PermissionRulesPayload(BaseModel):
+    """User permission rules: allow / ask / deny lists of ``{tool, content?}``."""
+
+    rules: dict[str, list[dict[str, str]]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +474,7 @@ def create_app(
     app.state.tools = tools
     app.state.workspaces = workspaces
     app.state.preferences = preferences
+    app.state.permission_rules = PermissionRulesStore(paths.permissions_file)
     app.state.sessions = sessions
     app.state.sandbox = sandbox
     app.state.sandbox_config = sandbox_config
@@ -879,6 +889,28 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"preferences": updated}
+
+    # ---- 权限规则 ----
+    @app.get("/api/permissions")
+    def get_permission_rules(workspace_id: str = ""):
+        """User rules plus the workspace's restricting rules (deny / ask only)."""
+        try:
+            _workspace_id, workspace = resolve_workspace(workspace_id, None)
+            project_rules = load_project_rules(workspace)
+        except HTTPException:
+            project_rules = PermissionRuleset()
+        return {
+            "rules": app.state.permission_rules.get().as_dict(),
+            "project_rules": project_rules.as_dict(),
+        }
+
+    @app.put("/api/permissions")
+    def update_permission_rules(payload: PermissionRulesPayload):
+        try:
+            updated = app.state.permission_rules.update({"rules": payload.rules})
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"rules": updated.as_dict()}
 
     # ---- 工作区 ----
     @app.get("/api/workspaces")
@@ -1357,19 +1389,26 @@ def create_app(
         )
         gate: ApprovalGate | None = None
         prefs = preferences.get()
-        permission_mode = str(prefs.get("permission_mode") or "workspace_write")
+        requested_mode = (payload.permission_mode or "").strip().lower()
+        if requested_mode:
+            permission_mode = normalize_permission_mode(requested_mode, default="")
+            if permission_mode not in PERMISSION_MODES:
+                raise HTTPException(400, "permission_mode 只能是 plan / build / edit / yolo")
+        else:
+            permission_mode = normalize_permission_mode(prefs.get("permission_mode"))
         terminal = str(prefs.get("terminal") or "powershell")
-        gated = permission_tools(tools.enabled_tools(), permission_mode)
-        if not settings.approval_enabled:
-            # 关闭的只是「弹审批」，不是命令策略：高危命令仍然直接拒绝。
-            gated = {}
+        # User rules may allow/ask/deny; workspace rules may only ask or deny.
+        user_rules = app.state.permission_rules.get()
+        project_rules = load_project_rules(workspace)
         memo = app.state.approval_memo.setdefault(session_id, {})
         gate = ApprovalGate(
             policy=ApprovalPolicy(
-                gated,
-                memo,
                 mode=permission_mode,
-                risks=tool_risks(tools.enabled_tools()),
+                memo=memo,
+                rules=user_rules,
+                project_rules=project_rules,
+                prompts_enabled=settings.approval_enabled,
+                shell=terminal,
             ),
             ask=broker.ask,
         )

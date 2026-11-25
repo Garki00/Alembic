@@ -44,6 +44,25 @@ RISK_READ = "read"
 RISK_WRITE = "write"
 RISK_EXEC = "exec"
 
+# Capability matrix values, aligned with the permission engine's vocabulary.
+SIDE_EFFECT_NONE = "none"
+SIDE_EFFECT_WORKSPACE = "workspace"
+SIDE_EFFECT_GIT = "git"
+SIDE_EFFECT_NETWORK = "network"
+SIDE_EFFECT_SYSTEM = "system"
+SIDE_EFFECT_SESSION = "session"
+SIDE_EFFECT_USER_INTERACTION = "userInteraction"
+SIDE_EFFECT_SCOPES = (
+    SIDE_EFFECT_NONE,
+    SIDE_EFFECT_WORKSPACE,
+    SIDE_EFFECT_GIT,
+    SIDE_EFFECT_NETWORK,
+    SIDE_EFFECT_SYSTEM,
+    SIDE_EFFECT_SESSION,
+    SIDE_EFFECT_USER_INTERACTION,
+)
+RISK_LEVELS = ("low", "medium", "high", "critical")
+
 # Field kinds: determine the settings-panel control and how values are validated on save.
 FIELD_TEXT = "text"
 FIELD_NUMBER = "number"
@@ -659,3 +678,142 @@ def build_tools(
 
 def spec_of(name: str) -> ToolSpec | None:
     return TOOL_SPECS.get(name)
+
+
+# ---------------------------------------------------------------------------
+# Capability matrix
+#
+# The matrix is derived from the legacy ``risk`` level plus per-entry overrides. It
+# describes what a tool can touch, not whether it is enabled: the permission engine
+# reads these fields to decide allow / ask / deny before the mode defaults apply.
+# ---------------------------------------------------------------------------
+CAPABILITY_OVERRIDES: dict[str, dict] = {
+    # File edits: in-workspace mutations that ``edit`` mode treats as the accepted edit surface.
+    "write_file": {"permission_name": "edit"},
+    "edit_file": {"permission_name": "edit"},
+    "apply_patch": {"permission_name": "edit"},
+    "batch_edit": {"permission_name": "edit"},
+    "make_dir": {"risk_level": "low", "permission_name": "file"},
+    "move_file": {"risk_level": "medium", "permission_name": "file"},
+    "copy_file": {"risk_level": "medium", "permission_name": "file"},
+    "delete_file": {"risk_level": "high", "destructive": True, "permission_name": "file"},
+    "download_file": {"risk_level": "medium", "side_effect_scope": "workspace", "permission_name": "file"},
+    # Network reads and fetches.
+    "fetch_url": {
+        "read_only": True,
+        "side_effect_scope": "network",
+        "risk_level": "medium",
+        "needs_approval": True,
+        "permission_name": "web",
+    },
+    "web_search": {
+        "read_only": True,
+        "side_effect_scope": "network",
+        "risk_level": "low",
+        "permission_name": "web",
+    },
+    # Session-local state: allowed in plan mode and low risk elsewhere.
+    "todo_write": {
+        "read_only": True,
+        "side_effect_scope": "session",
+        "risk_level": "low",
+        "permission_name": "session",
+    },
+    "ask_user_question": {
+        "read_only": True,
+        "side_effect_scope": "session",
+        "risk_level": "low",
+        "permission_name": "session",
+    },
+    "agent": {
+        "read_only": True,
+        "side_effect_scope": "none",
+        "risk_level": "low",
+        "permission_name": "session",
+    },
+    "praise_subagent": {"side_effect_scope": "session", "permission_name": "session"},
+    # Git and command execution.
+    "git_commit": {
+        "read_only": False,
+        "destructive": False,
+        "side_effect_scope": "git",
+        "risk_level": "medium",
+        "needs_approval": True,
+        "permission_name": "git",
+    },
+    "run_command": {"risk_level": "high", "destructive": True, "permission_name": "command"},
+    "start_process": {"risk_level": "high", "permission_name": "command"},
+    "stop_process": {"risk_level": "medium", "destructive": False, "permission_name": "command"},
+}
+
+_TOOL_ENTRIES: dict[str, str] = {
+    tool_name: entry for entry, spec in TOOL_SPECS.items() for tool_name in spec.tool_names
+}
+
+
+def entry_for_tool(tool_name: str) -> str | None:
+    """Map a concrete tool name back to its registry entry.
+
+    Falls back to a live scan so tools registered after import (plugins/MCP) still
+    resolve to the entry that declares them.
+    """
+    entry = _TOOL_ENTRIES.get(tool_name)
+    if entry is not None:
+        return entry
+    for name, spec in TOOL_SPECS.items():
+        if tool_name in spec.tool_names:
+            return name
+    return None
+
+
+def capability_for(entry_name: str | None = None, *, tool_name: str | None = None) -> dict:
+    """Resolve the capability matrix row for a registry entry or tool name.
+
+    Unknown tools are treated conservatively: writable, system scope, high risk, and
+    approval required, so a tool that skipped registration cannot slip through.
+    """
+    entry = entry_name or (entry_for_tool(tool_name) if tool_name else None)
+    spec = TOOL_SPECS.get(entry) if entry else None
+    risk = spec.risk if spec is not None else RISK_EXEC
+    if risk == RISK_READ:
+        base = {
+            "read_only": True,
+            "destructive": False,
+            "side_effect_scope": SIDE_EFFECT_NONE,
+            "risk_level": "low",
+            "needs_approval": False,
+            "permission_name": "read",
+        }
+    elif risk == RISK_WRITE:
+        base = {
+            "read_only": False,
+            "destructive": False,
+            "side_effect_scope": SIDE_EFFECT_WORKSPACE,
+            "risk_level": "medium",
+            "needs_approval": True,
+            "permission_name": "file",
+        }
+    else:
+        base = {
+            "read_only": False,
+            "destructive": True,
+            "side_effect_scope": SIDE_EFFECT_SYSTEM,
+            "risk_level": "high",
+            "needs_approval": True,
+            "permission_name": "command",
+        }
+    row = {
+        **base,
+        "always_ask": False,
+        "allowed_in_plan_mode": False,
+        "requires_user_interaction": False,
+        "entry": entry or "",
+        "tool_names": list(spec.tool_names) if spec is not None else ([tool_name] if tool_name else []),
+    }
+    if entry:
+        row.update(CAPABILITY_OVERRIDES.get(entry, {}))
+        if spec is not None and spec.source != "builtin":
+            # Extensions (plugins / MCP) have no audited capability declaration: plan mode
+            # asks for non-destructive ones instead of trusting a read risk label.
+            row["permission_name"] = "mcp"
+    return row

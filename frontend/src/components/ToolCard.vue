@@ -41,6 +41,44 @@ function riskLabel(risk: string): string {
   return '只读'
 }
 
+const RISK_LEVEL_LABELS: Record<string, string> = {
+  low: '低',
+  medium: '中',
+  high: '高',
+  critical: '严重',
+}
+
+const SCOPE_LABELS: Record<string, string> = {
+  none: '无',
+  workspace: '工作区',
+  git: 'Git',
+  network: '网络',
+  system: '系统',
+  session: '会话',
+  userInteraction: '交互',
+}
+
+function capability(): Record<string, unknown> | null {
+  return (props.tool.capability as unknown as Record<string, unknown>) || null
+}
+
+function riskLevelLabel(): string {
+  const value = String(capability()?.risk_level || 'medium')
+  return RISK_LEVEL_LABELS[value] || value
+}
+
+function scopeLabel(): string {
+  const value = String(capability()?.side_effect_scope || 'none')
+  return SCOPE_LABELS[value] || value
+}
+
+function planAllowed(): boolean {
+  const cap = capability()
+  if (!cap) return false
+  return Boolean(cap.allowed_in_plan_mode)
+    || (Boolean(cap.read_only) && !cap.destructive && !cap.needs_approval)
+}
+
 function setSwitch(key: string, event: Event): void {
   const input = event.target as HTMLInputElement
   values[key] = input.checked ? 'true' : 'false'
@@ -137,6 +175,15 @@ async function clearSecret(field: ToolFieldInfo): Promise<void> {
         <p class="tool-desc">{{ tool.description }}</p>
         <p class="tool-meta">
           <span class="risk" :class="`risk-${tool.risk}`">风险：{{ riskLabel(tool.risk) }}</span>
+          <template v-if="tool.capability">
+            <span class="tool-cap" :class="`cap-level-${tool.capability.risk_level}`">
+              等级 {{ riskLevelLabel() }}
+            </span>
+            <span class="tool-cap">副作用 {{ scopeLabel() }}</span>
+            <span v-if="tool.capability.destructive" class="tool-cap cap-danger">破坏性</span>
+            <span class="tool-cap">{{ tool.capability.needs_approval ? '需审批' : '免审批' }}</span>
+            <span v-if="planAllowed()" class="tool-cap">计划可用</span>
+          </template>
           <template v-if="view === 'list'">
             <code v-for="name in tool.tool_names" :key="name" class="tool-name">{{ name }}</code>
           </template>

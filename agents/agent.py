@@ -36,12 +36,13 @@ from tools.model_view import with_compact_descriptions
 from tools.registry import build_tools
 
 from agents.approval import (
+    DEFAULT_PERMISSION_MODE,
     ApprovalGate,
     ApprovalPolicy,
     console_asker,
-    permission_tools,
-    tool_risks,
+    normalize_permission_mode,
 )
+from config.permission_rules import PermissionRulesStore, PermissionRuleset, load_project_rules
 from agents.compaction import PrefixSummarizer
 from agents.react import ReActAgent
 
@@ -88,19 +89,37 @@ def build_default_tools(ctx: ToolContext | None = None) -> list:
     return build_tools(enabled, ToolStore().configs(), ctx or cli_tool_context())
 
 
+def cli_permission_mode() -> str:
+    """Read the persisted default permission mode; CLI runs with the same modes as the web UI."""
+    try:
+        from config.store import PreferencesStore
+
+        return normalize_permission_mode(PreferencesStore().get().get("permission_mode"))
+    except Exception:  # preferences are optional for the CLI
+        return DEFAULT_PERMISSION_MODE
+
+
+def cli_permission_rules() -> PermissionRuleset:
+    """Load the CLI's user rules from the application data directory."""
+    return PermissionRulesStore(Path(settings.data_dir) / "permissions.json").get()
+
+
 def build_cli_approval() -> ApprovalGate | None:
     """CLI approval switch: asks on the terminal, enabled by default.
 
     ``APPROVAL_ENABLED=false`` only disables approval prompts; irreversible
-    high-risk commands are still rejected by the command policy.
+    high-risk commands are still rejected by the command policy, and explicit ask
+    rules stay closed instead of turning into allows.
     """
-    enabled = cli_enabled_tools()
-    gated = permission_tools(enabled, "workspace_write") if settings.approval_enabled else {}
+    mode = cli_permission_mode()
+    workspace = Path(settings.workspace_dir or Path.cwd()).expanduser().resolve()
     return ApprovalGate(
         policy=ApprovalPolicy(
-            gated,
-            mode="workspace_write",
-            risks=tool_risks(enabled),
+            mode=mode,
+            rules=cli_permission_rules(),
+            project_rules=load_project_rules(workspace),
+            prompts_enabled=settings.approval_enabled,
+            shell=settings.terminal_preference,
         ),
         ask=console_asker,
     )

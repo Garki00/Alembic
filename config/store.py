@@ -25,7 +25,7 @@ from typing import Any, Iterable, Mapping
 from config.settings import settings
 
 # 工具清单与参数定义只有一份，在 tools/registry.py；这里只做持久化与对外输出。
-from tools.registry import LEGACY_TOOL_GROUPS, TOOL_SPECS, ToolField, ToolSpec
+from tools.registry import LEGACY_TOOL_GROUPS, TOOL_SPECS, ToolField, ToolSpec, capability_for
 
 __all__ = [
     "AppPaths",
@@ -896,6 +896,7 @@ class ToolStore:
                     "label": spec.label,
                     "description": spec.description,
                     "risk": spec.risk,
+                    "capability": capability_for(spec.name),
                     "tool_names": list(spec.tool_names),
                     "source": spec.source,
                     "source_id": spec.source_id,
@@ -1210,17 +1211,24 @@ class WorkspaceStore:
 # ---------------------------------------------------------------------------
 TRANSCRIPT_VIEW_MODES = ("compact", "standard", "detailed", "verbose")
 COLLAPSE_TIMINGS = ("completion", "next_input")
-PERMISSION_MODES = ("read_only", "approval_all", "workspace_write", "full_access")
+#: Permission modes ordered from strictest to loosest; the UI and the approval layer share this list.
+PERMISSION_MODES = ("plan", "build", "edit", "yolo")
+LEGACY_PERMISSION_MODES = {
+    "read_only": "plan",
+    "approval_all": "build",
+    "workspace_write": "build",
+    "full_access": "yolo",
+}
 TERMINAL_CHOICES = ("powershell", "cmd", "gitbash", "wsl")
 LINK_TARGETS = ("sidebar", "browser")
 THEME_MODES = ("light", "dark", "system")
 DEFAULT_TRANSCRIPT_VIEW = "standard"
 DEFAULT_COLLAPSE_TIMING = "completion"
-DEFAULT_PERMISSION_MODE = "workspace_write"
+DEFAULT_PERMISSION_MODE = "build"
 DEFAULT_TERMINAL = "powershell"
 DEFAULT_LINK_TARGET = "sidebar"
 DEFAULT_THEME = "light"
-PREFERENCES_VERSION = 2
+PREFERENCES_VERSION = 3
 #: Built-in subagent types whose default model can be chosen in Settings.
 SUBAGENT_MODEL_KEYS = ("general-purpose", "Explore")
 
@@ -1245,14 +1253,15 @@ def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
     if timing not in COLLAPSE_TIMINGS:
         timing = DEFAULT_COLLAPSE_TIMING
     permission = str(data.get("permission_mode") or DEFAULT_PERMISSION_MODE).strip().lower()
-    # v1 的 read_only 实际语义是「所有工具都要审批」。v2 起该语义改名为
-    # approval_all，read_only 变成真正的只读；旧配置在读取时一次性迁移。
+    # 版本迁移：v1 的 read_only 实际语义是「所有工具都要审批」（v2 改名为 approval_all，
+    # v3 并入 build）；v2 的四档在 v3 里按语义映射到 plan / build / edit / yolo。
     try:
         version = int(data.get("version", 1))
     except (TypeError, ValueError):
         version = 1
-    if version < PREFERENCES_VERSION and permission == "read_only":
-        permission = "approval_all"
+    if version < 2 and permission == "read_only":
+        permission = "build"
+    permission = LEGACY_PERMISSION_MODES.get(permission, permission)
     if permission not in PERMISSION_MODES:
         permission = DEFAULT_PERMISSION_MODE
     terminal = str(data.get("terminal") or DEFAULT_TERMINAL).strip().lower()
@@ -1330,10 +1339,9 @@ class PreferencesStore:
             current["collapse_timing"] = timing
         if "permission_mode" in patch:
             permission = str(patch["permission_mode"]).strip().lower()
+            permission = LEGACY_PERMISSION_MODES.get(permission, permission)
             if permission not in PERMISSION_MODES:
-                raise ValueError(
-                    "permission_mode 只能是 read_only / approval_all / workspace_write / full_access"
-                )
+                raise ValueError("permission_mode 只能是 plan / build / edit / yolo")
             current["permission_mode"] = permission
         if "terminal" in patch:
             terminal = str(patch["terminal"]).strip().lower()
@@ -1378,6 +1386,7 @@ class AppPaths:
         self.models_file = base / "models.json"
         self.tools_file = base / "tools.json"
         self.workspace_file = base / "workspace.json"
+        self.permissions_file = base / "permissions.json"
         self.preferences_file = (
             _resolve(settings.preferences_file) if data_dir is None else base / "preferences.json"
         )

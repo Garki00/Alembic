@@ -157,22 +157,12 @@ onMounted(() => load())
       <div class="extension-tabs" role="tablist" aria-label="扩展类型">
         <button v-for="item in tabs" :id="`extension-tab-${item.id}`" :key="item.id" type="button" role="tab" :aria-selected="tab === item.id" :aria-controls="`extension-content-${item.id}`" :class="{ active: tab === item.id }" @click="tab = item.id">{{ item.label }}</button>
       </div>
-      <div class="view-switch" :class="{ list: view === 'list' }" role="group" aria-label="扩展视图">
-        <button type="button" class="view-switch-btn" :class="{ active: view === 'grid' }" :aria-pressed="view === 'grid'" aria-label="网格视图" @click="view = 'grid'"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h5v5H2zm7 0h5v5H9zM2 9h5v5H2zm7 0h5v5H9z" fill="currentColor" /></svg></button>
-        <button type="button" class="view-switch-btn" :class="{ active: view === 'list' }" :aria-pressed="view === 'list'" aria-label="列表视图" @click="view = 'list'"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h2v2H2zm4 0h8v2H6zM2 7h2v2H2zm4 0h8v2H6zM2 11h2v2H2zm4 0h8v2H6z" fill="currentColor" /></svg></button>
-      </div>
-    </div>
-    <div class="extensions-toolbar">
-      <button type="button" class="extensions-icon-btn" :disabled="busy" title="刷新插件" aria-label="刷新插件" @click="load(true)">
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-          <path d="M13.4 2.8v3.1h-3.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </button>
-      <div class="extensions-toolbar-right">
-        <button v-if="tab === 'mcp'" type="button" class="extensions-action" :disabled="busy || !snapshot" @click="editServer(null)">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
-          <span>添加 MCP</span>
+      <div class="tools-head-actions">
+        <button type="button" class="extensions-icon-btn" :disabled="busy" title="刷新插件" aria-label="刷新插件" @click="load(true)">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            <path d="M13.4 2.8v3.1h-3.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
         </button>
         <button type="button" class="extensions-action" :disabled="busy || !snapshot" :aria-expanded="directoriesOpen" @click="openDirectories">
           <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -180,6 +170,18 @@ onMounted(() => load())
             <path d="M2.2 6.6h11.8" fill="none" stroke="currentColor" stroke-width="1.1" />
           </svg>
           <span>插件目录</span>
+        </button>
+        <div class="view-switch" :class="{ list: view === 'list' }" role="group" aria-label="扩展视图">
+          <button type="button" class="view-switch-btn" :class="{ active: view === 'grid' }" :aria-pressed="view === 'grid'" aria-label="网格视图" @click="view = 'grid'"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h5v5H2zm7 0h5v5H9zM2 9h5v5H2zm7 0h5v5H9z" fill="currentColor" /></svg></button>
+          <button type="button" class="view-switch-btn" :class="{ active: view === 'list' }" :aria-pressed="view === 'list'" aria-label="列表视图" @click="view = 'list'"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h2v2H2zm4 0h8v2H6zM2 7h2v2H2zm4 0h8v2H6zM2 11h2v2H2zm4 0h8v2H6z" fill="currentColor" /></svg></button>
+        </div>
+      </div>
+    </div>
+    <div v-if="tab === 'mcp'" class="extensions-toolbar">
+      <div class="extensions-toolbar-right">
+        <button type="button" class="extensions-action" :disabled="busy || !snapshot" @click="editServer(null)">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+          <span>添加 MCP</span>
         </button>
       </div>
     </div>
@@ -251,6 +253,7 @@ onMounted(() => load())
 .extension-tabs button { border: 1px solid transparent; border-radius: 5px; padding: 6px 12px; background: transparent; color: var(--muted); font-size: 12px; }
 .extension-tabs button.active { color: var(--emerald); background: var(--paper-deep); border-color: var(--border); }
 .extension-actions { margin-top: 12px; }
+.tools-head-actions { display: flex; align-items: center; gap: 8px; }
 .extensions-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
 .extensions-toolbar-right { display: flex; align-items: center; gap: 8px; }
 .extensions-icon-btn {

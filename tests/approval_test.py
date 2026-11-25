@@ -15,9 +15,10 @@ from agents.approval import (
     console_asker,
     describe_call,
     describe_steps,
-    gated_tools,
-    permission_tools,
+    normalize_permission_mode,
 )
+from agents.permission_service import evaluate
+from config.permission_rules import PermissionRule, PermissionRuleset
 
 
 def make_call(name: str, args: dict):
@@ -101,39 +102,91 @@ class DescribeCallTest(unittest.TestCase):
         self.assertTrue(preview.endswith("…"))
 
 
-class GatingTest(unittest.TestCase):
-    def test_only_write_and_exec_are_gated(self):
-        gated = gated_tools({"get_weather", "file_read", "file_write", "run_command"})
-        self.assertNotIn("get_weather", gated)
-        self.assertNotIn("read_file", gated)
-        self.assertEqual(gated["write_file"], "write")
-        self.assertEqual(gated["edit_file"], "write")
-        self.assertEqual(gated["run_command"], "exec")
+class DecisionTest(unittest.TestCase):
+    def test_mode_decisions_follow_the_capability_matrix(self):
+        cases = [
+            ("plan", "write_file", {"path": "a.txt"}, "deny"),
+            ("plan", "run_command", {"command": "echo x"}, "deny"),
+            ("plan", "read_file", {"path": "a.txt"}, "allow"),
+            ("plan", "todo_write", {"todos": []}, "allow"),
+            ("build", "write_file", {"path": "a.txt"}, "ask"),
+            ("build", "run_command", {"command": "echo x"}, "ask"),
+            ("build", "read_file", {"path": "a.txt"}, "allow"),
+            ("edit", "write_file", {"path": "a.txt"}, "allow"),
+            ("edit", "apply_patch", {"patch": ""}, "allow"),
+            ("edit", "delete_file", {"path": "a.txt"}, "ask"),
+            ("edit", "run_command", {"command": "echo x"}, "ask"),
+            ("yolo", "write_file", {"path": "a.txt"}, "allow"),
+            ("yolo", "run_command", {"command": "echo x"}, "allow"),
+        ]
+        for mode, tool, args, expected in cases:
+            self.assertEqual(evaluate(tool, args, mode=mode).behavior, expected, (mode, tool))
 
-    def test_disabled_tool_is_not_gated(self):
-        gated = gated_tools({"file_read"})
-        self.assertEqual(gated, {})
+    def test_plan_asks_for_network_reads_that_need_approval(self):
+        decision = evaluate("fetch_url", {"url": "https://example.com/a"}, mode="plan")
+        self.assertEqual(decision.behavior, "ask")
 
-    def test_permission_modes(self):
-        enabled = {"file_read", "file_write", "run_command"}
-        read_only = permission_tools(enabled, "read_only")
-        self.assertEqual(read_only, {})
+    def test_deny_rule_beats_yolo(self):
+        rules = PermissionRuleset(deny=[PermissionRule("write_file", "secret/*")])
+        decision = evaluate(
+            "write_file", {"path": "secret/key.txt"}, mode="yolo", rules=rules
+        )
+        self.assertEqual(decision.behavior, "deny")
+        self.assertEqual(decision.code, "denied_by_rule")
+        # A path outside the rule still passes yolo.
+        self.assertEqual(
+            evaluate("write_file", {"path": "src/a.py"}, mode="yolo", rules=rules).behavior,
+            "allow",
+        )
 
-        approval_all = permission_tools(enabled, "approval_all")
-        self.assertIn("read_file", approval_all)
-        self.assertIn("write_file", approval_all)
-        self.assertIn("run_command", approval_all)
+    def test_ask_rule_beats_allow_rule_and_session_grant(self):
+        ask_rules = PermissionRuleset(
+            allow=[PermissionRule("run_command")],
+            ask=[PermissionRule("run_command", "pytest:*")],
+        )
+        policy = ApprovalPolicy(mode="build", rules=ask_rules)
+        policy.remember("run_command", {"command": "pytest -q"})
+        self.assertEqual(
+            policy.evaluate("run_command", {"command": "pytest -q"}).behavior,
+            "ask",
+        )
+        # The same session grant still covers calls the ask rule does not match.
+        self.assertEqual(
+            policy.evaluate("run_command", {"command": "pytest -q"}).behavior,
+            "ask",
+        )
 
-        workspace = permission_tools(enabled, "workspace_write")
-        self.assertNotIn("write_file", workspace)
-        self.assertIn("run_command", workspace)
+    def test_allow_rule_matches_prefix_wildcards_and_domains(self):
+        rules = PermissionRuleset(
+            allow=[
+                PermissionRule("run_command", "pytest:*"),
+                PermissionRule("fetch_url", "domain:example.com"),
+            ]
+        )
+        self.assertEqual(
+            evaluate("run_command", {"command": "pytest tests"}, mode="build", rules=rules).behavior,
+            "allow",
+        )
+        self.assertEqual(
+            evaluate("run_command", {"command": "rm -rf build"}, mode="build", rules=rules).behavior,
+            "ask",
+        )
+        self.assertEqual(
+            evaluate("fetch_url", {"url": "https://example.com/x"}, mode="build", rules=rules).behavior,
+            "allow",
+        )
 
-        self.assertEqual(permission_tools(enabled, "full_access"), {})
+    def test_legacy_mode_names_map_to_current_modes(self):
+        self.assertEqual(normalize_permission_mode("approval_all"), "build")
+        self.assertEqual(normalize_permission_mode("workspace_write"), "build")
+        self.assertEqual(normalize_permission_mode("read_only"), "plan")
+        self.assertEqual(normalize_permission_mode("full_access"), "yolo")
+        self.assertEqual(normalize_permission_mode("nonsense"), "build")
 
 
 class PolicyTest(unittest.TestCase):
     def setUp(self):
-        self.policy = ApprovalPolicy({"write_file": "write", "edit_file": "write"})
+        self.policy = ApprovalPolicy(mode="build")
 
     def test_remember_and_allow(self):
         args = {"path": "a.txt", "content": "x"}
@@ -160,7 +213,7 @@ class PolicyTest(unittest.TestCase):
 
 class MiddlewareTest(unittest.TestCase):
     def setUp(self):
-        self.policy = ApprovalPolicy({"write_file": "write", "run_command": "exec"})
+        self.policy = ApprovalPolicy(mode="build")
         self.executed: list[dict] = []
 
     def build(self, ask):
@@ -238,12 +291,8 @@ class MiddlewareTest(unittest.TestCase):
         self.assertEqual(request.rule, "git_rewrite")
         self.assertIn("reason", request.as_event())
 
-    def test_read_only_blocks_write_and_exec_before_approval(self):
-        policy = ApprovalPolicy(
-            {},
-            mode="read_only",
-            risks={"read_file": "read", "write_file": "write", "run_command": "exec"},
-        )
+    def test_plan_blocks_write_and_exec_before_approval(self):
+        policy = ApprovalPolicy(mode="plan")
         ask = Recorder("once")
         executed: list[str] = []
 
@@ -257,17 +306,22 @@ class MiddlewareTest(unittest.TestCase):
             make_call("write_file", {"path": "a.txt", "content": "x"}), handler
         )
         self.assertIsInstance(denied, ToolMessage)
-        self.assertIn("[read_only]", denied.content)
+        self.assertIn("[plan_mode]", denied.content)
         denied = middleware.wrap_tool_call(
             make_call("run_command", {"command": "echo x"}), handler
         )
-        self.assertIn("[read_only]", denied.content)
+        self.assertIn("[plan_mode]", denied.content)
         self.assertEqual(
             middleware.wrap_tool_call(make_call("read_file", {"path": "a.txt"}), handler),
             "ok",
         )
+        # Non-destructive session tools stay available for analysis.
+        self.assertEqual(
+            middleware.wrap_tool_call(make_call("todo_write", {"todos": []}), handler),
+            "ok",
+        )
         self.assertEqual(ask.requests, [])
-        self.assertEqual(executed, ["read_file"])
+        self.assertEqual(executed, ["read_file", "todo_write"])
 
     def test_asker_exception_fails_closed(self):
         def boom(_request):

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 
-export type SettingsTab = 'general' | 'models' | 'tools'
+export type SettingsTab = 'general' | 'models' | 'tools' | 'permissions'
 
 export const SIDEBAR_WIDTH_KEY = 'alembic.sidebar-width'
 export const SIDEBAR_MIN = 220

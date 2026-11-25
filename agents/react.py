@@ -562,10 +562,16 @@ class ReActAgent:
             logger.warning("ReAct blocked tool %s: [%s] %s", name, code, message)
             return policy_blocked_message(call, code, message, hint)
 
-        if not gate.policy.needs_approval(name):
+        decision_result = gate.policy.evaluate(name, args)
+        if decision_result.behavior == "allow":
             return None
-        if gate.policy.is_allowed(name, args):
-            return None
+        if decision_result.behavior == "deny":
+            return policy_blocked_message(
+                call,
+                decision_result.code or "blocked_by_policy",
+                decision_result.reason or f"`{name}` is blocked by the current permission rules.",
+                "Do not retry the same call verbatim. Adjust the permission rules or mode first.",
+            )
 
         target, summary, preview = describe_call(name, args)
         command = args.get("command") if isinstance(args, dict) else None

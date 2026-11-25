@@ -28,7 +28,7 @@ const DEFAULT_PREFERENCES: Preferences = {
   theme: 'light',
   transcript_view: 'standard',
   collapse_timing: 'completion',
-  permission_mode: 'workspace_write',
+  permission_mode: 'build',
   terminal: 'powershell',
   link_target: 'sidebar',
   developer_tools: false,

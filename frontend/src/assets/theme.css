@@ -59,11 +59,17 @@ html[data-theme='dark'] .workspace-option:hover,
 html[data-theme='dark'] .workspace-add:hover,
 html[data-theme='dark'] .process-summary:hover,
 html[data-theme='dark'] .code-work-head:hover,
+html[data-theme='dark'] .workspace-trigger:hover,
 html[data-theme='dark'] .workspace-trigger.open,
 html[data-theme='dark'] .cache-meter[aria-expanded='true'],
 html[data-theme='dark'] .cache-meter.warm,
 html[data-theme='dark'] .dir-row:hover,
 html[data-theme='dark'] .workspace-browser .dir-row:hover { background: var(--hover-bg); }
+html[data-theme='dark'] .workspace-trigger:hover,
+html[data-theme='dark'] .workspace-trigger.open {
+    border-color: var(--accent-border-soft);
+    color: var(--accent-text);
+}
 html[data-theme='dark'] .suggestion:hover,
 html[data-theme='dark'] .model-switch:hover,
 html[data-theme='dark'] .btn-ghost:hover,

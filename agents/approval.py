@@ -1,5 +1,5 @@
 # agents/approval.py
-"""Tool approval: ask a human before a dangerous tool runs.
+"""Tool approval: rules and capabilities decide, a human confirms the rest.
 
 - **Allow once**: let only this call through;
 - **Always allow**: remember the pair (tool + target: raw command / file path) for
@@ -7,16 +7,11 @@
 - **Deny**: do not run the tool; report the failure back to the model so it picks
   another approach instead of retrying.
 
-Whether a tool needs approval depends on the permission mode and the risk level
-(see :func:`permission_tools`):
-
-- ``read_only``: truly read-only. File writes and command execution are rejected
-  before approval;
-- ``approval_all``: every tool call needs approval;
-- ``workspace_write``: file writes inside the workspace need none, command
-  execution still does;
-- ``full_access``: no approval (irreversible high-risk commands are still rejected
-  by the command policy).
+The decision itself lives in :mod:`agents.permission_service`: user/project rules
+(deny → ask → allow) are evaluated first, then the mode (``plan`` / ``build`` /
+``edit`` / ``yolo``) and the tool's capability row decide whether an approval is
+needed. A session grant remembered here can skip an approval produced by the mode,
+but never an explicit ask rule, a deny rule, or the plan gate.
 
 A command policy layer (:mod:`tools.command_policy`) sits outside approval:
 irreversible operations are rejected outright, while recoverable but dangerous
@@ -32,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Literal, Mapping
 
 from langchain.agents.middleware import AgentMiddleware
@@ -41,9 +36,31 @@ from langchain_core.messages import ToolMessage
 from tools.command_brief import command_steps, describe_command
 from tools.command_policy import assess_command
 from tools.errors import tool_error
-from tools.registry import RISK_EXEC, RISK_READ, RISK_WRITE, TOOL_SPECS, expand_enabled_names
+from tools.registry import TOOL_SPECS, capability_for, entry_for_tool
+
+from agents.permission_service import (
+    ALLOW,
+    ASK,
+    DENY,
+    PermissionConfig,
+    PermissionDecision,
+    evaluate,
+)
+from config.permission_rules import PermissionRuleset
 
 logger = logging.getLogger(__name__)
+
+#: Permission modes, ordered from strictest to loosest. Subagent profiles may only
+#: narrow the parent mode, so the order is also the restriction rank.
+PERMISSION_MODES = ("plan", "build", "edit", "yolo")
+DEFAULT_PERMISSION_MODE = "build"
+#: Names written by older preference files and profiles; accepted on read only.
+LEGACY_PERMISSION_MODES = {
+    "read_only": "plan",
+    "approval_all": "build",
+    "workspace_write": "build",
+    "full_access": "yolo",
+}
 
 Decision = Literal["once", "always", "deny"]
 VALID_DECISIONS = ("once", "always", "deny")
@@ -231,94 +248,102 @@ def describe_steps(tool: str, args: Mapping) -> tuple[str, ...]:
     return tuple(command_steps(str(command)))
 
 
-def gated_tools(enabled: set[str] | None = None) -> dict[str, str]:
-    """Map enabled entries to the concrete tool names needing approval → risk level."""
-    names = set(TOOL_SPECS) if enabled is None else expand_enabled_names(enabled)
-    gated: dict[str, str] = {}
-    for name, spec in tuple(TOOL_SPECS.items()):
-        if name not in names:
-            continue
-        if spec.risk not in {RISK_WRITE, RISK_EXEC}:
-            continue
-        for tool_name in spec.tool_names:
-            gated[tool_name] = spec.risk
-    return gated
-
-
-def tool_risks(enabled: set[str] | None = None) -> dict[str, str]:
-    """Map every enabled tool name → risk level (read-only mode uses it to tell reads from writes)."""
-    names = set(TOOL_SPECS) if enabled is None else expand_enabled_names(enabled)
-    risks: dict[str, str] = {}
-    for name, spec in tuple(TOOL_SPECS.items()):
-        if name not in names:
-            continue
-        for tool_name in spec.tool_names:
-            risks[tool_name] = spec.risk
-    return risks
-
-
-def permission_tools(enabled: set[str] | None, mode: str) -> dict[str, str]:
-    """Permission mode → tools that need approval.
-
-    - ``read_only``: no approval, because writes/execution are rejected before
-      approval; read-only tools pass;
-    - ``approval_all``: every enabled tool is approved;
-    - ``workspace_write``: only command-execution tools are approved; file writes
-      inside the workspace need none;
-    - ``full_access``: no approval at all.
-    """
-    mode = (mode or "workspace_write").strip().lower()
-    if mode in {"full_access", "read_only"}:
-        return {}
-    names = set(TOOL_SPECS) if enabled is None else expand_enabled_names(enabled)
-    if mode == "approval_all":
-        allowed_risks = {RISK_READ, RISK_WRITE, RISK_EXEC}
-    else:
-        allowed_risks = {RISK_EXEC}
-    gated: dict[str, str] = {}
-    for name, spec in tuple(TOOL_SPECS.items()):
-        if name not in names or spec.risk not in allowed_risks:
-            continue
-        for tool_name in spec.tool_names:
-            gated[tool_name] = spec.risk
-    return gated
+def normalize_permission_mode(value: object, default: str = DEFAULT_PERMISSION_MODE) -> str:
+    """Normalize a stored or requested mode; legacy names map to their current equivalent."""
+    mode = str(value or "").strip().lower()
+    mode = LEGACY_PERMISSION_MODES.get(mode, mode)
+    return mode if mode in PERMISSION_MODES else default
 
 
 class ApprovalPolicy:
-    """Decide whether approval is needed or the call must be hard-rejected, and keep the always-allow memo.
+    """Evaluate rules and capabilities, remember session grants, and block hardline commands.
 
     ``memo`` is owned by the caller (per session on the web side, in-process for the
-    CLI), so the same grants are reused across turns and SSE requests.
+    CLI), so the same grants are reused across turns and SSE requests. ``rules`` are
+    the user's allow/ask/deny rules; ``project_rules`` are workspace rules that can
+    only restrict.
     """
 
     def __init__(
         self,
-        gated: Mapping[str, str],
-        memo: dict[str, dict] | None = None,
         *,
-        mode: str = "workspace_write",
-        risks: Mapping[str, str] | None = None,
+        mode: str = DEFAULT_PERMISSION_MODE,
+        memo: dict[str, dict] | None = None,
+        rules: PermissionRuleset | None = None,
+        project_rules: PermissionRuleset | None = None,
+        config: PermissionConfig | None = None,
+        prompts_enabled: bool = True,
+        shell: str = "",
     ) -> None:
-        self.gated = dict(gated)
         self.memo: dict[str, dict] = memo if memo is not None else {}
-        self.mode = (mode or "workspace_write").strip().lower()
-        self.risks = dict(risks or {})
+        self.mode = normalize_permission_mode(mode)
+        self.rules = rules or PermissionRuleset()
+        self.project_rules = project_rules or PermissionRuleset()
+        self.config = config or PermissionConfig()
+        #: Shell dialect used to classify commands as read-only (POSIX shells only).
+        self.shell = str(shell or "")
+        # ``APPROVAL_ENABLED=false`` removes the human channel. Mode/capability asks then
+        # pass (there is nobody to ask), but an explicit ask rule fails closed instead of
+        # silently turning into an allow.
+        self.prompts_enabled = prompts_enabled
 
-    def needs_approval(self, tool: str) -> bool:
-        return tool in self.gated
+    def capability(self, tool: str) -> dict:
+        return capability_for(tool_name=tool)
 
     def risk_of(self, tool: str) -> str:
-        return self.risks.get(tool) or self.gated.get(tool) or "read"
+        """Legacy read/write/exec risk used by the approval card."""
+        entry = entry_for_tool(tool)
+        spec = TOOL_SPECS.get(entry) if entry else None
+        if spec is not None:
+            return spec.risk
+        capability = self.capability(tool)
+        if capability.get("read_only"):
+            return "read"
+        if capability.get("side_effect_scope") in {"system", "git"}:
+            return "exec"
+        return "write"
+
+    def evaluate(self, tool: str, args: Mapping) -> PermissionDecision:
+        """Full decision including remembered session grants (but never overriding rules/plan)."""
+        decision = evaluate(
+            tool,
+            args,
+            mode=self.mode,
+            rules=self.rules,
+            project_rules=self.project_rules,
+            config=self.config,
+            shell=self.shell,
+        )
+        if decision.behavior == ASK:
+            if decision.session_grant_allowed and self.is_allowed(tool, args):
+                return replace(
+                    decision,
+                    behavior=ALLOW,
+                    rule_id="rule.session_allow",
+                    reason=f"{tool} was allowed for this session",
+                )
+            if not self.prompts_enabled:
+                if decision.session_grant_allowed:
+                    return replace(
+                        decision,
+                        behavior=ALLOW,
+                        rule_id="mode.approval_disabled",
+                        reason="Approval prompts are disabled for this runtime",
+                    )
+                return replace(
+                    decision,
+                    behavior=DENY,
+                    code="denied_by_rule",
+                    reason=f"{tool} requires approval, but approval prompts are disabled",
+                )
+        return decision
+
+    def needs_approval(self, tool: str, args: Mapping | None = None) -> bool:
+        """Whether this call would ask a human (after session grants)."""
+        return self.evaluate(tool, args or {}).behavior == ASK
 
     def precheck(self, tool: str, args: Mapping) -> tuple[str, str, str] | None:
         """Hard check before approval; a returned ``(code, message, hint)`` means the call must be blocked."""
-        if self.mode == "read_only" and self.risk_of(tool) in {RISK_WRITE, RISK_EXEC}:
-            return (
-                "read_only",
-                f"The session is in read-only mode, so `{tool}` is rejected: it would modify files or run commands.",
-                "Switch to full approval or a broader permission mode first, or use read-only tools to inspect the current state.",
-            )
-
         command = args.get("command") if isinstance(args, Mapping) else None
         if command is None:
             return None
@@ -343,7 +368,7 @@ class ApprovalPolicy:
         return f"{prefix}:{target}"
 
     def is_allowed(self, tool: str, args: Mapping) -> bool:
-        return self.needs_approval(tool) and self.key(tool, args) in self.memo
+        return self.key(tool, args) in self.memo
 
     def remember(self, tool: str, args: Mapping) -> str:
         key = self.key(tool, args)
@@ -417,10 +442,18 @@ class ApprovalMiddleware(AgentMiddleware):
             logger.warning("blocked tool call %s: [%s] %s", name, code, message)
             return policy_blocked_message(call, code, message, hint)
 
-        if not self.gate.policy.needs_approval(name):
+        decision = self.gate.policy.evaluate(name, args)
+        if decision.behavior == ALLOW:
             return None
-        if self.gate.policy.is_allowed(name, args):
-            return None
+        if decision.behavior == DENY:
+            code = decision.code or "blocked_by_policy"
+            logger.warning("denied tool call %s: [%s] %s", name, decision.rule_id, decision.reason)
+            return policy_blocked_message(
+                call,
+                code,
+                decision.reason or f"`{name}` is blocked by the current permission rules.",
+                "Do not retry the same call verbatim. Adjust the permission rules or mode first.",
+            )
 
         target, summary, preview = describe_call(name, args)
         command = args.get("command") if isinstance(args, Mapping) else None
@@ -509,18 +542,19 @@ def console_asker(request: ApprovalRequest) -> Decision:
 
 
 def gate_from(
-    enabled: set[str],
     memo: dict[str, dict] | None = None,
     *,
-    mode: str = "workspace_write",
+    mode: str = DEFAULT_PERMISSION_MODE,
+    rules: PermissionRuleset | None = None,
+    project_rules: PermissionRuleset | None = None,
 ) -> ApprovalGate:
-    """Build the CLI approval gate from the enabled entries."""
+    """Build the CLI approval gate."""
     return ApprovalGate(
         policy=ApprovalPolicy(
-            permission_tools(enabled, mode),
-            memo,
             mode=mode,
-            risks=tool_risks(enabled),
+            memo=memo,
+            rules=rules,
+            project_rules=project_rules,
         ),
         ask=console_asker,
     )

@@ -353,14 +353,6 @@ defineExpose({ validate, payload })
             v-model="form.base_url"
             :placeholder="providerTemplate.baseUrl || 'https://api.example.com/v1'"
           />
-          <button
-            type="button"
-            class="btn-outline"
-            :disabled="fetching"
-            @click="fetchUpstream"
-          >
-            {{ fetching ? '获取中…' : '从上游获取' }}
-          </button>
         </div>
       </label>
     </div>
@@ -368,7 +360,12 @@ defineExpose({ validate, payload })
     <div class="provider-models">
       <div class="provider-models-head">
         <div class="general-title">模型列表</div>
-        <button type="button" class="btn-outline" @click="addModel">＋ 添加模型</button>
+        <div class="provider-models-actions">
+          <button type="button" class="btn-outline" :disabled="fetching" @click="fetchUpstream">
+            {{ fetching ? '获取中…' : '从上游获取' }}
+          </button>
+          <button type="button" class="btn-outline" @click="addModel">＋ 添加模型</button>
+        </div>
       </div>
 
       <div class="provider-model-labels" aria-hidden="true">

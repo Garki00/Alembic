@@ -34,7 +34,7 @@ class PreferencesStoreTest(unittest.TestCase):
                 "theme": "light",
                 "transcript_view": "standard",
                 "collapse_timing": "completion",
-                "permission_mode": "workspace_write",
+                "permission_mode": "build",
                 "terminal": "powershell",
                 "link_target": "sidebar",
                 "developer_tools": False,
@@ -49,15 +49,36 @@ class PreferencesStoreTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.update({"theme": "neon"})
 
-    def test_legacy_read_only_migrates_to_approval_all(self):
+    def test_legacy_v1_read_only_migrates_to_build(self):
+        # v1 的 read_only 语义是「所有工具都要审批」，对应现在的 build。
         (self.tmp / "preferences.json").write_text(
             json.dumps({"permission_mode": "read_only"}), encoding="utf-8"
         )
-        self.assertEqual(self.store.get()["permission_mode"], "approval_all")
+        self.assertEqual(self.store.get()["permission_mode"], "build")
 
-    def test_new_read_only_is_kept(self):
-        self.store.update({"permission_mode": "read_only"})
-        self.assertEqual(self.store.get()["permission_mode"], "read_only")
+    def test_legacy_v2_modes_migrate_to_current_ones(self):
+        cases = {
+            "read_only": "plan",
+            "approval_all": "build",
+            "workspace_write": "build",
+            "full_access": "yolo",
+        }
+        for legacy, expected in cases.items():
+            (self.tmp / "preferences.json").write_text(
+                json.dumps({"version": 2, "permission_mode": legacy}), encoding="utf-8"
+            )
+            # 每次都用新实例读取：PreferencesStore 会缓存已加载的文件内容。
+            store = PreferencesStore(self.tmp / "preferences.json")
+            self.assertEqual(store.get()["permission_mode"], expected, legacy)
+
+    def test_new_modes_are_kept(self):
+        for mode in ("plan", "build", "edit", "yolo"):
+            self.store.update({"permission_mode": mode})
+            self.assertEqual(self.store.get()["permission_mode"], mode)
+
+    def test_legacy_alias_is_accepted_on_update(self):
+        updated = self.store.update({"permission_mode": "workspace_write"})
+        self.assertEqual(updated["permission_mode"], "build")
 
     def test_terminal_and_link_target(self):
         updated = self.store.update({"terminal": "gitbash", "link_target": "browser"})
@@ -78,12 +99,12 @@ class PreferencesStoreTest(unittest.TestCase):
             {
                 "transcript_view": "verbose",
                 "collapse_timing": "next_input",
-                "permission_mode": "full_access",
+                "permission_mode": "yolo",
                 "developer_tools": True,
             }
         )
         self.assertEqual(updated["transcript_view"], "verbose")
-        self.assertEqual(updated["permission_mode"], "full_access")
+        self.assertEqual(updated["permission_mode"], "yolo")
         self.assertTrue(updated["developer_tools"])
 
         reopened = PreferencesStore(self.tmp / "preferences.json")
@@ -136,7 +157,7 @@ class PreferencesApiTest(unittest.TestCase):
         data = self.client.get("/api/bootstrap").json()
         self.assertEqual(data["preferences"]["transcript_view"], "standard")
         self.assertEqual(data["preferences"]["collapse_timing"], "completion")
-        self.assertEqual(data["preferences"]["permission_mode"], "workspace_write")
+        self.assertEqual(data["preferences"]["permission_mode"], "build")
         self.assertFalse(data["preferences"]["developer_tools"])
 
     def test_get_and_put(self):

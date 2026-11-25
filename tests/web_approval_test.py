@@ -101,9 +101,13 @@ class SSEApprovalFlowTest(unittest.TestCase):
         self.tmp = make_tempdir()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.seen: list[str] = []
+        self.gate_modes: list[str] = []
 
         def factory(model_cfg, enabled_tools, workspace, **kwargs):
-            return ApprovalStubAgent(kwargs.get("approval"), self.seen), None
+            gate = kwargs.get("approval")
+            if gate is not None:
+                self.gate_modes.append(gate.policy.mode)
+            return ApprovalStubAgent(gate, self.seen), None
 
         self.app = create_app(
             data_dir=self.tmp / "data",
@@ -148,6 +152,36 @@ class SSEApprovalFlowTest(unittest.TestCase):
         self.assertTrue(approval.get("id"))
         # 决策传回了工具线程：模型看到的是 always，而不是拒绝
         self.assertIn("决策：always", done.get("text", ""))
+
+    def _stream_chat(self, payload: dict) -> None:
+        """Run one turn and deny any approval it asks for so the tool thread never blocks."""
+        with self.client.stream("POST", "/api/chat", json=payload) as response:
+            self.assertEqual(response.status_code, 200)
+            for event, data in _iter_events(response):
+                if event == "approval":
+                    self.client.post(f"/api/approvals/{data['id']}", json={"decision": "deny"})
+
+    def test_default_mode_comes_from_preferences(self):
+        self._stream_chat({"session_id": "mode-default", "message": "跑个命令"})
+        self.assertEqual(self.gate_modes, ["build"])
+
+    def test_per_turn_mode_overrides_preferences(self):
+        self._stream_chat(
+            {"session_id": "mode-plan", "message": "分析一下", "permission_mode": "plan"}
+        )
+        self.assertEqual(self.gate_modes, ["plan"])
+
+    def test_legacy_mode_name_is_accepted(self):
+        self._stream_chat(
+            {"session_id": "mode-legacy", "message": "跑个命令", "permission_mode": "full_access"}
+        )
+        self.assertEqual(self.gate_modes, ["yolo"])
+
+    def test_invalid_mode_returns_400(self):
+        response = self.client.post(
+            "/api/chat", json={"session_id": "mode-bad", "message": "x", "permission_mode": "root"}
+        )
+        self.assertEqual(response.status_code, 400)
 
     def test_unknown_request_returns_404(self):
         response = self.client.post("/api/approvals/no-such-id", json={"decision": "once"})

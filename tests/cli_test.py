@@ -206,7 +206,7 @@ class ApprovalCommandTest(unittest.TestCase):
 
     def test_lists_and_clears_remembered_approvals(self):
         with workspace_tempdir() as tmp:
-            policy = ApprovalPolicy({"write_file": "write"})
+            policy = ApprovalPolicy(mode="build")
             policy.remember("write_file", {"path": "a.txt", "content": "x"})
             cli = self._cli_with_policy(tmp, policy)
 
@@ -220,7 +220,7 @@ class ApprovalCommandTest(unittest.TestCase):
 
     def test_new_session_drops_approvals(self):
         with workspace_tempdir() as tmp:
-            policy = ApprovalPolicy({"write_file": "write"})
+            policy = ApprovalPolicy(mode="build")
             policy.remember("write_file", {"path": "a.txt", "content": "x"})
             cli = self._cli_with_policy(tmp, policy)
 

@@ -7,8 +7,10 @@ const props = withDefaults(
     anchor: HTMLElement | null
     width?: number
     height?: number
+    /** `right` opens beside the anchor; `top` opens above it, right-aligned. */
+    placement?: 'right' | 'top'
   }>(),
-  { width: 176, height: 196 },
+  { width: 176, height: 196, placement: 'right' },
 )
 
 const emit = defineEmits<{ (event: 'close'): void }>()
@@ -22,11 +24,24 @@ function place(): void {
   if (!anchor) return
   const rect = anchor.getBoundingClientRect()
   const gap = 8
+  const maxTop = window.innerHeight - props.height - 8
+  if (props.placement === 'top') {
+    const maxLeft = window.innerWidth - props.width - 8
+    const left = Math.max(8, Math.min(rect.right - props.width, maxLeft))
+    // Prefer above the anchor; fall back to below when there is not enough room.
+    let top = rect.top - props.height - gap
+    if (top < 8) top = Math.max(8, Math.min(rect.bottom + gap, maxTop))
+    style.value = {
+      left: `${left}px`,
+      top: `${top}px`,
+      width: `${props.width}px`,
+    }
+    return
+  }
   const maxLeft = window.innerWidth - props.width - 8
   let left = rect.right + gap
   if (left > maxLeft) left = Math.max(8, rect.left - props.width - gap)
   let top = rect.top
-  const maxTop = window.innerHeight - props.height - 8
   if (top > maxTop) top = Math.max(8, maxTop)
   style.value = {
     left: `${left}px`,

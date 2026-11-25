@@ -8,6 +8,7 @@ import type {
   CompactData,
   HistoryData,
   HistoryMessage,
+  PermissionMode,
   ProcessInfo,
   QuestionRequest,
   TodoItem,
@@ -388,6 +389,9 @@ export const useChatStore = defineStore('chat', {
     liveSessions: {} as Record<string, LiveSession>,
     // 侧栏状态图标
     sessionStatus: {} as Record<string, SessionStatus>,
+    // 当前会话的权限模式；随请求发送，切回历史会话时恢复该会话自己的选择
+    permissionMode: 'build' as PermissionMode,
+    sessionModes: {} as Record<string, PermissionMode>,
   }),
 
   getters: {
@@ -648,6 +652,18 @@ export const useChatStore = defineStore('chat', {
       if (this.sessionId === sessionId) this.bump()
     },
 
+    /** 切换当前会话的权限模式；同一会话后续消息沿用该选择。 */
+    setPermissionMode(mode: PermissionMode): void {
+      this.permissionMode = mode
+      if (this.sessionId) this.sessionModes[this.sessionId] = mode
+    },
+
+    /** 进入会话时恢复该会话自己的模式；没选过就用设置里的默认值。 */
+    restorePermissionMode(fallback: PermissionMode): void {
+      const saved = this.sessionId ? this.sessionModes[this.sessionId] : undefined
+      this.permissionMode = saved ?? fallback
+    },
+
     async newSession(workspaceId: string): Promise<void> {
       this.stopStreamOnly()
       activeStream += 1
@@ -790,6 +806,7 @@ export const useChatStore = defineStore('chat', {
             internal: Boolean(options.internal),
             process_id: options.processId || '',
             subagent_id: options.subagentId || '',
+            permission_mode: this.permissionMode,
           },
           (event, data) => {
             if (!isCurrent()) return
@@ -799,6 +816,8 @@ export const useChatStore = defineStore('chat', {
                 if (!this.sessionId && sid) {
                   this.sessionId = sid
                   this.draftWorkspaceId = null
+                  // 草稿发出后服务端才分配会话 ID：把当前模式记到该会话名下
+                  this.sessionModes[sid] = this.permissionMode
                 }
                 if (sid) this.runningSessionId = sid
                 break

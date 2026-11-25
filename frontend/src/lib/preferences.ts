@@ -37,24 +37,24 @@ export const PERMISSION_MODES: Array<{
   hint: string
 }> = [
   {
-    value: 'read_only',
-    label: '只读',
-    hint: '只能读取，不能写入或执行命令',
+    value: 'plan',
+    label: '计划',
+    hint: '只分析与检索，写入和命令会被拒绝',
   },
   {
-    value: 'approval_all',
-    label: '全部审批',
-    hint: '每次工具调用都要审批',
+    value: 'build',
+    label: '构建',
+    hint: '常规写入和有副作用的工具需要审批',
   },
   {
-    value: 'workspace_write',
-    label: '工作区内修改',
-    hint: '工作区内写入免审批，执行命令需审批',
+    value: 'edit',
+    label: '编辑',
+    hint: '工作区文件编辑免审批，命令仍需审批',
   },
   {
-    value: 'full_access',
-    label: '完全权限',
-    hint: '全部免审批，高危命令仍会拦截',
+    value: 'yolo',
+    label: '免审批',
+    hint: '普通工具跳过审批，高危命令仍会拦截',
   },
 ]
 

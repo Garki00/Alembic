@@ -3,13 +3,13 @@
 import unittest
 from unittest.mock import patch
 
-from agents.approval import gated_tools, permission_tools, tool_risks
+from agents.permission_service import evaluate
 from prompts.system import build_system_prompt
 from tools.catalog import (
     BASIC_TOOLS, ToolActivation, enabled_tool_names, extended_tool_names,
     search_extended, visible_tool_names,
 )
-from tools.registry import TOOL_SPECS, ToolSpec
+from tools.registry import TOOL_SPECS, ToolSpec, capability_for
 
 
 class DynamicCatalogTest(unittest.TestCase):
@@ -28,7 +28,7 @@ class DynamicCatalogTest(unittest.TestCase):
             active.activate({name})
             self.assertIn(name, visible_tool_names(enabled, active))
             self.assertEqual(search_extended("quasar", enabled, active.snapshot(), 3), [])
-            self.assertEqual(gated_tools({name}), {name: "exec"})
+            self.assertEqual(evaluate(name, {}, mode="build").behavior, "ask")
         self.assertNotIn(name, extended_tool_names())
         self.assertNotIn(name, visible_tool_names(enabled, active))
 
@@ -43,9 +43,9 @@ class DynamicCatalogTest(unittest.TestCase):
 
     def test_legacy_groups_expand_in_catalog_and_approval(self):
         self.assertIn("write_file", enabled_tool_names({"file_write"}))
-        self.assertEqual(gated_tools({"file_write"})["write_file"], "write")
-        self.assertEqual(tool_risks({"file_write"})["write_file"], "write")
-        self.assertEqual(permission_tools({"file_write"}, "approval_all")["write_file"], "write")
+        self.assertFalse(capability_for(tool_name="write_file")["read_only"])
+        self.assertEqual(evaluate("write_file", {"path": "a.txt"}, mode="build").behavior, "ask")
+        self.assertEqual(evaluate("write_file", {"path": "a.txt"}, mode="edit").behavior, "allow")
 
 
 class RuntimeExtensionsTest(unittest.TestCase):

@@ -55,6 +55,8 @@ _ROLE_NAMES = {
     "system": "系统",
 }
 
+_MODE_LABELS = {"plan": "计划", "build": "构建", "edit": "编辑", "yolo": "免审批"}
+
 
 def _truncate(text: str, limit: int = 300) -> str:
     text = " ".join(str(text).split())
@@ -144,13 +146,15 @@ class ChatCLI:
             if isinstance(hit, (int, float))
             else "；缓存命中 未知（提供方未上报）"
         )
+        mode = getattr(self.approval, "mode", "") if self.approval is not None else ""
+        mode_text = f"，权限模式 {_MODE_LABELS.get(mode, mode)}" if mode else "，审批未启用"
         return (
             f"[会话 {stats['session_id']}] 已完成 {stats['turns']} 轮，"
             f"历史 {stats['messages']} 条消息，约 {stats['tokens']} tokens（{source}）；"
             f"压缩阈值 {stats['max_tokens']} tokens，逐字保留 {stats['retain_tokens']} tokens"
             f"（窗口 {stats['model_context_window']}，输出预留 {stats['output_reserve_tokens']}，"
             f"余量 {stats['headroom_tokens']}）"
-            f"{cache}"
+            f"{cache}{mode_text}"
         )
 
     def _print_trace(self, result: TurnResult) -> None:

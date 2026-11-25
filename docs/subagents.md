@@ -52,7 +52,7 @@ name: reviewer
 description: 审查改动并给出风险清单
 tools: read_file, search_files, find_files, git_diff
 disallowedTools: run_command
-permissionMode: read_only
+permissionMode: plan
 model: your-model-id
 thinking: high
 injectContext: true
@@ -70,7 +70,7 @@ background: false
 | `disallowedTools` | 在继承结果上再移除的工具 |
 | `model` | 模型 id、显示名或上游 model id；显式填写但无法解析时任务失败，不会改用父模型 |
 | `thinking` | `none` / `low` / `high` / `max`；必须是该模型声明的推理档位，`none` 始终允许 |
-| `permissionMode` | 只能收紧：`read_only` / `approval_all` / `workspace_write` / `full_access` |
+| `permissionMode` | 只能收紧：`plan` / `build` / `edit` / `yolo`（从严格到宽松）；旧值 `read_only` / `approval_all` / `workspace_write` / `full_access` 会按 `plan` / `build` / `build` / `yolo` 迁移 |
 | `injectContext` | 是否注入项目上下文文件，默认 `true` |
 | `background` | 默认在后台运行 |
 
@@ -79,7 +79,7 @@ background: false
 - **模型**：省略 `model` 时继承父轮模型；显式 `model` 必须解析成功，否则任务以 `subagent_model_unavailable` 失败。省略 `thinking` 时沿用该模型已保存的档位；显式档位不受支持时以 `subagent_thinking_unavailable` 失败，不降级运行。
 - **模型请求准入**：同一父会话的所有子代理共享一条独立的 FIFO 准入队列；并发模型请求数不超过 `MAX_CONCURRENT_SUBAGENT_MODEL_REQUESTS`（默认 2），超出的请求按到达顺序等待，等待期间会响应任务取消。
 - **工具**：子代理只拿到父会话**当前可见**工具与 profile 工具面的交集，再去掉委派工具。
-- **权限**：子代理共享父会话的审批策略、`始终允许` 记录与权限模式；profile 只能把模式改得更严。
+- **权限**：子代理共享父会话的审批策略、`始终允许` 记录、用户权限规则、工作区项目规则与权限模式；profile 只能把模式改得更严，不能改写规则。
 - **审批**：前台子代理的审批回执进入当前对话；后台子代理在对话轮结束后使用独立的审批条，仍通过 `POST /api/approvals/{id}` 回执，超时按拒绝处理。
 - **取消**：父轮取消会终止子代理；`POST /api/subagents/{id}/stop` 单独停止一个子代理。两者都会让子代理内部的命令按进程树结束。
 - **上下文**：子代理会话独立持久化在 `<memory>/subagents/<父会话>/`，不进入会话列表；压缩、用量与工具输出预算与主会话同一套实现。

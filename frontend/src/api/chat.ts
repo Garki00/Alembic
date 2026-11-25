@@ -8,6 +8,8 @@ export interface ChatPayload {
   internal?: boolean
   process_id?: string
   subagent_id?: string
+  /** Per-turn permission mode; omitted means the saved preference. */
+  permission_mode?: string
 }
 
 export type ChatEventHandler = (event: string, data: Record<string, unknown>) => void
@@ -34,6 +36,7 @@ export async function streamChat(
       internal: Boolean(payload.internal),
       process_id: payload.process_id || '',
       subagent_id: payload.subagent_id || '',
+      permission_mode: payload.permission_mode || '',
     }),
     signal,
   })

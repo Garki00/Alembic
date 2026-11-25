@@ -72,12 +72,6 @@ const subagentModelOptions = computed(() => {
   return options
 })
 
-function subagentModelHint(key: string): string {
-  const value = preferences.value.subagent_models?.[key] || ''
-  if (!value) return '继承当前模型'
-  return subagentModelOptions.value.find((item) => item.value === value)?.label || value
-}
-
 async function setSubagentModel(key: string, event: Event): Promise<void> {
   const element = event.target as HTMLSelectElement
   const value = element.value
@@ -127,9 +121,9 @@ async function setTiming(event: Event): Promise<void> {
 async function setPermission(event: Event): Promise<void> {
   const element = event.target as HTMLSelectElement
   const value = element.value as PermissionMode
-  if (value === 'full_access' && store.preferences.permission_mode !== 'full_access') {
+  if (value === 'yolo' && store.preferences.permission_mode !== 'yolo') {
     const confirmed = window.confirm(
-      '完全权限会让 Agent 无需审批执行所有工具和命令。确认切换吗？',
+      '免审批模式会让 Agent 无需审批执行普通工具和命令。确认切换吗？',
     )
     if (!confirmed) {
       element.value = store.preferences.permission_mode
@@ -253,7 +247,6 @@ async function setCompaction(event: Event): Promise<void> {
                 {{ item.label }}
               </option>
             </select>
-            <div class="general-hint">{{ subagentModelHint('general-purpose') }}</div>
           </div>
         </div>
 
@@ -273,7 +266,6 @@ async function setCompaction(event: Event): Promise<void> {
                 {{ item.label }}
               </option>
             </select>
-            <div class="general-hint">{{ subagentModelHint('Explore') }}</div>
           </div>
         </div>
       </div>
@@ -285,7 +277,7 @@ async function setCompaction(event: Event): Promise<void> {
         <div class="general-row">
           <div class="general-text">
             <div class="general-title">压缩选项</div>
-            <div class="general-desc">上下文超过预算时如何处理较早的对话</div>
+            <div class="general-desc">上下文压缩时的策略</div>
           </div>
           <div class="general-control">
             <select class="general-select" :value="compactionMode" @change="setCompaction">
@@ -342,7 +334,7 @@ async function setCompaction(event: Event): Promise<void> {
         <div class="general-row">
           <div class="general-text">
             <div class="general-title">外观</div>
-            <div class="general-desc">界面配色；跟随系统会随系统深浅色自动切换</div>
+            <div class="general-desc">界面配色</div>
           </div>
           <div class="general-control">
             <select class="general-select" :value="preferences.theme || 'light'" @change="setTheme">
@@ -350,9 +342,6 @@ async function setCompaction(event: Event): Promise<void> {
                 {{ theme.label }}
               </option>
             </select>
-            <div class="general-hint">
-              {{ THEMES.find((theme) => theme.value === (preferences.theme || 'light'))?.hint }}
-            </div>
           </div>
         </div>
 
