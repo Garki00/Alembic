@@ -23,13 +23,18 @@
     right: 0;
     bottom: 0;
     display: flex;
-    justify-content: center;
+    flex-direction: column;
+    align-items: center;
     pointer-events: none;
     z-index: 30;
 }
 
 .composer-dock > * {
     pointer-events: auto;
+}
+
+.composer-dock .composer {
+    align-self: center;
 }
 
 .composer {

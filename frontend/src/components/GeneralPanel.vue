@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type {
   CollapseTiming,
   LinkTarget,
@@ -178,12 +178,48 @@ async function setCompaction(event: Event): Promise<void> {
     element.value = store.preferences.compact_keep_first_turn ? 'keep_first_turn' : 'default'
   }
 }
+
+const systemPrompt = ref('')
+watch(
+  () => preferences.value.custom_system_prompt,
+  (value) => { systemPrompt.value = value || '' },
+  { immediate: true },
+)
+
+async function saveSystemPrompt(): Promise<void> {
+  const value = systemPrompt.value
+  if (value === (preferences.value.custom_system_prompt || '')) return
+  if (!(await save({ custom_system_prompt: value }, '系统提示词已更新'))) {
+    systemPrompt.value = preferences.value.custom_system_prompt || ''
+  }
+}
 </script>
 
 <template>
   <section class="tab-panel" id="tab-general">
     <div class="panel-head">
       <p class="muted">设置保存在本机，重启后仍然生效。</p>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-title">对话</div>
+      <div class="general-list">
+        <div class="general-row general-row-stack">
+          <div class="general-text">
+            <div class="general-title">系统提示词</div>
+            <div class="general-desc">替换默认的身份说明，留空恢复</div>
+          </div>
+          <div class="general-control general-control-wide">
+            <textarea
+              v-model="systemPrompt"
+              class="general-textarea"
+              rows="7"
+              placeholder="留空使用默认身份"
+              @blur="saveSystemPrompt"
+            ></textarea>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="settings-group">

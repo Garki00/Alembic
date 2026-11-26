@@ -27,8 +27,14 @@ from agents.context import ChatSession, SessionStore
 from agents.react import ReActAgent
 from agents.subagents.admission import ModelAdmissionMiddleware, ModelRequestAdmission
 from config.settings import settings
-from prompts.system import build_system_prompt
-from tools.model_view import with_compact_descriptions
+from prompts.builder import build_system_prompt
+from tools.catalog import (
+    TOOL_SEARCH_NAME,
+    ToolActivation,
+    build_contracts,
+    resolve_exposure,
+    turn_disallowed_tools,
+)
 from tools.registry import build_tools
 
 logger = logging.getLogger(__name__)
@@ -177,6 +183,10 @@ def build_child_agent(
     engine: str | None = None,
     admission: ModelRequestAdmission | None = None,
     admission_cancel: Any = None,
+    contracts: Sequence[Any] = (),
+    exposure: Any = None,
+    activation: Any = None,
+    turn_disallowed: Sequence[str] = (),
 ):
     """Assemble the child agent and its compaction summarizer.
 
@@ -190,21 +200,38 @@ def build_child_agent(
         engine: ``tool_calling`` or ``react``; defaults to the runtime setting.
         admission: Optional per-parent-session model request gate.
         admission_cancel: Cancellation event observed while waiting for a slot.
+        contracts: Model-facing tool contracts for the child tool set.
+        exposure: Pre-resolved exposure for the child request.
+        activation: Child discovery state for deferred tools.
+        turn_disallowed: Tools that cannot run in the child runtime.
 
     Returns:
         ``(agent, summarizer)`` compatible with :class:`ChatSession`.
     """
     resolved_engine = (engine or settings.agent_engine).strip().lower()
-    model_tools = with_compact_descriptions(list(tools))
+    model_tools = list(tools)
     model_limit = int(max_model_calls or settings.subagent_max_model_calls)
     tool_limit = int(max_tool_calls or settings.subagent_max_tool_calls)
+    if exposure is None:
+        exposure = resolve_exposure(
+            contracts or build_contracts(model_tools),
+            activation,
+            turn_disallowed=turn_disallowed,
+            search_enabled=any(
+                str(getattr(tool, "name", "") or "") == TOOL_SEARCH_NAME for tool in model_tools
+            ),
+        )
 
     if resolved_engine == "react":
         agent = ReActAgent(
             model,
-            list(tools),
+            model_tools,
             system_prompt,
             approval=approval,
+            activation=activation,
+            basic_names=[name for name in exposure.visible if name not in exposure.controls],
+            extended_names=sorted(exposure.deferred),
+            meta_names=sorted(exposure.controls),
             max_model_calls=model_limit,
             max_tool_calls=tool_limit,
             model_max_retries=settings.model_max_retries,
@@ -220,6 +247,8 @@ def build_child_agent(
         )
         return agent, summarizer
 
+    from agents.tool_exposure import ToolExposureMiddleware
+
     middleware = [ModelRetryMiddleware(max_retries=settings.model_max_retries)]
     if admission is not None:
         middleware.append(ModelAdmissionMiddleware(admission, admission_cancel))
@@ -227,6 +256,13 @@ def build_child_agent(
         [
             ModelCallLimitMiddleware(run_limit=model_limit, exit_behavior="end"),
             ToolCallLimitMiddleware(run_limit=tool_limit, exit_behavior="continue"),
+            ToolExposureMiddleware(
+                contracts=contracts or build_contracts(model_tools),
+                exposure=exposure,
+                activation=activation,
+                tools=model_tools,
+                turn_disallowed=turn_disallowed,
+            ),
         ]
     )
     if approval is not None:
@@ -240,7 +276,11 @@ def build_child_agent(
     summarizer = PrefixSummarizer(
         model=model,
         system_prompt=system_prompt,
-        tools=lambda: model_tools,
+        tools=lambda: [
+            tool
+            for tool in model_tools
+            if str(getattr(tool, "name", "") or "") in exposure.visible
+        ],
         engine="tool_calling",
         max_tokens=settings.compact_summary_max_tokens or None,
     )
@@ -277,6 +317,8 @@ def build_child_system_prompt(
     surface: str,
     engine: str,
     project_context: str | None,
+    deferred_tools: Sequence[str] = (),
+    model: str = "",
 ) -> str:
     """Compose the child prompt from the shared base prompt and the profile."""
     from agents.subagents.prompts import build_subagent_system_prompt
@@ -284,9 +326,11 @@ def build_child_system_prompt(
     base = build_system_prompt(
         workspace,
         tools=set(tool_names),
+        deferred_tools=deferred_tools,
         terminal=terminal,
         surface=surface,
         engine=engine,
+        model=model,
         project_context=project_context,
     )
     return build_subagent_system_prompt(profile_prompt=profile_prompt, base_prompt=base)

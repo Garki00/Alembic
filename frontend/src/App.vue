@@ -13,6 +13,7 @@ import ProcessPanel from './components/ProcessPanel.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import SubagentApprovalBar from './components/SubagentApprovalBar.vue'
 import SubagentPanel from './components/SubagentPanel.vue'
+import TodoPanel from './components/TodoPanel.vue'
 import ToastHost from './components/ToastHost.vue'
 import WorkspaceModal from './components/WorkspaceModal.vue'
 import { errorMessage } from './api/client'
@@ -34,6 +35,7 @@ const subagents = useSubagentStore()
 const bootError = ref('')
 const mainEl = ref<HTMLElement | null>(null)
 const composerDock = ref<HTMLElement | null>(null)
+const inspectorOverlay = ref(false)
 let dockObserver: ResizeObserver | null = null
 let stopSystemThemeWatch: (() => void) | null = null
 
@@ -45,22 +47,18 @@ function clampLayout(): void {
   const viewport = window.innerWidth || document.documentElement.clientWidth
   if (!viewport) return
 
-  let sidebarWidth = ui.sidebarCollapsed ? 0 : ui.sidebarWidth
+  // Below 960px the left sidebar floats over the conversation instead of
+  // taking a grid column, so only the docked sidebar consumes layout width.
+  const sidebarFloats = window.matchMedia('(max-width: 960px)').matches
+  let sidebarWidth = ui.sidebarCollapsed || sidebarFloats ? 0 : ui.sidebarWidth
+  const available = viewport - sidebarWidth
+  const inspectorMin = inspector.open ? inspector.activeMinWidth : 0
+  inspectorOverlay.value = inspector.open && available < MIN_CHAT_WIDTH + inspectorMin
+  if (inspectorOverlay.value) return
+
   let inspectorWidth = inspector.open ? inspector.width : 0
   let overflow = sidebarWidth + inspectorWidth + MIN_CHAT_WIDTH - viewport
   if (overflow <= 0) return
-
-  // Below this width the subagent page overlays the conversation, so the grid
-  // columns do not compete for space.
-  if (
-    inspector.open
-    && inspector.activeTab?.kind === 'subagent'
-    && window.matchMedia('(max-width: 1400px)').matches
-  ) {
-    return
-  }
-
-  const inspectorMin = inspector.open ? inspector.activeMinWidth : MIN_CHAT_WIDTH
 
   if (inspector.open) {
     const target = Math.max(inspectorMin, inspectorWidth - overflow)
@@ -71,7 +69,7 @@ function clampLayout(): void {
     }
   }
 
-  if (overflow > 0 && !ui.sidebarCollapsed) {
+  if (overflow > 0 && !ui.sidebarCollapsed && !sidebarFloats) {
     const target = Math.max(SIDEBAR_MIN, sidebarWidth - overflow)
     if (target !== sidebarWidth) {
       ui.setSidebarWidth(target)
@@ -81,12 +79,6 @@ function clampLayout(): void {
   }
 
   if (overflow <= 0) return
-  if (inspector.open && inspectorMin >= MIN_CHAT_WIDTH) {
-    // A subagent page keeps the main conversation's minimum width; narrowing
-    // the window collapses the left sidebar and the inspector overlays instead.
-    if (!ui.sidebarCollapsed) ui.sidebarCollapsed = true
-    return
-  }
   if (inspector.open) {
     inspector.hide()
   } else if (!ui.sidebarCollapsed) {
@@ -242,7 +234,7 @@ onBeforeUnmount(() => {
         'sidebar-open': ui.sidebarOpen,
         'sidebar-collapsed': ui.sidebarCollapsed,
         'inspector-open': inspector.open,
-        'subagent-inspector': inspector.activeTab?.kind === 'subagent',
+        'inspector-overlay': inspectorOverlay,
       }"
       :style="{
         '--sidebar-width': `${ui.sidebarWidth}px`,
@@ -262,6 +254,7 @@ onBeforeUnmount(() => {
       <SubagentPanel v-if="subagents.panelOpen" />
       <ChatTranscript />
       <div ref="composerDock" class="composer-dock">
+        <TodoPanel v-if="chat.todos.length" :items="chat.todos" />
         <ChatComposer />
       </div>
     </main>

@@ -1245,6 +1245,17 @@ def normalize_subagent_models(value: Any) -> dict[str, str]:
     return result
 
 
+#: Upper bound for the user-provided system prompt body.
+MAX_CUSTOM_SYSTEM_PROMPT_CHARS = 20_000
+
+
+def normalize_custom_system_prompt(value: Any) -> str:
+    """Keep a user-provided identity body verbatim, bounded and NUL-free."""
+    if not isinstance(value, str):
+        return ""
+    return value.replace("\x00", "")[:MAX_CUSTOM_SYSTEM_PROMPT_CHARS]
+
+
 def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
     mode = str(data.get("transcript_view") or DEFAULT_TRANSCRIPT_VIEW).strip().lower()
     if mode not in TRANSCRIPT_VIEW_MODES:
@@ -1289,6 +1300,7 @@ def _normalize_preferences(data: Mapping[str, Any]) -> dict[str, Any]:
         "developer_tools": bool(developer),
         "compact_keep_first_turn": bool(keep_first),
         "subagent_models": normalize_subagent_models(data.get("subagent_models")),
+        "custom_system_prompt": normalize_custom_system_prompt(data.get("custom_system_prompt")),
     }
 
 
@@ -1316,6 +1328,7 @@ class PreferencesStore:
                     "developer_tools": False,
                     "compact_keep_first_turn": False,
                     "subagent_models": {},
+                    "custom_system_prompt": "",
                 }
             )
         )
@@ -1368,6 +1381,13 @@ class PreferencesStore:
             if not isinstance(value, Mapping):
                 raise ValueError("subagent_models 需要对象")
             current["subagent_models"] = normalize_subagent_models(value)
+        if "custom_system_prompt" in patch:
+            value = patch["custom_system_prompt"]
+            if not isinstance(value, str):
+                raise ValueError("custom_system_prompt 需要文本")
+            if len(value) > MAX_CUSTOM_SYSTEM_PROMPT_CHARS:
+                raise ValueError(f"系统提示词不能超过 {MAX_CUSTOM_SYSTEM_PROMPT_CHARS} 个字符")
+            current["custom_system_prompt"] = value.replace("\x00", "")
         payload = dict(current)
         payload["version"] = PREFERENCES_VERSION
         self.file.save(payload)

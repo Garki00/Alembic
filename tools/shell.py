@@ -35,6 +35,7 @@ from tools.env import build_child_env
 from tools.errors import tool_error, truncate
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
 from tools.sandbox.base import SandboxError, sandbox_unavailable
+from tools.spec import RISK_EXEC, ToolSpec
 from tools.terminals import (
     TERMINAL_CHOICES,
     TerminalUnavailable,
@@ -320,3 +321,20 @@ def build_shell_tools(ctx: ToolContext) -> list:
         return truncate("\n".join(lines), ctx.max_output_chars, keep_tail=True)
 
     return [run_command]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="run_command",
+        label="命令执行",
+        description="执行 shell 命令（测试、构建、脚本、Git）",
+        risk=RISK_EXEC,
+        tool_names=("run_command",),
+        builder=lambda _config, ctx: build_shell_tools(ctx),
+        capability={
+            "risk_level": "high",
+            "destructive": True,
+            "permission_name": "command",
+        },
+    ),
+)

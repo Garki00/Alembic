@@ -23,6 +23,7 @@ from pathlib import Path
 from langchain.tools import tool
 
 from tools.context import ToolContext
+from tools.spec import RISK_WRITE, ToolSpec
 from tools.errors import tool_error
 from tools.files import _check_read, _diff_stats, _mark_read, _protected_reason, _read_text
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
@@ -339,3 +340,16 @@ def build_patch_tools(ctx: ToolContext) -> list:
         return apply_patch_text(ctx, text)
 
     return [apply_patch]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="apply_patch",
+        label="补丁编辑",
+        description="用 unified diff 批量修改文件",
+        risk=RISK_WRITE,
+        tool_names=("apply_patch",),
+        builder=lambda _config, ctx: build_patch_tools(ctx),
+        capability={"permission_name": "edit"},
+    ),
+)

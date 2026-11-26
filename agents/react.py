@@ -45,6 +45,7 @@ from agents.approval import (
 from agents.compaction import is_checkpoint_text
 from agents.context import message_text
 from prompts.react import REACT_SYSTEM_PROMPT, build_react_prompt
+from tools.catalog import DEFERRED_TOOL_CALL_NAME
 from tools.command_policy import assess_command
 from tools.errors import tool_error, truncate
 
@@ -237,6 +238,7 @@ class ReActAgent:
         basic_names: Sequence[str] = (),
         extended_names: Sequence[str] = (),
         meta_names: Sequence[str] = (),
+        deferred_names: Sequence[str] = (),
         max_model_calls: int = 8,
         max_tool_calls: int = 15,
         model_max_retries: int = 2,
@@ -263,6 +265,7 @@ class ReActAgent:
         self.basic_names = frozenset(basic_names)
         self.extended_names = frozenset(extended_names)
         self.meta_names = frozenset(meta_names)
+        self.deferred_names = frozenset(deferred_names) or self.extended_names
         # Only catalog-managed agents hide tools; custom tool lists in tests or
         # embedding code remain fully visible.
         self._catalog_managed = bool(
@@ -294,8 +297,9 @@ class ReActAgent:
     def _visible_names(self) -> set[str]:
         if not self._catalog_managed:
             return set(self.tools_by_name)
-        active = self.activation.snapshot() if self.activation is not None else frozenset()
-        return set(self.basic_names | self.meta_names | (self.extended_names & active))
+        # Deferred schemas are never part of the prompt; the model loads them
+        # through the search control and executes them through the call control.
+        return set(self.basic_names | self.meta_names)
 
     def _visible_tools(self) -> list[Any]:
         names = self._visible_names()
@@ -335,6 +339,7 @@ class ReActAgent:
                 history=history,
                 question=question,
                 scratchpad=scratchpad,
+                deferred=self.deferred_names,
             )
             try:
                 response = self._ask_model(prompt)
@@ -417,11 +422,27 @@ class ReActAgent:
                 # show it as a work-step preview without polluting the answer.
                 yield ("thought", thought)
 
+            try:
+                args = parse_action_input(raw_input)
+            except ValueError as exc:
+                scratchpad += (
+                    f"Thought: {thought}\nAction: {name}\nAction Input: {raw_input}\n"
+                    f"Observation: {tool_error('bad_action_input', f'Invalid Action Input: {exc}', hint='Return one valid JSON object.')}\n"
+                )
+                continue
+
             tool = self.tools_by_name.get(name) or self.tools_by_name.get(name.lower())
+            if name in self.deferred_names and not self._is_visible(name):
+                hint = f'Call tools_search with "select:{name}" first, then call deferred_tool_call.'
+                scratchpad += (
+                    f"Thought: {thought}\nAction: {name}\nAction Input: {raw_input}\n"
+                    f"Observation: {tool_error('tool_not_loaded', f'Tool {name} is not loaded.', hint=hint)}\n"
+                )
+                continue
             if tool is not None and not self._is_visible(tool.name):
                 scratchpad += (
                     f"Thought: {thought}\nAction: {name}\nAction Input: {raw_input}\n"
-                    f"Observation: {tool_error('tool_not_activated', f'Tool {name} is not loaded.', hint='Call tools_search first; loaded tools are available immediately.')}\n"
+                    f"Observation: {tool_error('tool_unavailable_this_turn', f'Tool {name} cannot run in this turn.', hint='Choose another available tool.')}\n"
                 )
                 continue
             if tool is None:
@@ -432,14 +453,45 @@ class ReActAgent:
                 )
                 continue
 
-            try:
-                args = parse_action_input(raw_input)
-            except ValueError as exc:
-                scratchpad += (
-                    f"Thought: {thought}\nAction: {name}\nAction Input: {raw_input}\n"
-                    f"Observation: {tool_error('bad_action_input', f'Invalid Action Input: {exc}', hint='Return one valid JSON object.')}\n"
-                )
-                continue
+            exec_tool = tool
+            exec_name = tool.name
+            exec_args = args
+            if name == DEFERRED_TOOL_CALL_NAME:
+                inner_name = str(args.get("name") or "").strip()
+                inner_input = args.get("input")
+                if inner_input is None:
+                    inner_input = {}
+                if not inner_name:
+                    scratchpad += self._observation(thought, name, raw_input, tool_error("empty_tool_name", "name must not be empty."))
+                    continue
+                if not isinstance(inner_input, dict):
+                    scratchpad += self._observation(thought, name, raw_input, tool_error("bad_deferred_input", "input must be a JSON object."))
+                    continue
+                if inner_name not in self.deferred_names:
+                    scratchpad += self._observation(
+                        thought, name, raw_input,
+                        tool_error("not_a_deferred_tool", f"{inner_name} is not a deferred tool."),
+                    )
+                    continue
+                active = self.activation.snapshot() if self.activation is not None else frozenset()
+                if inner_name not in active:
+                    scratchpad += self._observation(
+                        thought, name, raw_input,
+                        tool_error(
+                            "schema_not_loaded",
+                            f"The schema of {inner_name} has not been loaded in this session.",
+                            hint=f'Call tools_search with "select:{inner_name}" first.',
+                        ),
+                    )
+                    continue
+                resolved = self.tools_by_name.get(inner_name)
+                if resolved is None:
+                    scratchpad += self._observation(
+                        thought, name, raw_input,
+                        tool_error("tool_unavailable", f"{inner_name} is not available."),
+                    )
+                    continue
+                exec_tool, exec_name, exec_args = resolved, inner_name, inner_input
 
             tool_calls += 1
             if tool_calls > self.max_tool_calls:
@@ -451,22 +503,29 @@ class ReActAgent:
                 return
 
             call_id = f"call_{_step}_{uuid4().hex[:6]}"
-            call = {"name": tool.name, "args": args, "id": call_id}
+            call = {"name": name, "args": args, "id": call_id}
             messages.append(AIMessage(content=thought, tool_calls=[call]))
             if emit:
                 yield ("values", {"messages": list(messages)})
 
-            blocked = self._gate_tool(tool.name, args, call_id)
+            blocked = self._gate_tool(exec_name, exec_args, call_id)
             if blocked is not None:
                 observation = message_text(blocked)
-                messages.append(blocked)
-            else:
-                observation = self._execute_tool(tool, args)
                 messages.append(
                     ToolMessage(
                         content=observation,
                         tool_call_id=call_id,
-                        name=tool.name,
+                        name=name,
+                        status="error",
+                    )
+                )
+            else:
+                observation = self._execute_tool(exec_tool, exec_args)
+                messages.append(
+                    ToolMessage(
+                        content=observation,
+                        tool_call_id=call_id,
+                        name=name,
                     )
                 )
             if emit:
@@ -474,7 +533,7 @@ class ReActAgent:
 
             scratchpad += (
                 f"Thought: {thought}\n"
-                f"Action: {tool.name}\n"
+                f"Action: {name}\n"
                 f"Action Input: {json.dumps(args, ensure_ascii=False)}\n"
                 f"Observation: {observation}\n"
             )
@@ -486,6 +545,13 @@ class ReActAgent:
         yield from self._finish(messages, final, emit)
 
     # ---- loop helpers ----
+    @staticmethod
+    def _observation(thought: str, name: str, raw_input: str, error: str) -> str:
+        return (
+            f"Thought: {thought}\nAction: {name}\nAction Input: {raw_input}\n"
+            f"Observation: {error}\n"
+        )
+
     def _finish(
         self,
         messages: list[BaseMessage],

@@ -40,6 +40,7 @@ class PreferencesStoreTest(unittest.TestCase):
                 "developer_tools": False,
                 "compact_keep_first_turn": False,
                 "subagent_models": {},
+                "custom_system_prompt": "",
             },
         )
 
@@ -48,6 +49,24 @@ class PreferencesStoreTest(unittest.TestCase):
         self.assertEqual(self.store.update({"theme": "system"})["theme"], "system")
         with self.assertRaises(ValueError):
             self.store.update({"theme": "neon"})
+
+    def test_custom_system_prompt_round_trip(self):
+        text = "# Identity\nYou are a release engineer."
+        updated = self.store.update({"custom_system_prompt": text})
+        self.assertEqual(updated["custom_system_prompt"], text)
+        self.assertEqual(
+            PreferencesStore(self.tmp / "preferences.json").get()["custom_system_prompt"],
+            text,
+        )
+        self.assertEqual(self.store.update({"custom_system_prompt": ""})["custom_system_prompt"], "")
+
+    def test_custom_system_prompt_rejects_bad_values(self):
+        with self.assertRaises(ValueError):
+            self.store.update({"custom_system_prompt": 3})
+        with self.assertRaises(ValueError):
+            self.store.update({"custom_system_prompt": "x" * 20_001})
+        cleaned = self.store.update({"custom_system_prompt": "a\x00b"})
+        self.assertEqual(cleaned["custom_system_prompt"], "ab")
 
     def test_legacy_v1_read_only_migrates_to_build(self):
         # v1 的 read_only 语义是「所有工具都要审批」，对应现在的 build。
@@ -188,6 +207,22 @@ class PreferencesApiTest(unittest.TestCase):
             response.json()["preferences"]["subagent_models"],
             {"general-purpose": "provider-1/model-1"},
         )
+
+    def test_custom_system_prompt_round_trip(self):
+        text = "# Identity\nYou are a release engineer."
+        response = self.client.put("/api/preferences", json={"custom_system_prompt": text})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["preferences"]["custom_system_prompt"], text)
+        self.assertEqual(
+            self.client.get("/api/preferences").json()["preferences"]["custom_system_prompt"],
+            text,
+        )
+
+    def test_custom_system_prompt_too_long_returns_400(self):
+        response = self.client.put(
+            "/api/preferences", json={"custom_system_prompt": "x" * 20_001}
+        )
+        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == "__main__":

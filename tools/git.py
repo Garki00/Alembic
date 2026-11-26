@@ -21,6 +21,7 @@ from tools.context import ToolContext
 from tools.env import build_child_env
 from tools.errors import tool_error, truncate
 from tools.paths import WorkspacePathError, resolve_in_workspace
+from tools.spec import RISK_EXEC, ToolSpec, single_tool
 
 
 class GitError(ValueError):
@@ -275,3 +276,39 @@ def build_git_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
     if only is None:
         return tools
     return [tool for tool in tools if tool.name in only]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="git_status", label="Git 状态", description="查看工作区状态",
+        tool_names=("git_status",),
+        builder=single_tool(lambda _config, ctx: build_git_tools(ctx), "git_status"),
+        defer=True,
+        search_hint="git status branch working tree 分支 工作区状态",
+    ),
+    ToolSpec(
+        name="git_diff", label="Git 差异", description="查看文件改动",
+        tool_names=("git_diff",),
+        builder=single_tool(lambda _config, ctx: build_git_tools(ctx), "git_diff"),
+        defer=True,
+        search_hint="git diff changes 差异 改动",
+    ),
+    ToolSpec(
+        name="git_commit",
+        label="Git 提交",
+        description="暂存并提交指定文件",
+        risk=RISK_EXEC,
+        tool_names=("git_commit",),
+        builder=single_tool(lambda _config, ctx: build_git_tools(ctx), "git_commit"),
+        capability={
+            "read_only": False,
+            "destructive": False,
+            "side_effect_scope": "git",
+            "risk_level": "medium",
+            "needs_approval": True,
+            "permission_name": "git",
+        },
+        defer=True,
+        search_hint="git commit stage 提交 暂存",
+    ),
+)

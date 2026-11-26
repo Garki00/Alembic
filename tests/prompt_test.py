@@ -1,24 +1,24 @@
 # tests/prompt_test.py
-"""Prompt assembly: surface split, conditional tools, context files, runtime."""
+"""Prompt assembly: fixed prefix, identity, rules, surface, runtime, context."""
 
 import shutil
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
+from prompts.builder import build_prompt
 from prompts.context import (
     MAX_CONTEXT_CHARS,
     load_project_context,
     render_project_context,
 )
-from prompts.system import (
-    SYSTEM_PROMPT,
-    build_system_prompt,
-)
+from prompts.sections.git_status import GitSnapshot
 
 TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
 NOW = datetime(2026, 11, 11, 9, 30, tzinfo=TZ)
+NO_GIT = GitSnapshot()
 
 
 def make_workspace() -> Path:
@@ -29,41 +29,61 @@ def make_workspace() -> Path:
     return path
 
 
-class SurfaceTest(unittest.TestCase):
-    def test_core_prompt_stays_compact(self):
-        self.assertLess(len(SYSTEM_PROMPT), 1500)
+def build(**kwargs):
+    kwargs.setdefault("now", NOW)
+    kwargs.setdefault("tools", set())
+    kwargs.setdefault("git_snapshot", NO_GIT)
+    return build_prompt(**kwargs)
 
-    def test_web_and_cli_hints_differ(self):
-        web = build_system_prompt(now=NOW, surface="web", tools=set())
-        cli = build_system_prompt(now=NOW, surface="cli", tools=set())
-        self.assertIn("replying in the web chat", web)
-        self.assertIn("replying in a terminal", cli)
-        self.assertNotIn("replying in the web chat", cli)
-        self.assertNotIn("You are Alembic", web)
 
-    def test_web_prompt_never_mentions_desktop_or_electron(self):
-        prompt = build_system_prompt(now=NOW, surface="web", tools=set()).lower()
-        self.assertNotIn("desktop", prompt)
-        self.assertNotIn("electron", prompt)
+class CompositionTest(unittest.TestCase):
+    def test_prefix_is_the_first_section(self):
+        prompt = build()
+        self.assertTrue(prompt.system.startswith("You are a local interactive workspace agent."))
+        self.assertEqual(prompt.sections[0].source, "cli_prefix")
 
-    def test_unknown_surface_falls_back_to_web(self):
-        prompt = build_system_prompt(now=NOW, surface="mobile", tools=set())
-        self.assertIn("replying in the web chat", prompt)
+    def test_stable_sections_precede_dynamic_sections(self):
+        prompt = build(tools={"read_file"})
+        hints = [section.cache_hint for section in prompt.sections]
+        self.assertEqual(hints, sorted(hints, key=lambda item: 0 if item == "stable" else 1))
+
+    def test_default_identity_and_security_notice(self):
+        prompt = build()
+        self.assertIn("# Identity", prompt.system)
+        self.assertIn("using your own judgment", prompt.system)
+        self.assertIn("IMPORTANT: Assist with authorized security testing", prompt.system)
+
+    def test_custom_prompt_replaces_the_identity_body(self):
+        prompt = build(custom_prompt="You are a release engineer. Be terse.")
+        self.assertIn("You are a local interactive workspace agent.", prompt.system)
+        self.assertIn("You are a release engineer. Be terse.", prompt.system)
+        self.assertNotIn("using your own judgment", prompt.system)
+        self.assertEqual(prompt.sections[1].source, "custom_system_prompt")
+
+    def test_surface_changes_the_interface_section(self):
+        web = build(surface="web").system
+        cli = build(surface="cli").system
+        self.assertIn("GitHub-flavored Markdown", web)
+        self.assertIn("running in a terminal", cli)
+        self.assertNotIn("GitHub-flavored Markdown", cli)
+        self.assertIn("GitHub-flavored Markdown", build(surface="mobile").system)
 
 
 class ToolRulesTest(unittest.TestCase):
     def test_tool_rules_only_name_available_tools(self):
-        prompt = build_system_prompt(now=NOW, tools={"read_file"})
-        self.assertIn("Read the relevant files", prompt)
-        self.assertNotIn("todo_write", prompt)
-        self.assertNotIn("run_command", prompt)
-        self.assertNotIn("git_status", prompt)
+        prompt = build(tools={"read_file"})
+        guidance = next(
+            section.content for section in prompt.sections if section.source == "tool_guidance"
+        )
+        self.assertIn("Read the relevant files", guidance)
+        self.assertNotIn("todo_write", guidance)
+        self.assertNotIn("run_command", guidance)
+        self.assertNotIn("git_status", guidance)
 
     def test_tool_rules_include_present_tools(self):
-        prompt = build_system_prompt(
-            now=NOW,
-            tools={"read_file", "write_file", "run_command", "todo_write", "git_status"},
-        )
+        prompt = build(
+            tools={"read_file", "write_file", "run_command", "todo_write", "git_status"}
+        ).system
         self.assertIn("Read before overwriting", prompt)
         self.assertIn("Prefer file tools for reading and editing files", prompt)
         self.assertIn("as a fallback", prompt)
@@ -72,54 +92,88 @@ class ToolRulesTest(unittest.TestCase):
         self.assertIn("Inspect Git state", prompt)
 
     def test_no_tools_states_the_limit(self):
-        prompt = build_system_prompt(now=NOW, tools=set())
-        self.assertIn("No tools are available", prompt)
-
-    def test_tools_search_guidance(self):
-        prompt = build_system_prompt(now=NOW, tools={"read_file", "tools_search"})
-        self.assertIn("Extended tools are hidden", prompt)
-        self.assertIn("tools_search", prompt)
-        self.assertIn("same turn", prompt)
+        self.assertIn("No tools are available", build(tools=set()).system)
 
     def test_missing_tool_list_omits_the_section(self):
-        prompt = build_system_prompt(now=NOW, tools=None)
-        self.assertNotIn("# Tools", prompt)
+        prompt = build(tools=None)
+        self.assertNotIn("# Tool guidance", prompt.system)
+
+    def test_deferred_tools_are_announced_without_schemas(self):
+        prompt = build(tools={"read_file", "tools_search"}, deferred_tools={"git_status"}).system
+        self.assertIn("## Deferred tools", prompt)
+        self.assertIn("- git_status", prompt)
+        self.assertIn("deferred_tool_call", prompt)
 
 
 class GuidanceTest(unittest.TestCase):
     def test_execution_discipline_is_universal(self):
         for tools in (set(), {"read_file"}, {"run_command"}):
-            prompt = build_system_prompt(now=NOW, tools=tools)
+            prompt = build(tools=tools).system
             self.assertIn("# Execution discipline", prompt)
             self.assertIn("Do not stop after a plan", prompt)
 
     def test_parallel_guidance_only_for_tool_calling(self):
-        calling = build_system_prompt(now=NOW, tools={"read_file"}, engine="tool_calling")
-        react = build_system_prompt(now=NOW, tools={"read_file"}, engine="react")
+        calling = build(tools={"read_file"}, engine="tool_calling").system
+        react = build(tools={"read_file"}, engine="react").system
         self.assertIn("# Parallel tool calls", calling)
         self.assertNotIn("# Parallel tool calls", react)
         self.assertIn("# Execution discipline", react)
 
-    def test_runtime_block_has_date_terminal_and_workspace(self):
-        prompt = build_system_prompt(
-            now=NOW,
-            tools=set(),
+    def test_environment_has_time_terminal_and_workspace(self):
+        prompt = build(
             workspace=r"D:\Garki\alembic",
             terminal="gitbash",
-        )
-        self.assertIn("Date: 2026-11-11 (UTC+08:00)", prompt)
-        self.assertIn("Preferred terminal: Git Bash", prompt)
-        self.assertIn(r"Workspace: D:\Garki\alembic", prompt)
+            model="deepseek/deepseek-chat",
+        ).system
+        self.assertIn("Current time: 2026-11-11 09:30 (UTC+08:00)", prompt)
+        self.assertIn("Shell: Git Bash", prompt)
+        self.assertIn(r"Primary working directory: D:\Garki\alembic", prompt)
+        self.assertIn("Current model: deepseek/deepseek-chat", prompt)
+        self.assertIn("Is a git repository: false", prompt)
 
-    def test_git_branch_is_read_without_running_git(self):
-        workspace = make_workspace()
-        self.addCleanup(shutil.rmtree, workspace, ignore_errors=True)
-        (workspace / ".git").mkdir()
-        (workspace / ".git" / "HEAD").write_text(
-            "ref: refs/heads/main\n", encoding="utf-8"
+
+class GitStatusTest(unittest.TestCase):
+    def test_non_repository_omits_the_section(self):
+        prompt = build()
+        self.assertNotIn("# gitStatus", prompt.system)
+
+    def test_snapshot_renders_branch_user_status_and_commits(self):
+        snapshot = GitSnapshot(
+            is_repo=True,
+            branch="main",
+            main_branch="main",
+            user="Dev <dev@example.com>",
+            status=" M app.py",
+            recent_commits=("abc123 first", "def456 second"),
         )
-        prompt = build_system_prompt(now=NOW, tools=set(), workspace=str(workspace))
-        self.assertIn("Git branch: main", prompt)
+        prompt = build(git_snapshot=snapshot).system
+        self.assertIn("# gitStatus", prompt)
+        self.assertIn("Current branch: main", prompt)
+        self.assertIn("Main branch (you will usually use this for PRs): main", prompt)
+        self.assertIn("Git user: Dev <dev@example.com>", prompt)
+        self.assertIn("Status:\n M app.py", prompt)
+        self.assertIn("Recent commits:", prompt)
+        self.assertIn("abc123 first", prompt)
+        self.assertIn("Is a git repository: true", prompt)
+
+    def test_clean_status_is_labeled(self):
+        snapshot = GitSnapshot(is_repo=True, branch="main", status="")
+        self.assertIn("Status:\n(clean)", build(git_snapshot=snapshot).system)
+
+
+class SkillsTest(unittest.TestCase):
+    def test_skill_catalog_is_attached_when_the_skill_tool_is_present(self):
+        with patch(
+            "extensions.manager.skill_catalog",
+            return_value="Available Agent Skills:\n- demo: does demo things",
+        ):
+            prompt = build(tools={"load_skill", "read_file"}).system
+        self.assertIn("Available Agent Skills", prompt)
+        self.assertIn("demo", prompt)
+
+    def test_skill_catalog_requires_the_skill_tool(self):
+        prompt = build(tools={"read_file"}).system
+        self.assertNotIn("Available Agent Skills", prompt)
 
 
 class ProjectContextTest(unittest.TestCase):
@@ -173,11 +227,36 @@ class ProjectContextTest(unittest.TestCase):
 
     def test_context_is_injected_with_precedence_contract(self):
         (self.workspace / "AGENTS.md").write_text("Use pytest.\n", encoding="utf-8")
-        prompt = build_system_prompt(now=NOW, tools=set(), workspace=str(self.workspace))
+        prompt = build(workspace=str(self.workspace)).system
         self.assertIn("# Project Context", prompt)
         self.assertIn("Loaded from AGENTS.md", prompt)
         self.assertIn("Use pytest.", prompt)
         self.assertIn("cannot", prompt)
+
+
+class RuntimePromptTest(unittest.TestCase):
+    def test_runtime_passes_the_custom_prompt_to_the_builder(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from web.runtime import build_runtime
+
+        model_cfg = SimpleNamespace(supports_images=False, model="m")
+        with patch("web.runtime.create_chat_model"), patch(
+            "web.runtime.build_tools", return_value=[]
+        ), patch("web.runtime.create_agent") as create, patch(
+            "web.runtime.PrefixSummarizer"
+        ):
+            build_runtime(
+                model_cfg,
+                set(),
+                "",
+                custom_prompt="You are a release engineer.",
+            )
+        prompt = create.call_args.kwargs["system_prompt"]
+        self.assertTrue(prompt.startswith("You are a local interactive workspace agent."))
+        self.assertIn("You are a release engineer.", prompt)
+        self.assertNotIn("using your own judgment", prompt)
 
 
 if __name__ == "__main__":

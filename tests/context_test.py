@@ -301,6 +301,35 @@ class ToolOutputCapTest(unittest.TestCase):
             tool_messages = [m for m in session.messages if isinstance(m, ToolMessage)]
             self.assertEqual(tool_messages[0].content, "25 度，晴")
 
+    def test_read_file_output_keeps_its_own_budget(self):
+        with workspace_tempdir() as tmp:
+            class ToolAgent:
+                def invoke(self, payload):
+                    messages = list(payload["messages"])
+                    return {
+                        "messages": [
+                            *messages,
+                            ToolMessage(
+                                content="x" * 10_000,
+                                tool_call_id="call-1",
+                                name="read_file",
+                            ),
+                            AIMessage(content="完成"),
+                        ]
+                    }
+
+            session = ChatSession(
+                ToolAgent(),
+                "s1",
+                store=SessionStore(tmp),
+                max_tool_output_tokens=50,
+            )
+            session.ask("查一下")
+            tool_messages = [m for m in session.messages if isinstance(m, ToolMessage)]
+            self.assertEqual(len(tool_messages), 1)
+            self.assertEqual(len(tool_messages[0].content), 10_000)
+            self.assertNotIn("truncated", tool_messages[0].content)
+
     def test_cap_helper_handles_empty_budget(self):
         messages = [ToolMessage(content="x" * 100, tool_call_id="c")]
         self.assertEqual(cap_tool_outputs(messages, 0), messages)

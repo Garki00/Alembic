@@ -1002,19 +1002,57 @@ html.resizing .sidebar-toggle { transition: none; }
 }
 .question-free textarea:focus { outline: none; border-color: var(--accent-focus); box-shadow: 0 0 0 3px rgba(220, 239, 227, 0.7); }
 .question-result { margin-top: 8px; font-size: 10.5px; color: var(--soft); white-space: pre-wrap; }
-/* 任务清单：多步任务时固定在对话顶部 */
+/* 任务进度：固定在输入框上侧，收起时只显示标题与进度 */
 .todo-panel {
-    max-width: 744px;
-    margin: 0 auto 18px;
+    width: min(780px, calc(100% - 56px));
+    margin: 0 0 8px;
     border: 1px solid var(--border);
-    border-radius: 5px;
+    border-radius: 12px;
     background: var(--card);
-    padding: 9px 13px 10px;
+    overflow: hidden;
 }
-.todo-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.todo-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 13px;
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.todo-head:hover { background: var(--hover-bg); }
 .todo-title { font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; color: var(--emerald-deep); }
-.todo-count { font-family: var(--mono); font-size: 10px; color: var(--soft); }
-.todo-list { list-style: none; margin: 7px 0 0; padding: 0; display: grid; gap: 3px; }
+.todo-progress { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.todo-count { font: 10px var(--mono); color: var(--soft); }
+.todo-bar {
+    width: 56px;
+    height: 3px;
+    border-radius: 999px;
+    background: var(--border-soft);
+    overflow: hidden;
+}
+.todo-bar > span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--emerald);
+    transition: width 180ms ease;
+}
+.todo-toggle { color: var(--soft); font: 11px var(--mono); line-height: 1; }
+.todo-list {
+    list-style: none;
+    margin: 0;
+    padding: 8px 13px 10px;
+    border-top: 1px solid var(--border-soft);
+    display: grid;
+    gap: 3px;
+    max-height: 240px;
+    overflow-y: auto;
+}
 .todo-list li { display: flex; gap: 8px; font-size: 12px; color: var(--muted); line-height: 1.55; }
 .todo-list li.completed { color: var(--soft); text-decoration: line-through; text-decoration-color: #c9cfc3; }
 .todo-list li.in_progress { color: var(--ink); font-weight: 500; }
@@ -1256,6 +1294,25 @@ html.resizing .sidebar-toggle { transition: none; }
 }
 .rule-project-content { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
 .general-control { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+.general-row-stack { grid-template-columns: 1fr; gap: 8px; }
+.general-control-wide { width: 100%; align-items: stretch; }
+.general-textarea {
+    width: 100%;
+    min-height: 128px;
+    resize: vertical;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--card);
+    color: var(--ink);
+    font: 11.5px/1.65 var(--mono);
+}
+.general-textarea::placeholder { color: var(--soft); }
+.general-textarea:focus {
+    outline: none;
+    border-color: var(--accent-focus);
+    box-shadow: 0 0 0 3px rgba(220, 239, 227, 0.7);
+}
 .general-select {
     width: 170px;
     padding: 5px 8px;
@@ -3353,19 +3410,6 @@ html.resizing .sidebar-toggle { transition: none; }
 }
 .prose code[data-file]:hover, .prose a[data-file]:hover { color: var(--emerald); }
 
-@media (max-width: 960px) {
-    .app.inspector-open { grid-template-columns: 1fr; }
-    .pane-leave-active { width: min(var(--inspector-width, 420px), 96vw); }
-    .inspector {
-        position: fixed;
-        inset: 0 0 0 auto;
-        z-index: 30;
-        width: min(var(--inspector-width, 420px), 96vw);
-        box-shadow: var(--shadow);
-    }
-    .sidebar-resizer, .inspector-resizer { display: none; }
-}
-
 /* ---------- 侧边栏工具与对话列表 ---------- */
 .ws-toolbar { display: flex; align-items: center; justify-content: flex-end; position: relative; }
 .ws-tools { display: flex; align-items: center; gap: 2px; margin-left: auto; }
@@ -3807,20 +3851,35 @@ html.resizing .sidebar-toggle { transition: none; }
     color: var(--danger);
 }
 
-@media (max-width: 1400px) {
-    .app.subagent-inspector .inspector {
-        position: fixed;
-        inset: 0 0 0 auto;
-        z-index: 30;
-        width: min(100vw, max(560px, var(--inspector-width, 560px)));
-        box-shadow: var(--shadow);
-    }
-    .app.subagent-inspector .sidebar-resizer,
-    .app.subagent-inspector .inspector-resizer { display: none; }
+/* 主对话区放不下最小宽度对话列与右侧栏时（560px + 侧栏最小宽度），右侧栏
+   改为覆盖主对话区；仍有空间时保持网格挤压。类名由 App.vue 按实际可用宽度切换。 */
+.app.inspector-overlay.inspector-open {
+    grid-template-columns: var(--sidebar-track) minmax(0, 1fr);
+}
+.app.inspector-overlay .inspector {
+    position: fixed;
+    inset: var(--desktop-titlebar-height, 0px) 0 0 var(--sidebar-track);
+    width: auto;
+    max-width: none;
+    z-index: 30;
+    box-shadow: var(--shadow);
+}
+.app.inspector-overlay .inspector-resizer {
+    display: none;
 }
 
-@media (min-width: 961px) and (max-width: 1400px) {
-    .app.subagent-inspector.inspector-open {
-        grid-template-columns: var(--sidebar-track) minmax(0, 1fr);
+@media (max-width: 960px) {
+    /* 左侧栏在该宽度下浮动，主对话区独占整行；空间仍够时右侧栏仍参与网格。 */
+    .app.inspector-open:not(.inspector-overlay) {
+        grid-template-columns: minmax(560px, 1fr) var(--inspector-track);
+    }
+    .app.inspector-overlay.inspector-open {
+        grid-template-columns: 1fr;
+    }
+    .app.inspector-overlay .inspector {
+        left: 0;
+    }
+    .app.inspector-overlay .sidebar-resizer {
+        display: none;
     }
 }

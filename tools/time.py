@@ -28,8 +28,26 @@ from langchain.tools import tool
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from tools.errors import tool_error
+from tools.spec import ToolSpec
 
-__all__ = ["get_current_time", "list_timezones"]
+__all__ = ["get_current_time", "list_timezones", "TOOL_ENTRIES"]
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="get_current_time",
+        label="时间查询",
+        description="获取当前时间",
+        tool_names=("get_current_time",),
+        builder=lambda _config, _ctx: [get_current_time],
+    ),
+    ToolSpec(
+        name="list_timezones",
+        label="时区检索",
+        description="查询支持的时区",
+        tool_names=("list_timezones",),
+        builder=lambda _config, _ctx: [list_timezones],
+    ),
+)
 
 _WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 

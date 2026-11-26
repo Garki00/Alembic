@@ -20,6 +20,7 @@ from pathlib import Path
 from langchain.tools import tool
 
 from tools.context import ToolContext
+from tools.spec import ToolSpec
 from tools.errors import tool_error
 
 logger = logging.getLogger(__name__)
@@ -206,3 +207,20 @@ def build_todo_tools(ctx: ToolContext) -> list:
         return render_todos(items)
 
     return [todo_write]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="todo_write",
+        label="任务清单",
+        description="维护会话任务清单",
+        tool_names=("todo_write",),
+        builder=lambda _config, ctx: build_todo_tools(ctx),
+        capability={
+            "read_only": True,
+            "side_effect_scope": "session",
+            "risk_level": "low",
+            "permission_name": "session",
+        },
+    ),
+)

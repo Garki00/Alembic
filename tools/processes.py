@@ -37,6 +37,7 @@ from tools.env import build_child_env
 from tools.errors import tool_error, truncate
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
 from tools.sandbox.base import SandboxError, SandboxPolicy, SandboxProcess
+from tools.spec import RISK_EXEC, RISK_READ, ToolSpec, single_tool
 from tools.terminals import TERMINAL_CHOICES, build_invocation, terminal_label
 
 _IS_WINDOWS = os.name == "nt"
@@ -648,3 +649,32 @@ def build_process_tools(ctx: ToolContext, only: set[str] | None = None) -> list:
     if only is None:
         return tools
     return [tool for tool in tools if tool.name in only]
+
+
+def _process_entry(name: str, label: str, description: str, **capability) -> ToolSpec:
+    return ToolSpec(
+        name=name,
+        label=label,
+        description=description,
+        risk=RISK_EXEC if name in {"start_process", "stop_process"} else RISK_READ,
+        tool_names=(name,),
+        builder=single_tool(lambda _config, ctx: build_process_tools(ctx), name),
+        capability=capability,
+        defer=name not in {"start_process", "stop_process"},
+        search_hint="background process server logs 后台 进程 日志 守护进程",
+    )
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    _process_entry(
+        "start_process", "启动进程", "启动后台任务",
+        risk_level="high", permission_name="command",
+    ),
+    _process_entry(
+        "stop_process", "停止进程", "停止后台任务",
+        risk_level="medium", destructive=False, permission_name="command",
+    ),
+    _process_entry("list_processes", "进程列表", "列出后台任务", permission_name="read"),
+    _process_entry("read_process_logs", "进程日志", "读取后台任务输出", permission_name="read"),
+    _process_entry("wait_process", "等待进程", "等待后台任务或日志", permission_name="read"),
+)

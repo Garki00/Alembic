@@ -266,27 +266,33 @@ class ReActLoopTest(unittest.TestCase):
 
 
 class PromptTest(unittest.TestCase):
-    def test_every_registered_tool_has_an_english_summary(self):
-        from prompts.react import TOOL_SUMMARIES
-        from tools.registry import TOOL_SPECS
+    def test_every_registered_tool_has_a_description(self):
+        from tools.context import ToolContext
+        from tools.registry import build_tools
 
-        names = {
-            name
-            for spec in TOOL_SPECS.values()
-            for name in spec.tool_names
-        }
-        missing = names - set(TOOL_SUMMARIES)
-        self.assertEqual(missing, set())
-        for summary in TOOL_SUMMARIES.values():
-            self.assertTrue(summary.strip())
+        tools = build_tools(None, {}, ToolContext())
+        self.assertTrue(tools)
+        for tool in tools:
+            with self.subTest(tool=tool.name):
+                self.assertTrue((tool.description or "").strip())
 
-    def test_prompt_and_tool_description_budgets(self):
-        from prompts.react import REACT_SYSTEM_PROMPT, TOOL_SUMMARIES
-        from prompts.system import SYSTEM_PROMPT
+    def test_react_prompt_lists_descriptions_and_deferred_names(self):
+        from prompts.react import REACT_SYSTEM_PROMPT, build_react_prompt
+        from tools.context import ToolContext
+        from tools.registry import build_tools
 
-        self.assertLess(len(SYSTEM_PROMPT), 1500)
+        tools = [tool for tool in build_tools(None, {}, ToolContext()) if tool.name == "read_file"]
+        prompt = build_react_prompt(
+            tools=tools,
+            history="",
+            question="go",
+            scratchpad="",
+            deferred={"git_status"},
+        )
+        self.assertIn("read_file", prompt)
+        self.assertIn("Read a text file within the workspace", prompt)
+        self.assertIn("- git_status", prompt)
         self.assertLess(len(REACT_SYSTEM_PROMPT), 400)
-        self.assertTrue(all(len(text) < 120 for text in TOOL_SUMMARIES.values()))
 
 
 class ApprovalTest(unittest.TestCase):

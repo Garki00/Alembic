@@ -96,6 +96,10 @@ class ToolContext:
     #: Subagent service for this turn. ``None`` disables delegation, which is how
     #: child agents and unsupported entry points stay single-level.
     subagents: Any = None
+    #: Model-facing contracts for the tools built in this turn. The registry fills
+    #: it before the discovery control tools are assembled; kept as a mutable list
+    #: so the shared context object does not need to be rebuilt.
+    tool_catalog: list = field(default_factory=list)
 
     @property
     def session_id(self) -> str:

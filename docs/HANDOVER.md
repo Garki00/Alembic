@@ -84,7 +84,7 @@ main.py                  CLI 入口（argparse + ChatCLI，含 /approvals 等命
 run_backend.py           PyInstaller 入口，等价于 python -m web
 agents/
   agent.py               CLI 侧装配：model / tools / engine 选择（react 或 tool_calling）
-  tool_visibility.py     扩展工具可见性中间件：按会话激活状态过滤模型 schema
+  tool_exposure.py       请求暴露与延迟工具执行中间件：常驻 schema + deferred_tool_call 改写
   react.py               可选文本 ReAct 循环：stop 序列、严格单步解析、审批、限流、流式事件
   context.py             ChatSession、SessionStore、上下文压缩、SessionMeta
   approval.py            审批策略、中间件、终端提问器
@@ -92,13 +92,15 @@ config/
   settings.py            环境变量 + app_home 解析 + 前端地址 / CORS 来源 + AGENT_ENGINE
   storage.py             ensure_storage：首次运行把仓库 data/ memory/ 迁到 app_home
   store.py               ModelStore / ToolStore / WorkspaceStore / PreferencesStore + 迁移
-prompts/system.py        分层系统提示词：工具规则 / 执行纪律 / 完成标准 / 运行时 / 界面
+prompts/builder.py       分层系统提示词排序与拼接（稳定段 → 动态段）
+prompts/sections/        前缀 / 身份 / 规则 / 界面 / 环境 / Git 快照 / Skill 分段
 prompts/context.py       ALEMBIC.md / AGENTS.md / CLAUDE.md / .cursorrules 加载、扫描、截断
 prompts/react.py         英文 ReAct 格式与工具目录模板
 tools/
-  registry.py            ★ 工具清单唯一事实来源：TOOL_SPECS / ToolField / build_tools
-  catalog.py             ★ 基础/扩展工具目录、ToolActivation、tools_search 搜索与激活
-  context.py             ToolContext（workspace、输出预算、终端偏好、扩展工具激活状态）
+  spec.py                ★ 工具声明类型：ToolSpec / ToolField / 风险与能力字段
+  registry.py            工具声明汇总、build_tools 与能力矩阵派发
+  catalog.py             ★ 常驻/延迟工具目录、ToolActivation、tools_search schema 加载
+  context.py             ToolContext（workspace、输出预算、终端偏好、工具目录与激活状态）
   errors.py              统一错误契约 tool_error() / truncate()
   paths.py               工作区路径解析、逃逸防护、凭据路径保护
   command_policy.py      命令策略：hardline 直接拒绝 / elevated 风险原因
@@ -389,7 +391,7 @@ run_command / start_process
 
 ## 5. 不可破坏的约定
 
-1. **工具清单只有一处**：`tools/registry.py`。不要在 `agents/`、`web/`、`frontend/` 里再写工具名字列表。
+1. **工具清单只有一处**：各工具模块的 `TOOL_ENTRIES`，由 `tools/registry.py` 汇总。不要在 `agents/`、`web/`、`frontend/` 里再写工具名字或描述列表。
 2. **工具失败返回字符串**，格式 `Error: [code] message`，可选第二行建议；不要抛异常
    （抛异常会中断整轮对话）。
 3. **文件/命令工具必须经过** `tools/paths.resolve_in_workspace`；越界返回 `path_escape`。
@@ -414,7 +416,7 @@ run_command / start_process
 17. **工具事件走 `ctx.emit_event`**（如 `todo`），前端对未知事件应忽略；不要从工具里
     直接 import `web.*`，否则 CLI 会被网页依赖拖下水。
 18. **后台进程只能操作 `ProcessManager` 自己启动的 ID**，不接受任意 PID；停止时按进程树处理。
-19. **提示词统一用英文**：`prompts/system.py`、`prompts/react.py`、`agents/context.py`
+19. **提示词统一用英文**：`prompts/sections/`、`prompts/builder.py`、`prompts/react.py`、`agents/context.py`
     的摘要提示词；但要求模型用用户的语言回复。新增提示词不要写回中文。
     系统提示词按 `surface`（`web` / `cli`）只改变回复格式提示；工具规则必须根据
     当前实际可用的工具名生成，不能写死未启用的工具。项目上下文文件按
@@ -481,7 +483,7 @@ run_command / start_process
     保留 `Args` / `Returns` / `Raises` 等结构化段落；不要写历史原因、第一人称解释或
     与代码无关的背景。标识符、路径、命令和示例输入保持原样；普通 `//` / `#` 注释
     不在此约束内，可以继续用中文。不要借翻译 docstring 的机会改 UI 文案。
-42. **提示词统一英文**：`prompts/system.py`、`prompts/react.py`、`agents/context.py`
+42. **提示词统一英文**：`prompts/sections/`、`prompts/builder.py`、`prompts/react.py`、`agents/context.py`
     的摘要提示词、工具描述与参数描述都用英文。面向模型的指令可以要求“用用户的语言
     回复”，但不能把指令本身写成中文；用户问题、项目上下文、文件内容仍可以是中文。
 

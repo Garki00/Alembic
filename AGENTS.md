@@ -17,7 +17,7 @@
 | `run_backend.py` | PyInstaller 入口，等价于 `python -m web` |
 | `agents/` | 模型/工具/引擎装配、会话与压缩、审批、用量与缓存、可选文本 ReAct、`agents/subagents/` 子代理 |
 | `config/` | 环境变量与路径解析、数据目录迁移、供应商/工具/工作区/偏好持久化 |
-| `prompts/` | 分层系统提示词、项目上下文加载、ReAct 模板、工具描述 |
+| `prompts/` | 分层系统提示词（`sections/` + `builder.py`）、项目上下文加载、Git 快照、ReAct 模板 |
 | `tools/` | 工具实现与注册表、路径与命令策略、终端与进程、`tools/sandbox/` 命令沙盒 |
 | `web/` | FastAPI：`/api` 路由、SSE、审批与提问中继、后台任务事件、鉴权 |
 | `extensions/` | 原生插件、MCP 服务器、Skills 的发现与配置 |
@@ -66,13 +66,15 @@
 ## 后端边界
 
 - 后端只提供 JSON 与 SSE，不提供 HTML/静态资源。不要在 `web/server.py` 挂 `StaticFiles` 或返回 `index.html`；桌面版由 `desktop/frontend-server.js` 提供前端并反代 `/api`。
-- 工具清单只有一处：`tools/registry.py` 的 `TOOL_SPECS`。前端设置面板、CLI、网页对话都从它派生，不在其他位置另写工具名列表。
+- 工具清单只有一处：各工具模块里的 `TOOL_ENTRIES`（`ToolSpec` 声明与实现放在同一文件），`tools/registry.py` 只按固定顺序汇总为 `TOOL_SPECS`。前端设置面板、CLI、网页对话都从它派生，不在其他位置另写工具名或工具描述列表。
+- 工具的模型可见描述与参数说明写在工具的 docstring 里，工具模块不再经过第二份描述表改写；UI 字段写在同一条 `ToolSpec.fields`。
+- 请求暴露分「常驻 / 延迟」：`ToolSpec.defer` 决定 schema 是否随请求下发；延迟工具先在系统提示词里公布名称，由 `tools_search` 返回完整 schema，再经 `deferred_tool_call` 执行（执行时按真实工具名走审批）。
 - 工具失败返回字符串 `Error: [code] message`，可选第二行提示，不抛异常。错误码为稳定的 lowercase snake_case。
 - 文件与命令工具必须经过 `tools/paths.resolve_in_workspace`；越界返回 `path_escape`。覆盖已有文件前必须读过（`read_required`），读后被外部改动返回 `stale_read`。
-- 中间件顺序固定为 retry → model limit → tool limit → approval（审批在最内层）。
+- 中间件顺序固定为 retry → model limit → tool limit → 工具暴露/延迟执行 → approval（审批在最内层）。
 - 一轮对话在服务端工作线程里跑 agent，事件经 `queue.Queue` 交给主线程写 SSE。不要在生成器里直接跑 agent：审批需要工具线程阻塞等待浏览器回执。
 - 停止生成：前端先 `POST /api/sessions/{id}/cancel` 再断开 SSE；服务端置位 `threading.Event`，前台命令按进程树结束，同时停止当前会话的后台任务。切换会话只断开旧流时用 `?background=0`。
-- 默认引擎是 `tool_calling`（LangChain `create_agent`）；`AGENT_ENGINE=react` 是可选兼容模式。改 `agents/react.py` 时保持 `invoke` / `stream` 接口、`stop` 序列与严格单步解析。
+- 系统提示词由 `prompts/sections/` 的分段构建，`prompts/builder.py` 按「稳定 → 动态」排序后拼成一条 system 消息；自定义系统提示词（`preferences.custom_system_prompt`）只替换身份段，前缀、规则、运行时公告仍然生效。工具描述不写进系统提示词，随请求的 `tools` 字段下发。
 - 会话历史写 `memory/<session>.json`；压缩只替换模型上下文，`display_messages` 保留用户可见原文。不新增第二条写入路径。
 - 供应商与模型以「供应商 + 模型列表」为单位；密钥字段永不回显（`value=""` + `value_set` + `hint`），空值表示保持原值，清空走 `clear`。
 - 扩展：原生插件与 MCP 属于受信宿主代码，默认禁用；`allowed-tools` 不授予权限。发现阶段不导入插件代码。
@@ -91,7 +93,7 @@
 
 - 判定顺序固定为：拒绝规则 → 询问规则 → 计划闸门 → alwaysAsk → 免审批放行 → 允许规则 → 模式默认。规则按「工具 + 命令 / 路径 / 域名」匹配，支持 `prefix:*`、`*` 通配与 `*` 工具名。
 - 权限模式决定是否弹审批：计划 / 构建（默认）/ 编辑 / 免审批。计划模式在审批前拒绝非只读能力；编辑模式只豁免工作区内 `permission_name=edit` 的文件编辑；免审批仍受规则、命令策略与工作区路径限制。
-- 工具能力矩阵（`read_only` / `destructive` / `side_effect_scope` / `risk_level` / `needs_approval` / `always_ask` / `allowed_in_plan_mode` / `permission_name`）只在 `tools/registry.py` 派发；新增工具必须给出准确 `risk`，不要在各处另写工具风险表。
+- 工具能力矩阵（`read_only` / `destructive` / `side_effect_scope` / `risk_level` / `needs_approval` / `always_ask` / `allowed_in_plan_mode` / `permission_name`）的基行由工具声明的 `risk` 派生，覆盖字段写在工具模块的 `ToolSpec.capability`；`tools/registry.py` 只负责派发。新增工具必须给出准确 `risk`，不要在各处另写工具风险表。
 - `run_command` 会尝试按命令内容判定只读：仅 Git Bash / WSL（POSIX）生效，解析器 + 命令/参数白名单，任何动态语法、未知命令或写选项都失败关闭；判定通过时本次调用按只读能力处理，规则仍优先。
 - 用户规则存 `data/permissions.json`（可 allow / ask / deny）；工作区 `.alembic/permissions.json` 只读取 deny / ask，项目不能给自己授权。网页端在「设置 → 权限」编辑，接口为 `GET/PUT /api/permissions`。
 - 模式属于会话：输入框右侧的模式按钮只改当前会话，设置里的权限模式是新会话的默认值；`POST /api/chat` 可带 `permission_mode` 单轮覆盖。
@@ -104,7 +106,7 @@
 
 - `agent` 与 `send_message` 由 `tools/subagent.py` 暴露；任务表、前后台、取消、通知与审批路由都在 `agents/subagents/manager.py`。
 - 子代理只有一层：`agent` / `send_message` 永远从子代理工具面移除，子代理的 `ToolContext.subagents` 必须是 `None`。
-- 子代理工具面 = 父会话当前可见工具 ∩ profile 工具面，再减去 `disallowedTools`；不要直接给子代理 `enabled_tools` 全量。
+- 子代理工具面 = 父会话已启用工具 ∩ profile 工具面，再减去 `disallowedTools`；不要直接给子代理 `enabled_tools` 全量。延迟工具也要构建，由子会话自行加载 schema。
 - profile 的 `model` 与 `thinking` 是显式声明：解析不到模型或档位时必须让任务失败（`subagent_model_unavailable` / `subagent_thinking_unavailable`），不静默改用父模型或父档位。
 - 同一父会话的子代理共享一个 `ModelRequestAdmission` FIFO 队列，每个模型请求占一个槽位；新会话必须通过 `SubagentManager.admission_for(session_id)` 取队列，不要另建。
 - 设置里的 `subagent_models` 只覆盖内置类型（`general-purpose` / `Explore`）；用户或项目 profile 优先于该设置，不得把覆盖值写进自定义 profile。
@@ -160,4 +162,4 @@
 - `docs/packaging.md`：安装包结构、构建、安装/卸载与故障排查。
 - `docs/subagents.md`：子代理类型、运行语义、事件与接口。
 - `docs/extensions.md`：插件、MCP 与 Skills；`docs/runtimes.md`：内置运行时版本与校验。
-- 接口、工具或安装步骤变化时同步对应文档；工具清单以 `tools/registry.py` 为准，不在多处维护副本。
+- 接口、工具或安装步骤变化时同步对应文档；工具清单以各模块的 `TOOL_ENTRIES` 为准，由 `tools/registry.py` 汇总，不在多处维护副本。

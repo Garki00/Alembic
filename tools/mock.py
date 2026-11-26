@@ -12,6 +12,7 @@ from __future__ import annotations
 from langchain.tools import tool
 
 from tools.errors import tool_error
+from tools.spec import ToolField, ToolSpec
 
 
 def build_mock_tools(config: dict) -> list:
@@ -41,3 +42,26 @@ def build_mock_tools(config: dict) -> list:
         return body
 
     return [mock_lookup]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="mock_data",
+        label="模拟数据",
+        description="读取自定义模拟文本",
+        fields=(
+            ToolField(
+                "MOCK_TEXT",
+                "内容",
+                multiline=True,
+                required=True,
+                placeholder="启用后，agent 调用 mock_lookup 会原样拿到这段文字",
+            ),
+        ),
+        default_enabled=False,
+        tool_names=("mock_lookup",),
+        builder=lambda config, _ctx: build_mock_tools(dict(config)),
+        defer=True,
+        search_hint="mock test data 模拟数据 测试数据",
+    ),
+)

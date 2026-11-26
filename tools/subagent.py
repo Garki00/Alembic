@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from agents.subagents.profiles import format_profiles_for_prompt
 from tools.context import ToolContext
 from tools.errors import tool_error
+from tools.spec import ToolSpec
 
 
 class AgentToolArgs(BaseModel):
@@ -136,3 +137,28 @@ def build_subagent_tools(ctx: ToolContext) -> list:
         )
 
     return [launch_agent, send_message]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="agent",
+        label="子代理",
+        description="把独立任务委派给子代理并汇报结果",
+        tool_names=("agent", "send_message"),
+        builder=lambda _config, ctx: build_subagent_tools(ctx),
+        capability={
+            "read_only": True,
+            "side_effect_scope": "none",
+            "risk_level": "low",
+            "permission_name": "session",
+        },
+    ),
+    ToolSpec(
+        name="praise_subagent",
+        label="夸夸子代理",
+        description="子代理完成后，点评其中完成得好的部分",
+        default_enabled=False,
+        experimental=True,
+        capability={"side_effect_scope": "session", "permission_name": "session"},
+    ),
+)

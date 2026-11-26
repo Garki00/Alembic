@@ -20,19 +20,18 @@ from langchain.agents.middleware import (
 from langchain_deepseek import ChatDeepSeek
 
 from config.settings import settings
-from prompts.system import SURFACE_CLI, build_system_prompt
+from prompts.builder import SURFACE_CLI, build_system_prompt
 from tools.catalog import (
-    BASIC_TOOLS,
-    extended_tool_names,
-    META_TOOLS,
+    TOOL_SEARCH_NAME,
     ToolActivation,
+    build_contracts,
     enabled_tool_names,
     entry_names_for_tools,
-    visible_tool_names,
+    resolve_exposure,
+    turn_disallowed_tools,
 )
 from tools.context import SessionRef, ToolContext
 from tools.images import vision_from_model
-from tools.model_view import with_compact_descriptions
 from tools.registry import build_tools
 
 from agents.approval import (
@@ -102,6 +101,16 @@ def cli_permission_mode() -> str:
 def cli_permission_rules() -> PermissionRuleset:
     """Load the CLI's user rules from the application data directory."""
     return PermissionRulesStore(Path(settings.data_dir) / "permissions.json").get()
+
+
+def cli_custom_system_prompt() -> str:
+    """Read the user-provided system prompt body used by the CLI."""
+    try:
+        from config.store import PreferencesStore
+
+        return str(PreferencesStore().get().get("custom_system_prompt") or "")
+    except Exception:  # preferences are optional for the CLI
+        return ""
 
 
 def build_cli_approval() -> ApprovalGate | None:
@@ -182,15 +191,15 @@ def cli_model_config():
 def build_middleware(
     approval: "ApprovalGate | None" = None,
     *,
-    visibility=None,
+    exposure=None,
 ) -> list[AgentMiddleware]:
     """Runtime guard middleware:
 
     - retry failed model calls automatically (network jitter, rate limits);
     - cap model calls per turn so the agent cannot loop forever;
     - cap tool calls per turn; excess calls are blocked instead of piling up in the context;
-    - filter visibility of extended tools (basic tools plus activated extensions);
-    - approval, as the innermost layer, so call limits and visibility block first and a human is asked last.
+    - control request exposure and route deferred execution;
+    - approval, as the innermost layer, so call limits and exposure block first and a human is asked last.
     """
 
     middleware: list[AgentMiddleware] = [
@@ -204,8 +213,8 @@ def build_middleware(
             exit_behavior="continue",
         ),
     ]
-    if visibility is not None:
-        middleware.append(visibility)
+    if exposure is not None:
+        middleware.append(exposure)
     if approval is not None:
         from agents.approval import ApprovalMiddleware
 
@@ -276,11 +285,6 @@ def assemble_agent(
         updates["enabled_tool_names"] = enabled_names
     if updates:
         tool_ctx = replace(tool_ctx, **updates)
-    visible = (
-        visible_tool_names(enabled_names, activation)
-        if managed
-        else {str(getattr(tool, "name", "")) for tool in (tools or [])}
-    )
     if subagents is not None and tool_ctx.subagents is None:
         from agents.model_factory import create_chat_model
         from agents.subagents.manager import LaunchContext
@@ -296,7 +300,8 @@ def assemble_agent(
                     model_factory=create_chat_model,
                     builtin_model_overrides=cli_subagent_models(),
                     enabled_tools=set(enabled_entries),
-                    visible_tools=set(visible),
+                    # The child resolves its own exposure from the full enabled set.
+                    visible_tools=set(enabled_names),
                     tool_configs={},
                     approval=approval,
                     asker=tool_ctx.asker,
@@ -314,20 +319,28 @@ def assemble_agent(
                 )
             ),
         )
+    # The delegation tools capture the bound service at build time, so the agent's
+    # tool set must be assembled after the context carries the manager.
     if managed:
         tools = build_default_tools(tool_ctx)
-    tool_names = (
-        visible_tool_names(enabled_names, activation)
-        if managed
-        else {str(getattr(tool, "name", "")) for tool in tools}
+    contracts = build_contracts(tools)
+    disallowed = turn_disallowed_tools(tool_ctx)
+    exposure = resolve_exposure(
+        contracts,
+        activation,
+        turn_disallowed=disallowed,
+        search_enabled=any(contract.name == TOOL_SEARCH_NAME for contract in contracts),
     )
     effective_engine = "tool_calling" if middleware is not None else resolved_engine
     system_prompt = build_system_prompt(
         str(tool_ctx.workspace) if tool_ctx.workspace else "",
-        tools=tool_names,
+        tools=exposure.visible,
+        deferred_tools=exposure.deferred,
         terminal=tool_ctx.terminal,
         surface=SURFACE_CLI,
         engine=effective_engine,
+        model=settings.model_name,
+        custom_prompt=cli_custom_system_prompt(),
     )
 
     if resolved_engine == "react" and middleware is None:
@@ -336,10 +349,10 @@ def assemble_agent(
             tools,
             system_prompt,
             approval=approval,
-            activation=activation if managed else None,
-            basic_names=BASIC_TOOLS if managed else (),
-            extended_names=extended_tool_names() if managed else (),
-            meta_names=META_TOOLS if managed else (),
+            activation=activation,
+            basic_names=[name for name in exposure.visible if name not in exposure.controls],
+            extended_names=sorted(exposure.deferred),
+            meta_names=sorted(exposure.controls),
             max_model_calls=settings.max_model_calls,
             max_tool_calls=settings.max_tool_calls,
             model_max_retries=settings.model_max_retries,
@@ -355,33 +368,30 @@ def assemble_agent(
 
     visibility = None
     if managed:
-        from agents.tool_visibility import ToolVisibilityMiddleware
+        from agents.tool_exposure import ToolExposureMiddleware
 
-        visibility = ToolVisibilityMiddleware(
+        visibility = ToolExposureMiddleware(
+            contracts=contracts,
+            exposure=exposure,
             activation=activation,
-            basic_names=set(BASIC_TOOLS) & enabled_names,
-            extended_names=extended_tool_names() & enabled_names,
-            meta_names=set(META_TOOLS) & enabled_names,
+            tools=tools,
+            turn_disallowed=disallowed,
         )
     if middleware is None:
-        middleware = build_middleware(approval, visibility=visibility)
-    model_tools = with_compact_descriptions(tools)
+        middleware = build_middleware(approval, exposure=visibility)
     agent = create_agent(
         chat_model,
-        tools=model_tools,
+        tools=tools,
         system_prompt=system_prompt,
         middleware=middleware,
     )
     summarizer = PrefixSummarizer(
         model=chat_model,
         system_prompt=system_prompt,
-        tools=model_tools if not managed else (
-            lambda: [
-                tool
-                for tool in model_tools
-                if str(getattr(tool, "name", "") or "")
-                in visible_tool_names(enabled_names, activation)
-            ]
+        tools=(
+            (lambda: [tool for tool in tools if getattr(tool, "name", "") in exposure.visible])
+            if managed
+            else tools
         ),
         engine="tool_calling",
         max_tokens=settings.compact_summary_max_tokens or None,

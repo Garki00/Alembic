@@ -207,6 +207,8 @@ class PreferencesPayload(BaseModel):
     developer_tools: bool | None = None
     compact_keep_first_turn: bool | None = None
     subagent_models: dict[str, str] | None = None
+    #: User-provided identity body that replaces the default system prompt text.
+    custom_system_prompt: str | None = None
 
 
 class SandboxConfigPayload(BaseModel):
@@ -1238,6 +1240,7 @@ def create_app(
                     ),
                     sandbox=app.state.sandbox,
                     sandbox_config=sandbox_config.get(),
+                    custom_prompt=str(prefs.get("custom_system_prompt") or ""),
                 )
             except Exception as exc:
                 raise HTTPException(400, str(exc)) from exc
@@ -1450,6 +1453,7 @@ def create_app(
                 subagents=app.state.subagents,
                 workspace_id=workspace_id,
                 subagent_models=prefs.get("subagent_models") or {},
+                custom_prompt=str(prefs.get("custom_system_prompt") or ""),
             )
         except Exception as exc:
             if "cancel_event" in locals():

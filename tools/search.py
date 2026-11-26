@@ -27,6 +27,7 @@ import httpx
 from langchain.tools import tool
 
 from tools.context import ToolContext
+from tools.spec import FIELD_NUMBER, FIELD_SELECT, ToolField, ToolSpec
 from tools.errors import tool_error, truncate
 
 _DEFAULT_TIMEOUT = 15
@@ -544,3 +545,40 @@ def build_search_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
         return _format_results(text, provider, results, ctx.max_output_chars)
 
     return [web_search]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="web_search",
+        label="网页搜索",
+        description="搜索网页，默认 Bing",
+        fields=(
+            ToolField(
+                "SEARCH_PROVIDER",
+                "搜索服务",
+                kind=FIELD_SELECT,
+                options=(
+                    ("bing", "Bing（免密钥）"),
+                    ("duckduckgo", "DuckDuckGo（免密钥）"),
+                    ("tavily", "Tavily"),
+                    ("brave", "Brave Search"),
+                    ("serper", "Serper"),
+                    ("searxng", "SearXNG"),
+                ),
+                default="bing",
+            ),
+            ToolField("SEARCH_API_KEY", "API Key", secret=True),
+            ToolField("SEARCH_ENDPOINT", "SearXNG 地址", placeholder="https://searx.example.com"),
+            ToolField("SEARCH_TIMEOUT", "超时（秒）", kind=FIELD_NUMBER, default="15"),
+            ToolField("SEARCH_MAX_RESULTS", "默认结果数", kind=FIELD_NUMBER, default="5"),
+        ),
+        tool_names=("web_search",),
+        builder=lambda config, ctx: build_search_tools(dict(config), ctx),
+        capability={
+            "read_only": True,
+            "side_effect_scope": "network",
+            "risk_level": "low",
+            "permission_name": "web",
+        },
+    ),
+)

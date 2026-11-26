@@ -255,6 +255,8 @@ export interface Preferences {
   compact_keep_first_turn: boolean
   /** Built-in subagent type -> `providerId/modelId`; empty inherits the active model. */
   subagent_models: Record<string, string>
+  /** User-provided identity body; empty keeps the default system prompt text. */
+  custom_system_prompt: string
 }
 
 export interface HistoryMessage {

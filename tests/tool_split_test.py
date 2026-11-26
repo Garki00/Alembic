@@ -52,7 +52,12 @@ class SplitToolsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             items = ToolStore(Path(directory) / 'tools.json').public()
             self.assertTrue(all(item['source'] == 'builtin' and item['source_id'] == '' for item in items))
-            self.assertTrue(all(len(item['tool_names']) == 1 for item in items))
+            for item in items:
+                if item['name'] == 'praise_subagent':
+                    # A settings-only entry: no model tool, only the post-run review.
+                    self.assertEqual(item['tool_names'], [])
+                else:
+                    self.assertGreaterEqual(len(item['tool_names']), 1)
             names = [item['name'] for item in items]
             self.assertGreater(names.index('get_weather'), names.index('git_commit'))
 

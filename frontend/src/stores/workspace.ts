@@ -34,6 +34,7 @@ const DEFAULT_PREFERENCES: Preferences = {
   developer_tools: false,
   compact_keep_first_turn: false,
   subagent_models: {},
+  custom_system_prompt: '',
 }
 
 export const useWorkspaceStore = defineStore('workspace', {

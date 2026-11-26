@@ -107,13 +107,53 @@ class ReadToolsTest(FilesTestBase):
         text = self.read["find_files"].invoke({"pattern": "*.py", "path": ".."})
         self.assertTrue(text.startswith("Error: [path_escape]"), text)
 
-    def test_output_is_truncated(self):
+    def test_read_file_is_not_truncated_by_output_character_budget(self):
         (self.root / "big.txt").write_text(
             "\n".join("x" * 200 for _ in range(200)), encoding="utf-8"
         )
         text = self.read["read_file"].invoke({"path": "big.txt", "limit": 200})
-        self.assertLessEqual(len(text), 2000 + 100)
-        self.assertIn("truncated", text)
+        self.assertGreater(len(text), 2000)
+        self.assertIn("200| " + "x" * 200, text)
+        self.assertNotIn("truncated", text)
+
+    def test_read_file_reads_past_two_thousand_lines_by_default(self):
+        (self.root / "many.txt").write_text(
+            "\n".join(f"line-{index}" for index in range(1, 2006)),
+            encoding="utf-8",
+        )
+        text = self.read["read_file"].invoke({"path": "many.txt"})
+        self.assertIn("(2005 lines, showing 1-2005)", text)
+        self.assertIn("2005| line-2005", text)
+
+    def test_whole_file_over_byte_limit_is_rejected(self):
+        (self.root / "large.txt").write_text(
+            "x\n" + "y" * (256 * 1024 + 1),
+            encoding="utf-8",
+        )
+        text = self.read["read_file"].invoke({"path": "large.txt"})
+        self.assertTrue(text.startswith("Error: [file_too_large]"), text)
+
+        ranged = self.read["read_file"].invoke({"path": "large.txt", "limit": 1})
+        self.assertIn("1| x", ranged)
+
+    def test_whole_file_over_token_limit_returns_partial_view(self):
+        (self.root / "tokens.txt").write_text(
+            "\n".join("y" * 1000 for _ in range(80)),
+            encoding="utf-8",
+        )
+        text = self.read["read_file"].invoke({"path": "tokens.txt"})
+        self.assertIn("partial view", text)
+        self.assertIn("tokens, cap 25000", text)
+        self.assertIn("continue with offset=", text)
+        self.assertNotIn("80| " + "y" * 1000, text)
+
+    def test_range_over_token_limit_is_rejected(self):
+        (self.root / "tokens.txt").write_text(
+            "\n".join("z" * 1000 for _ in range(80)),
+            encoding="utf-8",
+        )
+        text = self.read["read_file"].invoke({"path": "tokens.txt", "limit": 80})
+        self.assertTrue(text.startswith("Error: [read_too_many_tokens]"), text)
 
 
 class WorkspaceBoundaryTest(FilesTestBase):

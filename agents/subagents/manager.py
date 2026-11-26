@@ -802,17 +802,36 @@ class SubagentManager:
             tool_names=tool_names,
             tool_ctx=child_ctx,
         )
+        from tools.catalog import (
+            TOOL_SEARCH_NAME,
+            build_contracts,
+            resolve_exposure,
+            turn_disallowed_tools,
+        )
+
+        contracts = build_contracts(tools)
+        disallowed = turn_disallowed_tools(child_ctx)
+        exposure = resolve_exposure(
+            contracts,
+            child_ctx.activation,
+            turn_disallowed=disallowed,
+            search_enabled=any(
+                contract.name == TOOL_SEARCH_NAME for contract in contracts
+            ),
+        )
         child_mode = profile.restrict_mode(_parent_mode(ctx))
         gate = self._child_gate(task, ctx, child_mode, tool_names)
         project_context = None if profile.inject_context else ""
         system_prompt = build_child_system_prompt(
             profile_prompt=profile.prompt,
             workspace=str(ctx.workspace),
-            tool_names=tool_names,
+            tool_names=exposure.visible,
             terminal=ctx.terminal,
             surface=ctx.surface,
             engine=(ctx.engine or settings.agent_engine),
             project_context=project_context,
+            deferred_tools=sorted(exposure.deferred),
+            model=str(getattr(child_cfg, "model", "") or ""),
         )
         agent, summarizer = build_child_agent(
             model=child_model,
@@ -822,6 +841,10 @@ class SubagentManager:
             engine=ctx.engine,
             admission=self.admission_for(ctx.session_id),
             admission_cancel=_CombinedCancel(task, ctx.cancel_event),
+            contracts=contracts,
+            exposure=exposure,
+            activation=child_ctx.activation,
+            turn_disallowed=disallowed,
         )
         store_dir = self.store_dir / _safe_slug(ctx.session_id)
         task.session = build_child_session(

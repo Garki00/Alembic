@@ -16,17 +16,16 @@ from agents.react import ReActAgent
 from agents.subagents.manager import LaunchContext, SubagentManager
 from config.settings import settings
 from config.store import ModelConfig
-from prompts.system import SURFACE_WEB, build_system_prompt
+from prompts.builder import SURFACE_WEB, build_system_prompt
 from tools.context import SessionRef, ToolContext
 from tools.images import vision_from_model
-from tools.model_view import with_compact_descriptions
 from tools.catalog import (
-    BASIC_TOOLS,
-    extended_tool_names,
-    META_TOOLS,
+    TOOL_SEARCH_NAME,
     ToolActivation,
+    build_contracts,
     enabled_tool_names,
-    visible_tool_names,
+    resolve_exposure,
+    turn_disallowed_tools,
 )
 from tools.registry import build_tools
 from tools.sandbox.base import SandboxPolicy
@@ -105,6 +104,7 @@ def build_runtime(
     subagents: SubagentManager | None = None,
     workspace_id: str = "",
     subagent_models: Mapping[str, str] | None = None,
+    custom_prompt: str = "",
 ):
     """Return ``(agent, summarizer)`` for one conversation turn.
 
@@ -159,7 +159,6 @@ def build_runtime(
         sandbox=sandbox,
         sandbox_policy=policy,
     )
-    visible = visible_tool_names(enabled_names, active)
     resolved_engine = (engine or settings.agent_engine).strip().lower()
     if subagents is not None:
         service = subagents.bind(
@@ -172,7 +171,9 @@ def build_runtime(
                 model_factory=create_chat_model,
                 builtin_model_overrides=dict(subagent_models or {}),
                 enabled_tools=enabled_entries,
-                visible_tools=set(visible),
+                # The child resolves its own exposure; give it every tool the
+                # session enabled, not only the schemas this request carried.
+                visible_tools=set(enabled_names),
                 tool_configs=dict(tool_configs or {}),
                 approval=approval,
                 asker=asker,
@@ -192,12 +193,24 @@ def build_runtime(
         )
         ctx = replace(ctx, subagents=service)
     tools = build_tools(enabled_entries, tool_configs or {}, ctx)
+    contracts = build_contracts(tools)
+    disallowed = turn_disallowed_tools(ctx)
+    exposure = resolve_exposure(
+        contracts,
+        active,
+        turn_disallowed=disallowed,
+        search_enabled=any(contract.name == TOOL_SEARCH_NAME for contract in contracts),
+    )
+    visible = exposure.visible
     system_prompt = build_system_prompt(
         str(ctx.workspace) if ctx.workspace else "",
         tools=visible,
+        deferred_tools=exposure.deferred,
         terminal=terminal,
         surface=SURFACE_WEB,
         engine=resolved_engine,
+        model=model_cfg.model,
+        custom_prompt=custom_prompt,
     )
 
     if resolved_engine == "react":
@@ -207,9 +220,9 @@ def build_runtime(
             system_prompt,
             approval=approval,
             activation=active,
-            basic_names=BASIC_TOOLS,
-            extended_names=extended_tool_names(),
-            meta_names=META_TOOLS,
+            basic_names=[name for name in visible if name not in exposure.controls],
+            extended_names=sorted(exposure.deferred),
+            meta_names=sorted(exposure.controls),
             max_model_calls=settings.max_model_calls,
             max_tool_calls=settings.max_tool_calls,
             model_max_retries=settings.model_max_retries,
@@ -222,29 +235,28 @@ def build_runtime(
             max_tokens=settings.compact_summary_max_tokens or None,
         )
     else:
-        from agents.tool_visibility import ToolVisibilityMiddleware
+        from agents.tool_exposure import ToolExposureMiddleware
 
-        visibility = ToolVisibilityMiddleware(
+        exposure_middleware = ToolExposureMiddleware(
+            contracts=contracts,
+            exposure=exposure,
             activation=active,
-            basic_names=set(BASIC_TOOLS) & enabled_names,
-            extended_names=extended_tool_names() & enabled_names,
-            meta_names=set(META_TOOLS) & enabled_names,
+            tools=tools,
+            turn_disallowed=disallowed,
         )
-        model_tools = with_compact_descriptions(tools)
         agent = create_agent(
             model,
-            tools=model_tools,
+            tools=tools,
             system_prompt=system_prompt,
-            middleware=build_middleware(approval, visibility=visibility),
+            middleware=build_middleware(approval, exposure=exposure_middleware),
         )
 
         def _live_tools() -> list[Any]:
             """The tool schemas the last live request actually carried."""
-            names = visible_tool_names(enabled_names, active)
             return [
                 tool
-                for tool in model_tools
-                if str(getattr(tool, "name", "") or "") in names
+                for tool in tools
+                if str(getattr(tool, "name", "") or "") in exposure.visible
             ]
 
         # 压缩用的模型、系统提示词与工具声明必须和真实请求完全一致，否则回放

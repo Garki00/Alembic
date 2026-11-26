@@ -31,6 +31,7 @@ from langchain.tools import tool
 from pydantic import BaseModel, Field
 
 from tools.context import ToolContext
+from tools.spec import RISK_WRITE, ToolSpec
 from tools.errors import tool_error
 from tools.files import (
     _check_read,
@@ -380,3 +381,16 @@ def build_atomic_edit_tools(ctx: ToolContext) -> list:
         return apply_batch_edits(ctx, edits)
 
     return [batch_edit]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="batch_edit",
+        label="原子批量编辑",
+        description="多处精确替换，全部成功才落盘",
+        risk=RISK_WRITE,
+        tool_names=("batch_edit",),
+        builder=lambda _config, ctx: build_atomic_edit_tools(ctx),
+        capability={"permission_name": "edit"},
+    ),
+)

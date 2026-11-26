@@ -445,6 +445,10 @@ def prune_tool_messages(
     result: list[BaseMessage] = []
     for message in messages:
         if isinstance(message, ToolMessage):
+            # read_file carries its own byte/token guards and pagination notice.
+            if getattr(message, "name", None) == "read_file":
+                result.append(message)
+                continue
             text = _message_text(message)
             if TOOL_OUTPUT_MARK in text:
                 # 已经修剪过：再剪一次只会改动字节、白白打断前缀缓存。

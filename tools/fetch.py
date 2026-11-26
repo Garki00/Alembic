@@ -33,6 +33,13 @@ from langchain.tools import tool
 from requests.adapters import HTTPAdapter
 
 from tools.context import ToolContext
+from tools.spec import (
+    FIELD_NUMBER,
+    FIELD_RADIO,
+    FIELD_SWITCH,
+    ToolField,
+    ToolSpec,
+)
 from tools.errors import tool_error, truncate
 
 _MAX_REDIRECTS = 5
@@ -851,3 +858,65 @@ def build_fetch_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
         return _format_result(page, extracted, budget)
 
     return [fetch_url]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="fetch_url",
+        label="网页抓取",
+        description="抓取网页或接口内容",
+        fields=(
+            ToolField(
+                "FETCH_MODE",
+                "抓取方式",
+                kind=FIELD_RADIO,
+                options=(("local", "本地抓取"), ("api", "Fetch API")),
+                default="local",
+            ),
+            ToolField(
+                "FETCH_API_URL",
+                "Fetch API 地址",
+                placeholder="https://example.com/fetch?url={url_encoded}",
+                enabled_when=("FETCH_MODE", "api"),
+            ),
+            ToolField("FETCH_TIMEOUT", "超时（秒）", kind=FIELD_NUMBER, default="20"),
+            ToolField("FETCH_MAX_BYTES", "最大响应字节", kind=FIELD_NUMBER, default="2000000"),
+            ToolField(
+                "FETCH_ALLOW_PRIVATE",
+                "允许内网地址",
+                kind=FIELD_SWITCH,
+                default="false",
+                placeholder="仅在本机接口调试时打开",
+            ),
+            ToolField(
+                "FETCH_USER_AGENT",
+                "User-Agent",
+                default="ALEMBIC/0.1 (+local)",
+                enabled_when=("FETCH_MODE", "local"),
+            ),
+            ToolField(
+                "FETCH_RENDER",
+                "动态渲染",
+                kind=FIELD_SWITCH,
+                default="true",
+                enabled_when=("FETCH_MODE", "local"),
+            ),
+            ToolField(
+                "FETCH_RENDER_TIMEOUT",
+                "渲染超时（秒）",
+                kind=FIELD_NUMBER,
+                default="12",
+                enabled_when=("FETCH_MODE", "local"),
+            ),
+        ),
+        tool_names=("fetch_url",),
+        builder=lambda config, ctx: build_fetch_tools(dict(config), ctx),
+        capability={
+            "read_only": True,
+            "side_effect_scope": "network",
+            "risk_level": "medium",
+            "needs_approval": True,
+            "permission_name": "web",
+        },
+    ),
+)

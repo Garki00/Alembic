@@ -22,6 +22,7 @@ import httpx
 from langchain.tools import tool
 
 from tools.context import ToolContext
+from tools.spec import FIELD_NUMBER, FIELD_SWITCH, RISK_WRITE, ToolField, ToolSpec
 from tools.errors import tool_error
 from tools.fetch import (
     _MAX_REDIRECTS,
@@ -197,3 +198,34 @@ def build_download_tools(config: Mapping[str, str], ctx: ToolContext) -> list:
         )
 
     return [download_file]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="download_file",
+        label="文件下载",
+        description="下载文件到工作区",
+        fields=(
+            ToolField("DOWNLOAD_TIMEOUT", "超时（秒）", kind=FIELD_NUMBER, default="60"),
+            ToolField("DOWNLOAD_MAX_BYTES", "最大字节", kind=FIELD_NUMBER, default="20000000"),
+            ToolField(
+                "DOWNLOAD_ALLOW_PRIVATE",
+                "允许内网地址",
+                kind=FIELD_SWITCH,
+                default="false",
+                placeholder="仅在本机接口调试时打开",
+            ),
+            ToolField("DOWNLOAD_USER_AGENT", "User-Agent", default="ALEMBIC/0.1 (+local)"),
+        ),
+        risk=RISK_WRITE,
+        tool_names=("download_file",),
+        builder=lambda config, ctx: build_download_tools(dict(config), ctx),
+        capability={
+            "risk_level": "medium",
+            "side_effect_scope": "workspace",
+            "permission_name": "file",
+        },
+        defer=True,
+        search_hint="download fetch file save http 下载 保存文件 远程文件",
+    ),
+)

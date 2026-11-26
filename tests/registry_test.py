@@ -31,14 +31,14 @@ class RegistryTest(unittest.TestCase):
                 "search_files",
                 "find_files",
                 "file_stat",
-                "read_document",
-                "read_image",
                 "write_file",
                 "edit_file",
                 "make_dir",
                 "delete_file",
                 "move_file",
                 "copy_file",
+                "read_document",
+                "read_image",
                 "apply_patch",
                 "batch_edit",
                 "fetch_url",
@@ -109,7 +109,7 @@ class RegistryTest(unittest.TestCase):
             for tool_name in spec.tool_names
         }
         everything = build_tools(None, {}, ctx)
-        self.assertEqual({tool.name for tool in everything}, expected)
+        self.assertEqual({tool.name for tool in everything}, expected | {"deferred_tool_call"})
 
     def test_unknown_enabled_name_is_ignored(self):
         built = build_tools({"no_such_tool"}, {}, ToolContext(workspace=Path.cwd()))
@@ -122,7 +122,7 @@ class RegistryTest(unittest.TestCase):
             captured.update(config)
             return []
 
-        with patch("tools.registry.build_weather_tools", fake_builder):
+        with patch("tools.weather.build_weather_tools", fake_builder):
             build_tools({"get_weather"}, {"get_weather": {"QWEATHER_KEY_ID": "kid-1"}}, ToolContext())
 
         self.assertEqual(captured, {"QWEATHER_KEY_ID": "kid-1"})

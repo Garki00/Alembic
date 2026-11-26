@@ -254,7 +254,7 @@ API Key 只保存在本机数据目录，接口返回时只给掩码。供应商
 
 默认 `AGENT_ENGINE=tool_calling`，使用 LangChain `create_agent` 的模型原生工具调用：
 
-1. 工具参数以结构化 `tool_calls` 返回，JSON Schema 由 `tools/registry.py` 派生。
+1. 工具参数以结构化 `tool_calls` 返回，JSON Schema 由工具模块的声明派生、注册表汇总后下发。
 2. 循环执行工具，把真实的 `ToolMessage` 作为观测交回模型。
 3. 模型无法用文本伪造 Observation，动作也不会被文本解析悄悄丢弃。
 
@@ -307,13 +307,31 @@ Final Answer: ...
 
 只取第一个匹配的文件。内容上限 20k 字符，超出时保留头尾并标注截断。包含「忽略先前指令」、索要密钥、隐藏 Unicode 等注入特征的文件会被标记为 `[BLOCKED]`，不会加载。项目说明适合写测试命令、目录约定和代码风格，不能覆盖安全、审批或命令策略，也不能覆盖用户的明确要求。
 
-系统提示词会区分 `web` 与 `cli` 两种回复界面：网页版允许 Markdown，命令行版优先纯文本。运行时还会注入工作区、操作系统、首选终端、日期和 Git 分支。
+系统提示词会区分 `web` 与 `cli` 两种回复界面：网页版允许 Markdown，命令行版优先纯文本。
+
+### 4.4 系统提示词构成
+
+系统提示词不再是一个常量文件，而是由 `prompts/sections/` 的分段构建，`prompts/builder.py` 负责排序与拼接。顺序固定为「稳定段在前、动态段在后」，方便提供方复用前缀缓存：
+
+1. **固定前缀**：`You are a local interactive workspace agent.`
+2. **身份**：默认身份与安全说明；用户设置了「设置 → 通用 → 系统提示词」时，用自定义内容替换这一段，前缀与其余段落不变。
+3. **规则**：现有通用规则、执行纪律、完成标准、上下文管理与并行工具说明（ReAct 引擎不加并行段）。
+4. **界面约定**：桌面端的能力与展示约定；命令行改为纯文本约定。
+5. **工具指导**：只列出本轮实际可见的工具；延迟工具公布名称与加载/执行方式。
+6. **gitStatus**：会话开始时的仓库快照（当前分支、主分支、Git 用户、状态、最近 5 条提交），并明确说明这是快照、不会随后续操作更新。
+7. **运行时公告**：主工作目录、附加目录、平台、Shell、OS、是否 Git 仓库、当前模型与时间。
+8. **附件**：已启用 Skill 的名称与描述（仅在 `load_skill` 可见时注入）。
+9. **工作区项目说明**：第 4.3 节的项目上下文文件。
+
+工具的描述、参数说明与 UI 字段都在工具文件内部声明，不写进系统提示词；请求的 `tools` 字段由注册表汇总后直接生成。修改这套顺序或分段时，同时更新 `tests/prompt_test.py`。
+
+自定义系统提示词保存在 `data/preferences.json` 的 `custom_system_prompt`，接口为 `PUT /api/preferences`，最长 20,000 字符；留空恢复默认身份。
 
 ## 5. 工具
 
 ### 5.1 工具注册表
 
-内置工具清单在 `tools/registry.py` 的 `TOOL_SPECS` 登记，扩展管理器将发现的工具发布到同一注册表，网页设置、网页对话和命令行均从它派生。旧分组自动迁移为 version 4 的独立工具设置，调用行为保持兼容；安装说明见[扩展指南](docs/extensions.md)。
+内置工具的声明写在各自模块的 `TOOL_ENTRIES`（与实现、docstring、`ToolSpec.fields` 同一文件），`tools/registry.py` 按固定顺序汇总为 `TOOL_SPECS`。扩展管理器把发现的工具发布到同一张表，网页设置、网页对话和命令行均从它派生。旧分组自动迁移为 version 4 的独立工具设置，调用行为保持兼容；安装说明见[扩展指南](docs/extensions.md)。
 
 | 条目 | 暴露给模型的工具 | 风险 | 默认 | 加载 |
 | --- | --- | --- | --- | --- |
@@ -354,9 +372,9 @@ Final Answer: ...
 
 「风险」为写文件或执行命令的条目是否需要审批，由当前权限模式决定，见[第 6 节](#6-审批与安全边界)。
 
-**基础工具**常驻模型上下文（前提是用户启用了对应条目）。**扩展工具**即使默认启用，也不会直接出现在模型 schema 中，需要先调用 `tools_search` 按能力搜索并加载，加载后同一轮即可调用。搜索默认加载 3 个、最多 10 个，可在「设置 → 扩展 → 工具 → 扩展工具搜索」里调整每次加载数量。用户在设置里禁用的扩展工具不会被搜索到，也不会进入模型 schema。
+**常驻工具**（`ToolSpec.defer=False`）的完整 schema 随每次请求下发。**延迟工具**（`defer=True`，以及默认延迟的插件 / MCP 工具）只公布名称：模型先调用 `tools_search` 按能力搜索或 `select:<name>` 精确加载，返回 `<functions>` 块里的完整 JSON schema，再通过 `deferred_tool_call` 以 `{"name": ..., "input": {...}}` 执行。执行前中间件会把调用改写成真实工具名，因此审批、命令策略和工具实现看到的都是真实工具，而不是控制器。搜索默认返回 3 个、最多 10 个，可在「设置 → 扩展 → 工具 → 扩展工具搜索」里调整。
 
-`tools_search` 本身被禁用时，扩展工具将无法加载。它是常驻的元工具，不参与扩展工具搜索。
+用户在设置里禁用的工具不会被搜索到，也不会进入请求。`tools_search` 本身被禁用时，延迟工具不会消失，而是按常驻工具下发；这样关闭搜索不会让工具变得不可用。
 
 `get_weather` 默认关闭，并且没有默认 API Host；需要先填写和风天气凭据与 API Host，再在「设置 → 扩展 → 工具」里启用。
 
@@ -367,7 +385,7 @@ Final Answer: ...
 | 工具 | 作用 |
 | --- | --- |
 | `list_dir(path=".")` | 列目录：目录带 `/`，文件带大小，超出上限说明省略数量 |
-| `read_file(path, offset=1, limit=200)` | 带行号读取文本；单次上限 2000 行，大文件按 `offset` 分段，二进制文件直接拒绝 |
+| `read_file(path, offset=1, limit=None)` | 带行号读取文本；整文件受 256 KiB 与约 25,000 token 预算约束，超 token 预算返回分页部分视图；显式 `limit` 可绕过字节上限，但区间超 token 预算直接报错；二进制文件直接拒绝 |
 | `search_files(pattern, path=".", glob="", max_results=50)` | 按正则搜内容，可只搜 `*.py` 之类；自动跳过 `.git` / `.venv` / `node_modules` / `dist` / `build` 等目录 |
 | `find_files(pattern, path=".", max_results=100)` | 按文件名或相对路径查找，支持 `*.py`、`**/*.test.ts` 等通配符 |
 | `file_stat(path=".")` | 查看类型、大小、修改时间与文本行数 |
@@ -383,7 +401,8 @@ Final Answer: ...
 | `list_processes()` / `read_process_logs(process_id, tail=200)` | 查看后台进程与日志尾部 |
 | `wait_process(process_id, timeout=30, pattern="", tail=60)` | 等待进程退出，或日志中出现某个模式 |
 | `stop_process(process_id)` | 停止进程及其子进程 |
-| `tools_search(query, limit=0)` | 按能力搜索并加载扩展工具；加载后同轮可用 |
+| `tools_search(query, limit=0)` | 搜索延迟工具并返回完整 JSON schema；`select:<name>` 精确加载 |
+| `deferred_tool_call(name, input={})` | 按加载到的 schema 执行延迟工具；审批按真实工具名判定 |
 
 凭据路径额外受保护：`.ssh` / `.aws` / `.kube` / `.gnupg` / `.docker` 目录、`.netrc` / `.npmrc` / `.pypirc`、SSH 私钥以及 `.pem` / `.key` / `.p12` / `.pfx` / `.jks` / `.keystore` 不允许读取；这些凭据目录与 `.netrc` 也不允许写入。`.env` 可以写入但读不回来；应用自己的数据目录也不允许 Agent 访问。子进程只继承白名单环境变量，模型密钥不会出现在命令环境里。
 
@@ -462,26 +481,43 @@ Windows 默认不带 IANA 时区数据库，Python 的 `zoneinfo` 需要 `tzdata
 
 ### 5.9 新增工具
 
-工具清单只有一处：`tools/registry.py` 的 `TOOL_SPECS`。加一个条目即可，前端无需改动：
+工具声明与实现放在同一个模块里：docstring 就是模型看到的描述，参数说明写在同一段 docstring 的 `Args:` 里，UI 字段写在 `ToolSpec.fields`。注册表只负责汇总，不在别处维护第二份清单：
 
 ```python
-"translate_text": ToolSpec(
-    name="translate_text",
-    label="文本翻译",
-    description="把一段文本翻译成目标语言。",
-    fields=(
-        ToolField("TRANSLATE_API_KEY", "API Key", secret=True),
-        ToolField("TRANSLATE_ENDPOINT", "接口地址", placeholder="https://…"),
-        ToolField("TRANSLATE_MODE", "模式", kind="select",
-                  options=(("fast", "快速"), ("deep", "深度")), default="fast"),
-        ToolField("TRANSLATE_LIMIT", "单次字数", kind="number", default="2000"),
+# tools/translate.py
+from langchain.tools import tool
+from tools.spec import FIELD_NUMBER, ToolField, ToolSpec
+
+def build_translate_tools(config, ctx):
+    @tool
+    def translate_text(text: str, target: str = "zh") -> str:
+        """Translate text into the target language.
+
+        Args:
+            text: Text to translate.
+            target: Target language code.
+        """
+        ...
+    return [translate_text]
+
+TOOL_ENTRIES = (
+    ToolSpec(
+        name="translate_text",
+        label="文本翻译",
+        description="把一段文本翻译成目标语言",
+        fields=(
+            ToolField("TRANSLATE_API_KEY", "API Key", secret=True),
+            ToolField("TRANSLATE_LIMIT", "单次字数", kind=FIELD_NUMBER, default="2000"),
+        ),
+        tool_names=("translate_text",),
+        builder=build_translate_tools,
+        # defer=True 表示 schema 不进请求，先由 tools_search 加载；
+        # capability={"permission_name": "web"} 覆盖风险基行的能力字段。
     ),
-    tool_names=("translate_text",),
-    builder=_build_translate,   # (config, ctx) -> list[BaseTool]
-),
+)
 ```
 
-设置面板会自动出现这张卡片和对应控件；保存后下一轮对话里，`builder` 拿到的 `config` 就是这些值（缺省回落到 `.env` 同名变量与 `ToolField.default`）。
+再把模块加入 `tools/registry.py` 的 `_MODULE_ENTRIES` 顺序表即可。设置面板会自动出现这张卡片和对应控件；保存后下一轮对话里，`builder` 拿到的 `config` 就是这些值（缺省回落到 `.env` 同名变量与 `ToolField.default`）。
 
 字段形态：`text`（默认，`multiline=True` 变多行）、`number`（保存时校验数字）、`select`（必须给 `options`）、`switch`（存 `"true"` / `"false"`）。`secret=True` 不回显、留空保持原值、可用「清除」真正清空；`required=True` 只在界面标星，是否允许为空由工具自己判断。设 `risk=RISK_WRITE` / `RISK_EXEC` 会把工具纳入审批判定，是否弹窗取决于权限模式。
 
@@ -498,7 +534,7 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 请先调用 read_file 查看原文，再决定是整文件覆盖（write_file）还是局部替换（edit_file）。
 ```
 
-`[code]` 是稳定的机读错误码，例如 `not_found`、`path_escape`、`protected_path`、`read_required`、`stale_read`、`ambiguous_match`、`bad_pattern`、`timeout`、`auth_config`、`blocked_host`、`unsupported_content`、`missing_dependency`、`tool_not_activated`、`question_timeout`、`unknown_process`。
+`[code]` 是稳定的机读错误码，例如 `not_found`、`path_escape`、`protected_path`、`read_required`、`stale_read`、`ambiguous_match`、`bad_pattern`、`timeout`、`auth_config`、`blocked_host`、`unsupported_content`、`missing_dependency`、`tool_not_loaded`、`schema_not_loaded`、`question_timeout`、`unknown_process`。
 
 统一前缀让模型能稳定判断「这次调用失败了」；如果不同工具的大小写不一致，模型可能漏判，然后在错误的前提上继续推理。
 
@@ -551,7 +587,7 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 
 ### 6.2.2 工具能力矩阵
 
-每个工具在 `tools/registry.py` 里由 `risk` 派生出能力行，审批与计划模式只读能力行，不再按工具名硬编码名单：
+每个工具在自己的模块里由 `risk` 派生出能力基行，覆盖字段写在 `ToolSpec.capability`；`tools/registry.py` 只负责派发，审批与计划模式只读能力行，不再按工具名硬编码名单：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -724,7 +760,7 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 | `OVERFLOW_RECOVERY` | `1` | 上下文溢出错误后压缩并重试一次 |
 | `OVERFLOW_RETAIN_MESSAGES` | `4` | 溢出恢复时保留的最近消息数 |
 | `MAX_TOOL_OUTPUT_TOKENS` | `12000` | 单条工具输出写入历史的预算 |
-| `MAX_TOOL_OUTPUT_CHARS` | `48000` | 单个工具返回的字符上限（超出截断并标注） |
+| `MAX_TOOL_OUTPUT_CHARS` | `48000` | 单个工具返回的字符上限（超出截断并标注）；`read_file` 改由 256 KiB 与 token 预算约束 |
 | `EXECUTION_MODE` | `adaptive` | `conservative` / `adaptive` / `aggressive`，决定默认调用上限 |
 | `MAX_MODEL_CALLS` | `20` | 单轮模型调用上限；保守 8 / 自适应 20 / 激进 40 |
 | `MAX_TOOL_CALLS` | `50` | 单轮工具调用上限；保守 15 / 自适应 50 / 激进 100 |
@@ -808,18 +844,20 @@ agents/
   compaction.py         前缀回放摘要、检查点框定、工具结果修剪、溢出识别
   usage.py              提供方用量与缓存读/写桶的折算、轮次/会话聚合
   react.py              可选文本 ReAct 循环
-  tool_visibility.py    扩展工具可见性过滤
+  tool_exposure.py      请求暴露与延迟工具执行中间件
 config/
   settings.py           环境变量与路径解析
   storage.py            数据目录初始化与迁移
   store.py              供应商 / 工具 / 工作区 / 偏好持久化
 prompts/
-  system.py             分层系统提示词
+  builder.py            系统提示词分段排序与拼接
+  sections/             前缀 / 身份 / 规则 / 界面 / 环境 / Git 快照 / Skill 分段
   context.py            项目上下文文件加载
   react.py              ReAct 格式与工具目录模板
 tools/
-  registry.py           工具清单唯一事实来源
-  catalog.py            基础 / 扩展工具目录与 tools_search
+  spec.py               工具声明类型（ToolSpec / ToolField / 风险与能力字段）
+  registry.py           工具声明汇总与能力矩阵派发
+  catalog.py            常驻 / 延迟工具目录、schema 加载与 deferred_tool_call
   files.py documents.py images.py
   fetch.py search.py download.py
   patch.py git.py processes.py shell.py

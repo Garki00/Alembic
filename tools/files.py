@@ -6,8 +6,8 @@ Safety boundaries:
   (including symlinks and ``..``) is rejected.
 - An existing file must be read before it is overwritten (see :func:`_check_read`),
   so the model cannot replace content it has never seen.
-- Each output is truncated to ``ctx.max_output_chars`` so a single large read cannot
-  overflow the context window.
+- ``read_file`` enforces a whole-file byte ceiling and a model-token ceiling; a
+  whole-file read over the token ceiling falls back to a paginated partial view.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from tools.paths import (
     is_protected_read,
     resolve_in_workspace,
 )
+from tools.spec import RISK_WRITE, ToolSpec, single_tool
 
 # --------------------------------------------------- read-before-write check
 # path -> (mtime_ns, fully_read). Shared within the process across turns and tools.
@@ -43,9 +44,72 @@ _SKIP_DIRS = {
     ".alembic",
 }
 
-_MAX_READ_LIMIT = 2000
 _MAX_LIST_ENTRIES = 300
 _MAX_SCAN_FILES = 3000
+
+# Read guards follow the same budget shape as the reference runtime: whole-file
+# reads have a byte ceiling, and every read is bounded by an estimated token
+# ceiling. Range reads that exceed the token ceiling fail instead of returning a
+# silently truncated slice.
+_READ_MAX_FILE_SIZE_BYTES = 256 * 1024
+_READ_MAX_OUTPUT_TOKENS = 25_000
+_READ_PARTIAL_FIT_RATIO = 0.85
+_READ_PARTIAL_SHRINK_RATIO = 0.7
+_READ_PARTIAL_SHRINK_STEPS = 6
+_CHINESE_CHARS = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _estimate_tokens(text: str) -> int:
+    """Estimate model tokens, weighting CJK characters more heavily."""
+    chinese = len(_CHINESE_CHARS.findall(text))
+    other = len(text) - chinese
+    return (chinese * 2 + other + 2) // 3
+
+
+def _token_capped_view(
+    text: str,
+    token_count: int,
+) -> tuple[str, int, bool] | None:
+    """Build a partial view that fits the token ceiling.
+
+    Returns ``(view, shown_lines, by_characters)`` or ``None`` when even a
+    one-character view cannot fit.
+    """
+    lines = text.splitlines()
+    if not lines:
+        return None
+    line_count = max(
+        1,
+        min(
+            len(lines),
+            int(len(lines) * _READ_MAX_OUTPUT_TOKENS / token_count * _READ_PARTIAL_FIT_RATIO),
+        ),
+    )
+    view = "\n".join(lines[:line_count])
+    for _ in range(_READ_PARTIAL_SHRINK_STEPS):
+        if _estimate_tokens(view) <= _READ_MAX_OUTPUT_TOKENS or line_count <= 1:
+            break
+        line_count = max(1, int(line_count * _READ_PARTIAL_SHRINK_RATIO))
+        view = "\n".join(lines[:line_count])
+
+    by_characters = False
+    if _estimate_tokens(view) > _READ_MAX_OUTPUT_TOKENS or not view.strip():
+        chars_per_token = max(0.5, len(text) / token_count)
+        char_count = max(
+            1,
+            int(_READ_MAX_OUTPUT_TOKENS * chars_per_token * _READ_PARTIAL_FIT_RATIO),
+        )
+        for _ in range(_READ_PARTIAL_SHRINK_STEPS):
+            view = text[:char_count]
+            if _estimate_tokens(view) <= _READ_MAX_OUTPUT_TOKENS:
+                break
+            char_count = max(1, int(char_count * _READ_PARTIAL_SHRINK_RATIO))
+        if _estimate_tokens(view) > _READ_MAX_OUTPUT_TOKENS:
+            return None
+        by_characters = True
+
+    shown_lines = len(view.split("\n")) if by_characters else line_count
+    return view, shown_lines, by_characters
 
 
 def _format_size(size: int) -> str:
@@ -238,17 +302,23 @@ def build_file_read_tools(ctx: ToolContext) -> list:
         return truncate("\n".join(lines), ctx.max_output_chars)
 
     @tool
-    def read_file(path: str, offset: int = 1, limit: int = 2000) -> str:
-        """Read the contents of a text file within the workspace, with line numbers.
+    def read_file(path: str, offset: int = 1, limit: int | None = None) -> str:
+        """Read a text file within the workspace, with line numbers.
+
+        Whole-file reads are bounded by a 256 KiB byte ceiling and an estimated
+        25,000-token ceiling. When a whole-file read exceeds the token ceiling, a
+        paginated partial view is returned instead of the full content. When
+        ``limit`` is supplied, the byte ceiling does not apply, but a range that
+        exceeds the token ceiling fails with an error.
 
         Args:
             path: The file path relative to the workspace.
             offset: The starting line number, beginning at 1.
-            limit: The maximum number of lines to read this time (upper limit 2000); for large files, read in segments.
+            limit: The maximum number of lines to read; omit to read the whole file.
 
         Returns:
-            The first line is a file overview, followed by "line number| content"; when the file is longer,
-            a hint for the next segment's offset is provided.
+            The first line is a file overview, followed by "line number| content";
+            when the result is partial, a continuation hint is included.
         """
         target = _resolve_or_none(ctx, path)
         if isinstance(target, str):
@@ -259,6 +329,19 @@ def build_file_read_tools(ctx: ToolContext) -> list:
             return tool_error("is_directory", f"{path} is a directory.", hint="Use list_dir to view the directory contents.")
         if _looks_binary(target):
             return tool_error("binary_file", f"{path} appears to be a binary file and cannot be read as text.")
+
+        if limit is None:
+            try:
+                size = target.stat().st_size
+            except OSError as exc:
+                return tool_error("read_failed", f"Failed to read {path}: {exc}")
+            if size > _READ_MAX_FILE_SIZE_BYTES:
+                return tool_error(
+                    "file_too_large",
+                    f"File content ({size} bytes) exceeds the maximum allowed size "
+                    f"({_READ_MAX_FILE_SIZE_BYTES} bytes).",
+                    hint="Use offset and limit to read part of the file, or search_files to find a specific section.",
+                )
 
         try:
             text = _read_text(target)
@@ -272,27 +355,84 @@ def build_file_read_tools(ctx: ToolContext) -> list:
             return f"File: {display_path(ctx.workspace, target)} (empty file, 0 lines)"
 
         start = max(1, int(offset or 1))
-        take = max(1, min(int(limit or 2000), _MAX_READ_LIMIT))
         if start > total:
             return tool_error(
                 "offset_out_of_range",
                 f"Start line {start} is beyond the file's {total} lines.",
                 hint=f"The file has {total} lines; set offset within 1..{total}.",
             )
-        end = min(total, start + take - 1)
-        complete = start == 1 and end == total
-        _mark_read(target, complete=complete)
+        if limit is None:
+            end = total
+            initial_read = start == 1
+        else:
+            take = max(1, int(limit))
+            end = min(total, start + take - 1)
+            initial_read = False
+
+        selected = "\n".join(lines[start - 1:end])
+        original_chars = len(selected)
+        token_count = _estimate_tokens(selected)
+        partial = False
+        by_characters = False
+        shown_count = end - start + 1
+        if token_count > _READ_MAX_OUTPUT_TOKENS:
+            if not initial_read:
+                return tool_error(
+                    "read_too_many_tokens",
+                    f"File content ({token_count} tokens) exceeds the maximum allowed "
+                    f"tokens ({_READ_MAX_OUTPUT_TOKENS}).",
+                    hint="Use offset and limit to read a smaller range, or search_files to find a specific section.",
+                )
+            view_data = _token_capped_view(selected, token_count)
+            if view_data is None:
+                return tool_error(
+                    "read_too_many_tokens",
+                    f"File content ({token_count} tokens) exceeds the maximum allowed "
+                    f"tokens ({_READ_MAX_OUTPUT_TOKENS}) and cannot be split.",
+                    hint="Use offset and limit to read a smaller range, or search_files to find a specific section.",
+                )
+            selected, shown_lines, by_characters = view_data
+            end = start + shown_lines - 1
+            shown_count = len(selected.split("\n"))
+            partial = True
+
+        if limit is not None:
+            _mark_read(target, complete=(start == 1 and end == total))
+        elif partial:
+            _mark_read(target, complete=False)
+        else:
+            _mark_read(target, complete=initial_read)
 
         width = len(str(end))
-        body = [f"{index:>{width}}| {lines[index - 1]}" for index in range(start, end + 1)]
+        body = [f"{index:>{width}}| {lines[index - 1]}" for index in range(start, min(end, total) + 1)]
+        if partial:
+            # The selected view may end mid-line in the character fallback, so
+            # number the displayed lines directly instead of indexing the file.
+            rendered = selected.split("\n")
+            width = len(str(start + len(rendered) - 1))
+            body = [
+                f"{start + index:>{width}}| {line}"
+                for index, line in enumerate(rendered)
+            ]
+
         header = (
             f"File: {display_path(ctx.workspace, target)}"
             f" ({total} lines, showing {start}-{end})"
         )
         footer = []
+        if partial and by_characters:
+            footer.append(
+                f"…[partial view: showing the first {len(selected)} of {original_chars} "
+                f"characters ({token_count} tokens, cap {_READ_MAX_OUTPUT_TOKENS})]"
+            )
+        elif partial:
+            footer.append(
+                f"…[partial view: showing {shown_count} of {total} lines "
+                f"({token_count} tokens, cap {_READ_MAX_OUTPUT_TOKENS})]"
+            )
         if end < total:
             footer.append(f"…{total - end} more lines; continue with offset={end + 1}.")
-        return truncate("\n".join([header, *body, *footer]), ctx.max_output_chars)
+        return "\n".join([header, *body, *footer])
 
     @tool
     def search_files(pattern: str, path: str = ".", glob: str = "", max_results: int = 50) -> str:
@@ -829,3 +969,61 @@ def build_file_write_tools(ctx: ToolContext) -> list:
         return f"Copied: {display_path(ctx.workspace, src)} → {display_path(ctx.workspace, dst)}"
 
     return [write_file, edit_file, make_dir, delete_file, move_file, copy_file]
+
+
+# ---------------------------------------------------------------------------
+# Registry entries
+# ---------------------------------------------------------------------------
+def _read_entry(name: str, label: str, description: str) -> ToolSpec:
+    return ToolSpec(
+        name=name,
+        label=label,
+        description=description,
+        tool_names=(name,),
+        builder=single_tool(lambda _config, ctx: build_file_read_tools(ctx), name),
+    )
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    _read_entry("list_dir", "目录浏览", "列出目录内容"),
+    _read_entry("read_file", "文件读取", "读取文本文件"),
+    _read_entry("search_files", "内容搜索", "搜索文件内容"),
+    _read_entry("find_files", "文件查找", "按名称查找文件"),
+    _read_entry("file_stat", "文件信息", "查看文件元数据"),
+    ToolSpec(
+        name="write_file", label="文件写入", description="写入文件内容",
+        risk=RISK_WRITE, tool_names=("write_file",),
+        builder=single_tool(lambda _config, ctx: build_file_write_tools(ctx), "write_file"),
+        capability={"permission_name": "edit"},
+    ),
+    ToolSpec(
+        name="edit_file", label="文件编辑", description="精确替换文件内容",
+        risk=RISK_WRITE, tool_names=("edit_file",),
+        builder=single_tool(lambda _config, ctx: build_file_write_tools(ctx), "edit_file"),
+        capability={"permission_name": "edit"},
+    ),
+    ToolSpec(
+        name="make_dir", label="创建目录", description="创建工作区目录",
+        risk=RISK_WRITE, tool_names=("make_dir",),
+        builder=single_tool(lambda _config, ctx: build_file_write_tools(ctx), "make_dir"),
+        capability={"risk_level": "low", "permission_name": "file"},
+    ),
+    ToolSpec(
+        name="delete_file", label="删除文件", description="删除文件或目录",
+        risk=RISK_WRITE, tool_names=("delete_file",),
+        builder=single_tool(lambda _config, ctx: build_file_write_tools(ctx), "delete_file"),
+        capability={"risk_level": "high", "destructive": True, "permission_name": "file"},
+    ),
+    ToolSpec(
+        name="move_file", label="移动文件", description="移动文件或目录",
+        risk=RISK_WRITE, tool_names=("move_file",),
+        builder=single_tool(lambda _config, ctx: build_file_write_tools(ctx), "move_file"),
+        capability={"risk_level": "medium", "permission_name": "file"},
+    ),
+    ToolSpec(
+        name="copy_file", label="复制文件", description="复制文件或目录",
+        risk=RISK_WRITE, tool_names=("copy_file",),
+        builder=single_tool(lambda _config, ctx: build_file_write_tools(ctx), "copy_file"),
+        capability={"risk_level": "medium", "permission_name": "file"},
+    ),
+)

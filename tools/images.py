@@ -24,6 +24,7 @@ from typing import Callable
 from langchain.tools import tool
 
 from tools.context import ToolContext
+from tools.spec import ToolSpec
 from tools.errors import tool_error, truncate
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
 
@@ -180,3 +181,16 @@ def build_image_tools(ctx: ToolContext) -> list:
         return f"{header}\n\n{body}"
 
     return [read_image]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="read_image",
+        label="图片读取",
+        description="识别图片内容，需视觉模型",
+        tool_names=("read_image",),
+        builder=lambda _config, ctx: build_image_tools(ctx),
+        defer=True,
+        search_hint="image photo picture screenshot ocr vision 图片 照片 截图 识图 视觉",
+    ),
+)

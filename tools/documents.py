@@ -23,6 +23,7 @@ from pathlib import Path
 from langchain.tools import tool
 
 from tools.context import ToolContext
+from tools.spec import ToolSpec
 from tools.errors import tool_error, truncate
 from tools.paths import WorkspacePathError, display_path, resolve_in_workspace
 
@@ -332,3 +333,16 @@ def build_document_tools(ctx: ToolContext) -> list:
         return truncate("\n".join(body), ctx.max_output_chars)
 
     return [read_document]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="read_document",
+        label="文档读取",
+        description="读取 PDF、Office 与文本文件",
+        tool_names=("read_document",),
+        builder=lambda _config, ctx: build_document_tools(ctx),
+        defer=True,
+        search_hint="pdf docx xlsx pptx word excel document office 文档 表格 幻灯片 解析",
+    ),
+)

@@ -17,6 +17,7 @@ from langchain.tools import tool
 
 from tools.context import ToolContext
 from tools.errors import tool_error
+from tools.spec import ToolSpec
 
 MAX_OPTIONS = 6
 
@@ -154,3 +155,20 @@ def build_question_tools(ctx: ToolContext) -> list:
         return f"User answer: {answer}" if answer else "User answer: (empty)"
 
     return [ask_user_question]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="ask_user_question",
+        label="向用户提问",
+        description="向用户提问并等待回答",
+        tool_names=("ask_user_question",),
+        builder=lambda _config, ctx: build_question_tools(ctx),
+        capability={
+            "read_only": True,
+            "side_effect_scope": "session",
+            "risk_level": "low",
+            "permission_name": "session",
+        },
+    ),
+)

@@ -242,9 +242,12 @@ class ExtensionManager:
         from tools.registry import TOOL_SPECS, ToolSpec
         if name in self._staged or (name in TOOL_SPECS and TOOL_SPECS[name] is not self._owned.get(name)):
             raise ValueError(f"Duplicate tool name: {name}")
+        # Extension tools are deferred by default: they can be numerous and their
+        # schemas are only needed once the model asks for that capability.
         self._staged[name] = ToolSpec(name=name, label=label or name, description=description,
                                   tool_names=(name,), builder=builder, risk=risk,
-                                  default_enabled=enabled, source=source, source_id=source_id)
+                                  default_enabled=enabled, source=source, source_id=source_id,
+                                  defer=source != "builtin")
 
 
     def _mcp_client(self):

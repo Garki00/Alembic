@@ -1,5 +1,5 @@
 # tests/tool_activation_flow_test.py
-"""tools_search activates a tool for the next model call in the same turn."""
+"""tools_search loads a schema; deferred_tool_call executes it in the same turn."""
 
 import shutil
 import unittest
@@ -12,8 +12,15 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage, HumanMessage
 
 from agents.react import ReActAgent
-from agents.tool_visibility import ToolVisibilityMiddleware
-from tools.catalog import ToolActivation, enabled_tool_names
+from agents.tool_exposure import ToolExposureMiddleware
+from tools.catalog import (
+    DEFERRED_TOOL_CALL_NAME,
+    TOOL_SEARCH_NAME,
+    ToolActivation,
+    build_contracts,
+    enabled_tool_names,
+    resolve_exposure,
+)
 from tools.context import ToolContext
 from tools.registry import build_tools
 
@@ -46,7 +53,7 @@ class Recorder(AgentMiddleware):
 
 
 class ActivationFlowTest(unittest.TestCase):
-    def test_search_then_call_in_same_turn(self):
+    def test_search_then_deferred_call_in_same_turn(self):
         activation = ToolActivation()
         enabled = enabled_tool_names({"tools_search", "mock_data", "file_read"})
         workspace = Path(__file__).resolve().parents[1] / ".tmp" / "tests"
@@ -72,33 +79,40 @@ class ActivationFlowTest(unittest.TestCase):
             ),
             AIMessage(
                 content="",
-                tool_calls=[{"name": "mock_lookup", "args": {}, "id": "c2"}],
+                tool_calls=[{
+                    "name": DEFERRED_TOOL_CALL_NAME,
+                    "args": {"name": "mock_lookup", "input": {}},
+                    "id": "c2",
+                }],
             ),
             AIMessage(content="done"),
         ])
-        visibility = ToolVisibilityMiddleware(
+        contracts = build_contracts(tools)
+        exposure = resolve_exposure(contracts, activation)
+        middleware = ToolExposureMiddleware(
+            contracts=contracts,
+            exposure=exposure,
             activation=activation,
-            basic_names={"read_file", "list_dir", "search_files"},
-            extended_names={"mock_lookup"},
-            meta_names={"tools_search"},
+            tools=tools,
         )
         recorder = Recorder()
-        agent = create_agent(model, tools=tools, middleware=[visibility, recorder])
+        agent = create_agent(model, tools=tools, middleware=[middleware, recorder])
         result = agent.invoke({"messages": [{"role": "user", "content": "test"}]})
 
         self.assertEqual(len(recorder.calls), 3)
         first = set(recorder.calls[0])
-        second = set(recorder.calls[1])
         self.assertIn("read_file", first)
-        self.assertIn("tools_search", first)
+        self.assertIn(TOOL_SEARCH_NAME, first)
+        self.assertIn(DEFERRED_TOOL_CALL_NAME, first)
         self.assertNotIn("mock_lookup", first)
-        self.assertIn("mock_lookup", second)
+        # Loading the schema does not promote it into the request tool list.
+        self.assertNotIn("mock_lookup", set(recorder.calls[1]))
         self.assertIn("mock_lookup", activation.snapshot())
         self.assertEqual(result["messages"][-1].content, "done")
 
 
 class ReactActivationFlowTest(unittest.TestCase):
-    def test_react_sees_loaded_tool_on_next_step(self):
+    def test_react_sees_deferred_name_and_executes_through_control(self):
         activation = ToolActivation()
         enabled = enabled_tool_names({"tools_search", "mock_data", "file_read"})
         ctx = ToolContext(
@@ -107,9 +121,11 @@ class ReactActivationFlowTest(unittest.TestCase):
             enabled_tool_names=enabled,
         )
         tools = build_tools({"tools_search", "mock_data", "file_read"}, {}, ctx)
+        contracts = build_contracts(tools)
+        exposure = resolve_exposure(contracts, activation)
         model = ScriptedModel([
             'Thought: search it.\nAction: tools_search\nAction Input: {"query": "模拟数据"}',
-            "Thought: call it.\nAction: mock_lookup\nAction Input: {}",
+            'Thought: call it.\nAction: deferred_tool_call\nAction Input: {"name": "mock_lookup", "input": {}}',
             "Thought: done\nFinal Answer: ok",
         ])
         agent = ReActAgent(
@@ -117,13 +133,15 @@ class ReactActivationFlowTest(unittest.TestCase):
             tools,
             "base",
             activation=activation,
-            basic_names={"read_file", "list_dir", "search_files"},
-            extended_names={"mock_lookup"},
-            meta_names={"tools_search"},
+            basic_names=[name for name in exposure.visible if name not in exposure.controls],
+            extended_names=sorted(exposure.deferred),
+            meta_names=sorted(exposure.controls),
+            deferred_names=sorted(exposure.deferred),
         )
         result = agent.invoke({"messages": [HumanMessage(content="go")]})
 
         self.assertIn("mock_lookup", activation.snapshot())
+        self.assertIn("mock_lookup", str(model.prompts[0]))
         self.assertIn("mock_lookup", str(model.prompts[1]))
         self.assertEqual(result["messages"][-1].content, "ok")
 

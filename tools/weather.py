@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from langchain.tools import tool
 
 from tools.errors import tool_error
+from tools.spec import ToolField, ToolSpec
 
 load_dotenv()
 
@@ -201,3 +202,29 @@ def build_weather_tools(config: dict) -> list:
         return _fetch_weather(city, config)
 
     return [get_weather]
+
+
+TOOL_ENTRIES: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="get_weather",
+        label="实时天气",
+        description="查询城市实时天气，需和风天气凭据",
+        fields=(
+            ToolField("QWEATHER_KEY_ID", "Key ID", secret=True),
+            ToolField("QWEATHER_PROJECT_ID", "Project ID"),
+            ToolField("QWEATHER_DEVELOPER_ID", "Developer ID"),
+            ToolField("QWEATHER_PRIVATE_KEY", "Private Key（Ed25519）", secret=True, multiline=True),
+            ToolField(
+                "QWEATHER_API_HOST",
+                "API Host",
+                placeholder="填写你的和风天气 API Host（不含 https://）",
+            ),
+        ),
+        tool_names=("get_weather",),
+        default_enabled=False,
+        builder=lambda config, _ctx: build_weather_tools(dict(config)),
+        defer=True,
+        search_hint="weather forecast temperature 天气 气温 预报",
+    ),
+)
+

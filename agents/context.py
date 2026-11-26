@@ -242,6 +242,11 @@ def cap_tool_outputs(
     capped: list[BaseMessage] = []
     for message in messages:
         if isinstance(message, ToolMessage):
+            # read_file already applies its own byte and token guards; capping it
+            # again would undo the paginated partial view.
+            if getattr(message, "name", None) == "read_file":
+                capped.append(message)
+                continue
             text = message_text(message)
             tokens = _approx_tokens(text)
             if tokens > max_tokens:
