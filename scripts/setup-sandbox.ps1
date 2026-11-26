@@ -1,5 +1,5 @@
 ﻿# scripts/setup-sandbox.ps1
-# 一次性管理员初始化：创建两个专用低权限用户、防火墙规则和 App 可读的凭据文件。
+# 一次性管理员初始化：创建两个专用低权限用户、离线防火墙规则和 App 可读的凭据文件。
 # 日常运行不需要管理员；应用本身不会以管理员身份运行。
 param(
     [switch]$Verify,
@@ -60,26 +60,16 @@ $setupFile = Join-Path $dataDir "sandbox-setup.json"
 $sandboxFile = Join-Path $dataDir "sandbox.json"
 $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 
-function Get-ExpectedRules([string]$user, [bool]$allowProxy) {
-    $names = @(
-        "$rulePrefix-$user-BlockOut",
-        "$rulePrefix-$user-BlockIn"
-    )
-    if ($allowProxy) {
-        # 放行本机代理的做法不是“允许 + 覆盖阻止”（那要求 IPsec 认证/加密，
-        # New-NetFirewallRule 会拒绝），而是把 127.0.0.1 上的 47831 从阻止范围里排除。
-        $names += @(
-            "$rulePrefix-$user-BlockOutV6",
-            "$rulePrefix-$user-BlockOutLbTcp",
-            "$rulePrefix-$user-BlockOutLbUdp"
-        )
-    }
-    return $names
-}
-
 function Get-AllRuleNames([string]$user) {
-    # 含旧版本留下的 -Proxy 规则名，初始化时顺手清掉。
-    return @(Get-ExpectedRules $user $true) + @("$rulePrefix-$user-Proxy")
+    # 在线账户不再使用防火墙；这里同时列出旧版本规则名，升级时一并删除。
+    return @(
+        "$rulePrefix-$user-BlockOut",
+        "$rulePrefix-$user-BlockIn",
+        "$rulePrefix-$user-BlockOutV6",
+        "$rulePrefix-$user-BlockOutLbTcp",
+        "$rulePrefix-$user-BlockOutLbUdp",
+        "$rulePrefix-$user-Proxy"
+    )
 }
 
 function Remove-Rules([string]$user) {
@@ -98,100 +88,19 @@ function New-FirewallRule([hashtable]$Spec) {
     }
 }
 
-function Test-IPv6Enabled {
-    # 只有拿到链路本地以外的 IPv6 地址，才算真的能走 IPv6 出网；
-    # 查不到就返回 $null（只警告，不阻断初始化）。
-    try {
-        $global = @(Get-NetIPAddress -AddressFamily IPv6 -ErrorAction Stop |
-            Where-Object { $_.IPAddress -notmatch '^(fe80|::1)' })
-        return $global.Count -gt 0
-    } catch {
-        return $null
-    }
-}
-
-function Add-IPv6BlockRule([string]$name, [string]$sddl) {
-    # 同一台机器上不同 Windows 版本对 IPv6 前缀的校验不一致（::/0 会被判成
-    # “地址前缀无效”），所以按从宽到窄依次尝试；全失败再决定是否致命。
-    $candidates = @(
-        @("::/0"),
-        @("::0/0"),
-        @("2000::/3", "fc00::/7", "fe80::/10")
-    )
-    $last = ""
-    foreach ($prefixes in $candidates) {
-        try {
-            New-FirewallRule @{
-                DisplayName = $name
-                Direction = "Outbound"; Action = "Block"; LocalUser = $sddl
-                Profile = "Any"; Enabled = "True"; RemoteAddress = $prefixes
-            }
-            return $true
-        } catch {
-            $last = $_.Exception.Message
-        }
-    }
-    $enabled = Test-IPv6Enabled
-    if ($enabled -eq $true) {
-        throw "无法创建 IPv6 阻止规则（$last）。系统启用了 IPv6，缺这条规则时沙盒可以绕过代理直接出网。"
-    }
-    Write-Warning "IPv6 阻止规则创建失败（$last）；系统未检测到启用的 IPv6 网卡，按可跳过处理。"
-    return $false
-}
-
-function New-BlockRules([string]$user, [bool]$allowProxy) {
+function New-BlockRules([string]$user) {
     $sid = (Get-LocalUser -Name $user).SID.Value
     $sddl = "D:(A;;CC;;;{0})" -f $sid
     Remove-Rules $user
     $created = @()
 
-    if (-not $allowProxy) {
-        # offline：完全断网（不限定地址 = IPv4 + IPv6 一起挡）
-        New-FirewallRule @{
-            DisplayName = "$rulePrefix-$user-BlockOut"
-            Direction = "Outbound"; Action = "Block"; LocalUser = $sddl
-            Profile = "Any"; Enabled = "True"
-        }
-        $created += "$rulePrefix-$user-BlockOut"
-        New-FirewallRule @{
-            DisplayName = "$rulePrefix-$user-BlockIn"
-            Direction = "Inbound"; Action = "Block"; LocalUser = $sddl
-            Profile = "Any"; Enabled = "True"
-        }
-        $created += "$rulePrefix-$user-BlockIn"
-        return $created
-    }
-
-    # online：只允许 127.0.0.1:ProxyPort，其余 IPv4 外网、IPv6、本机其它端口全部阻止。
+    # offline：完全断网（不限定地址 = IPv4 + IPv6 一起挡）
     New-FirewallRule @{
         DisplayName = "$rulePrefix-$user-BlockOut"
         Direction = "Outbound"; Action = "Block"; LocalUser = $sddl
         Profile = "Any"; Enabled = "True"
-        RemoteAddress = @("0.0.0.0-126.255.255.255", "128.0.0.0-255.255.255.255")
     }
     $created += "$rulePrefix-$user-BlockOut"
-    if (Add-IPv6BlockRule "$rulePrefix-$user-BlockOutV6" $sddl) {
-        $created += "$rulePrefix-$user-BlockOutV6"
-    }
-    $portRanges = @()
-    if ($ProxyPort -gt 1) { $portRanges += "1-$($ProxyPort - 1)" }
-    if ($ProxyPort -lt 65535) { $portRanges += "$($ProxyPort + 1)-65535" }
-    if ($portRanges.Count -gt 0) {
-        New-FirewallRule @{
-            DisplayName = "$rulePrefix-$user-BlockOutLbTcp"
-            Direction = "Outbound"; Action = "Block"; LocalUser = $sddl
-            Profile = "Any"; Enabled = "True"; Protocol = "TCP"
-            RemoteAddress = "127.0.0.0/8"; RemotePort = $portRanges
-        }
-        $created += "$rulePrefix-$user-BlockOutLbTcp"
-    }
-    New-FirewallRule @{
-        DisplayName = "$rulePrefix-$user-BlockOutLbUdp"
-        Direction = "Outbound"; Action = "Block"; LocalUser = $sddl
-        Profile = "Any"; Enabled = "True"; Protocol = "UDP"
-        RemoteAddress = "127.0.0.0/8"
-    }
-    $created += "$rulePrefix-$user-BlockOutLbUdp"
     New-FirewallRule @{
         DisplayName = "$rulePrefix-$user-BlockIn"
         Direction = "Inbound"; Action = "Block"; LocalUser = $sddl
@@ -269,18 +178,19 @@ if ($Verify) {
         if ($null -eq (Get-LocalUser -Name $name -ErrorAction SilentlyContinue)) {
             throw "缺少沙盒用户：$name"
         }
-        $required = @("$rulePrefix-$name-BlockOut", "$rulePrefix-$name-BlockIn")
-        if ($name -eq $onlineUser) {
-            $required += @("$rulePrefix-$name-BlockOutLbTcp", "$rulePrefix-$name-BlockOutLbUdp")
-        }
-        foreach ($rule in $required) {
-            if ($null -eq (Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue)) {
-                throw "缺少防火墙规则：$rule"
+        if ($name -eq $offlineUser) {
+            foreach ($rule in @("$rulePrefix-$name-BlockOut", "$rulePrefix-$name-BlockIn")) {
+                if ($null -eq (Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue)) {
+                    throw "缺少离线防火墙规则：$rule"
+                }
             }
-        }
-        if ($name -eq $onlineUser -and
-            $null -eq (Get-NetFirewallRule -DisplayName "$rulePrefix-$name-BlockOutV6" -ErrorAction SilentlyContinue)) {
-            Write-Host "提示：缺少 IPv6 阻止规则；如果本机启用了 IPv6，沙盒可以绕过代理出网。" -ForegroundColor Yellow
+        } else {
+            $stale = @(Get-AllRuleNames $name | Where-Object {
+                $null -ne (Get-NetFirewallRule -DisplayName $_ -ErrorAction SilentlyContinue)
+            })
+            if ($stale.Count -gt 0) {
+                throw "在线账户仍有旧版防火墙规则：$($stale -join ', ')。请重新运行 setup-sandbox.ps1 以启用直连网络。"
+            }
         }
         $hidden = $null
         if (Test-Path -LiteralPath $userListKey) {
@@ -293,6 +203,13 @@ if ($Verify) {
     }
     if (-not (Test-Path -LiteralPath $usersFile)) {
         throw "缺少 $usersFile"
+    }
+    if (-not (Test-Path -LiteralPath $setupFile)) {
+        throw "缺少 $setupFile"
+    }
+    $setupData = Get-Content -LiteralPath $setupFile -Raw | ConvertFrom-Json
+    if ([int]$setupData.version -lt 2) {
+        throw "沙盒 setup 标记仍是旧版本，请重新运行 setup-sandbox.ps1 以启用允许模式。"
     }
     Write-Host "沙盒初始化验证通过。" -ForegroundColor Green
     exit 0
@@ -321,9 +238,10 @@ if (-not $Visible) {
 }
 
 $createdRules = @()
-$createdRules += New-BlockRules $offlineUser $false
-$createdRules += New-BlockRules $onlineUser $true
-# 规则没建好就不要写 ready：否则应用会以为沙盒可用，实际网络策略是缺的。
+$createdRules += New-BlockRules $offlineUser
+# 在线账户只靠代理环境变量，不再创建或保留任何防火墙规则。
+Remove-Rules $onlineUser
+# 离线规则没建好就不要写 ready：否则应用会以为沙盒可用，实际网络策略是缺的。
 foreach ($rule in $createdRules) {
     if ($null -eq (Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue)) {
         throw "防火墙规则未创建成功：$rule（可先运行 setup-sandbox.ps1 -Uninstall 清理后重试）"
@@ -347,7 +265,7 @@ $payload = @{
 Write-JsonFile $usersFile $payload
 $setup = @{
     ready = $true
-    version = 1
+    version = 2
     proxy_port = $ProxyPort
     updated_at = (Get-Date).ToString("o")
 }
@@ -355,8 +273,8 @@ Write-JsonFile $setupFile $setup
 
 if (-not (Test-Path -LiteralPath $sandboxFile)) {
     Write-JsonFile $sandboxFile @{
-        version = 1
-        network = "offline"
+        version = 2
+        network = "allow"
         allowed_domains = @(
             "registry.npmjs.org", "registry.npmmirror.com", "pypi.org",
             "files.pythonhosted.org", "github.com", "codeload.github.com",
@@ -394,7 +312,7 @@ Protect-SandboxFile $setupFile
 Write-Host ""
 Write-Host "沙盒初始化完成。" -ForegroundColor Green
 Write-Host "  用户：$offlineUser / $onlineUser"
-Write-Host "  网络：offline 用户完全断网；allowlist 用户只能访问本机代理 $ProxyPort"
+Write-Host "  网络：offline 用户完全断网；allow 用户可直连，仅注入代理 $ProxyPort"
 if ($Visible) {
     Write-Host "  登录界面：显示这两个账户（-Visible）"
 } else {

@@ -161,7 +161,7 @@ NSIS 负责解压应用文件；随后调用
 [packaging/install/nsis-postinstall.ps1](../packaging/install/nsis-postinstall.ps1)：
 
 1. 校验内置 Node / Python / pnpm 可执行；
-2. 运行 `resources\install\setup-sandbox.ps1`，创建离线 / 允许列表两个本地账户和防火墙规则；
+2. 运行 `resources\install\setup-sandbox.ps1`，创建离线 / 允许两个本地账户和离线防火墙规则；
 3. 按选项创建公共桌面 / 开始菜单快捷方式；
 4. 复制出 `ALEMBIC-Uninstall.exe`；
 5. 写 `HKLM` 卸载项和 `App Paths`；

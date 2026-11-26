@@ -151,7 +151,7 @@ async function setSandboxNetwork(event: Event): Promise<void> {
     ui.showToast('沙盒网络策略已更新')
   } catch (error) {
     ui.showToast(errorMessage(error), true)
-    element.value = store.sandboxConfig?.network || 'offline'
+    element.value = store.sandboxConfig?.network || 'allow'
   }
 }
 
@@ -352,13 +352,10 @@ async function saveSystemPrompt(): Promise<void> {
             <div class="general-desc">命令可访问的网络范围</div>
           </div>
           <div class="general-control">
-            <select class="general-select" :value="sandboxConfig?.network || 'offline'" @change="setSandboxNetwork">
+            <select class="general-select" :value="sandboxConfig?.network || 'allow'" @change="setSandboxNetwork">
               <option value="offline">离线</option>
-              <option value="allowlist">允许列表</option>
+              <option value="allow">允许</option>
             </select>
-            <div class="general-hint">
-              {{ sandboxConfig?.allowed_domains?.length || 0 }} 个允许域名
-            </div>
           </div>
         </div>
       </div>

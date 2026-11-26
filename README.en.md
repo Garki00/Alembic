@@ -41,6 +41,8 @@ cd ..
 .\scripts\dev.ps1
 ```
 
+When upgrading from the old `allowlist` network policy, rerun `setup-sandbox.ps1` to remove the online account's legacy firewall rules.
+
 The default address is `http://127.0.0.1:5173`.
 
 To run the services separately:
@@ -99,7 +101,7 @@ The CLI requires `DEEPSEEK_API_KEY` and `MODEL_NAME`. Configure browser provider
 - The API listens on the loopback interface by default. Before exposing it to a network, configure an access token, restrict the bind address and CORS origins, and use protected transport.
 - Never commit API keys, MCP credentials, or other secrets. Treat application configuration and conversation files as sensitive data.
 - Tool calls are governed by approval, tool enablement, and command policy. Native plugins and MCP servers are trusted extensions; install and enable only sources you have reviewed.
-- The Windows command sandbox uses dedicated local users, workspace ACLs, process-tree control, and network policy. Command execution fails closed when the sandbox is unavailable.
+- The Windows command sandbox uses dedicated local users, workspace ACLs, and process-tree control. Network access is allowed by default: children only receive proxy environment variables and are not firewalled; switching to offline enables the firewall block. Command execution fails closed when the sandbox is unavailable.
 - Model output, web content, plugin descriptions, and MCP results are untrusted data. They do not grant authorization or replace security review.
 
 ## Development

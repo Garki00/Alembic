@@ -79,7 +79,7 @@ class ProcessRecord:
     ended_monotonic: float | None = None
     sandboxed: bool = True
     sandbox_backend: str = "windows-local-user"
-    network: str = "offline"
+    network: str = "allow"
     log_threads: list[threading.Thread] = field(default_factory=list, repr=False)
 
     @property

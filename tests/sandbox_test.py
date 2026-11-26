@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from tools.sandbox.base import SandboxPolicy
 from tools.sandbox.config import SandboxConfigStore
-from tools.sandbox.proxy import domain_allowed, is_private_host
+from tools.sandbox.proxy import _ProxyHandler, _ProxyServer, domain_allowed, is_private_host
 
 
 def make_tempdir() -> Path:
@@ -29,7 +29,9 @@ class SandboxPolicyTest(unittest.TestCase):
 
     def test_network_normalization(self):
         workspace = Path.cwd()
-        self.assertEqual(SandboxPolicy(workspace, network="allowlist").normalized_network(), "allowlist")
+        self.assertEqual(SandboxPolicy(workspace, network="allow").normalized_network(), "allow")
+        # Legacy configuration files from the allowlist era now mean open access.
+        self.assertEqual(SandboxPolicy(workspace, network="allowlist").normalized_network(), "allow")
         self.assertEqual(SandboxPolicy(workspace, network="bogus").normalized_network(), "offline")
 
     def test_domain_allowlist(self):
@@ -45,6 +47,23 @@ class SandboxPolicyTest(unittest.TestCase):
         self.assertTrue(is_private_host("10.0.0.8"))
         self.assertFalse(is_private_host("pypi.org"))
 
+    def test_allow_mode_proxy_accepts_any_target(self):
+        server = _ProxyServer(
+            ("127.0.0.1", 0),
+            _ProxyHandler,
+            allowed=[],
+            ports=set(),
+            allow_all=True,
+        )
+        try:
+            class _Handler:
+                pass
+
+            _Handler.server = server
+            self.assertTrue(_ProxyHandler._allowed(_Handler(), "evil.test", 12345))
+        finally:
+            server.server_close()
+
 
 class SandboxConfigTest(unittest.TestCase):
     def setUp(self):
@@ -54,18 +73,22 @@ class SandboxConfigTest(unittest.TestCase):
 
     def test_defaults_and_update(self):
         config = self.store.get()
-        self.assertEqual(config["network"], "offline")
+        self.assertEqual(config["network"], "allow")
         self.assertIn("pypi.org", config["allowed_domains"])
         self.assertIn("gitee.com", config["allowed_domains"])
 
         updated = self.store.update({
-            "network": "allowlist",
+            "network": "allow",
             "allowed_domains": ["example.com"],
             "allowed_ports": [443],
         })
-        self.assertEqual(updated["network"], "allowlist")
+        self.assertEqual(updated["network"], "allow")
         self.assertEqual(updated["allowed_domains"], ["example.com"])
         self.assertEqual(self.store.get()["allowed_ports"], [443])
+
+    def test_legacy_allowlist_network_is_read_as_allow(self):
+        updated = self.store.update({"network": "allowlist"})
+        self.assertEqual(updated["network"], "allow")
 
     def test_legacy_default_domains_gain_gitee(self):
         self.store.path.write_text(
@@ -86,9 +109,20 @@ class SandboxConfigTest(unittest.TestCase):
             encoding="utf-8",
         )
         config = self.store.get()
-        self.assertEqual(config["network"], "allowlist")
+        self.assertEqual(config["network"], "allow")
         self.assertEqual(config["allowed_domains"], ["example.com"])
 
     def test_invalid_network_rejected(self):
         with self.assertRaises(ValueError):
             self.store.update({"network": "online"})
+
+    def test_setup_marker_requires_allow_version(self):
+        from tools.sandbox.windows import WindowsSandbox
+
+        marker = self.tmp / "sandbox-setup.json"
+        marker.write_text('{"ready": true, "version": 1}', encoding="utf-8")
+        sandbox = WindowsSandbox(config=self.store)
+        self.assertFalse(sandbox._setup_ready())
+
+        marker.write_text('{"ready": true, "version": 2}', encoding="utf-8")
+        self.assertTrue(sandbox._setup_ready())

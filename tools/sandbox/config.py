@@ -1,5 +1,5 @@
 # tools/sandbox/config.py
-"""Persistent sandbox configuration (network mode and allowed domains)."""
+"""Persistent sandbox configuration (network mode and legacy proxy settings)."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class SandboxConfigStore:
     def _default(self) -> dict[str, Any]:
         return {
             "version": _DEFAULT_VERSION,
-            "network": "offline",
+            "network": "allow",
             "allowed_domains": list(DEFAULT_DOMAINS),
             "allowed_ports": [443, 80],
             "proxy_port": 47831,
@@ -54,8 +54,11 @@ class SandboxConfigStore:
             except (OSError, ValueError):
                 data = {}
             if isinstance(data, dict):
-                if data.get("network") in {"offline", "allowlist"}:
-                    payload["network"] = data["network"]
+                stored_network = str(data.get("network") or "").strip().lower()
+                if stored_network == "offline":
+                    payload["network"] = "offline"
+                elif stored_network in {"allow", "allowlist"}:
+                    payload["network"] = "allow"
                 domains = data.get("allowed_domains")
                 if isinstance(domains, list):
                     payload["allowed_domains"] = [
@@ -101,9 +104,12 @@ class SandboxConfigStore:
             current = self.get()
             if "network" in patch:
                 network = str(patch["network"]).strip().lower()
-                if network not in {"offline", "allowlist"}:
-                    raise ValueError("network 只能是 offline / allowlist")
-                current["network"] = network
+                if network in {"allow", "allowlist"}:
+                    current["network"] = "allow"
+                elif network == "offline":
+                    current["network"] = "offline"
+                else:
+                    raise ValueError("network 只能是 offline / allow")
             if "allowed_domains" in patch:
                 domains = patch["allowed_domains"]
                 if not isinstance(domains, list):

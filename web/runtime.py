@@ -139,7 +139,7 @@ def build_runtime(
         policy = SandboxPolicy(
             workspace=Path(workspace).expanduser().resolve(),
             session_id=session_id,
-            network=str(cfg.get("network") or "offline"),
+            network=str(cfg.get("network") or "allow"),
             allowed_domains=tuple(cfg.get("allowed_domains") or ()),
             allowed_ports=tuple(int(item) for item in (cfg.get("allowed_ports") or (443, 80))),
             proxy_url=f"http://127.0.0.1:{cfg.get('proxy_port', 47831)}",

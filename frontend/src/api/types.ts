@@ -223,7 +223,7 @@ export interface SandboxStatus {
 
 export interface SandboxConfig {
   version: number
-  network: 'offline' | 'allowlist' | string
+  network: 'offline' | 'allow' | string
   allowed_domains: string[]
   allowed_ports: number[]
   proxy_port: number

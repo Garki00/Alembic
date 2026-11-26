@@ -22,10 +22,16 @@ def runtime_paths(root: Path | None = None) -> list[Path]:
     if sys.platform != "win32" or platform.machine().lower() not in {"amd64", "x86_64"}:
         return []
     root = runtime_root() if root is None else root
-    if not (root / "installed.json").is_file():
-        return []
-    required = [root / "node" / "node.exe", root / "python" / "python.exe", root / "pnpm" / "pnpm.exe", root / "bin" / "pnpm.cmd"]
-    if not all(path.is_file() for path in required):
+    try:
+        if not (root / "installed.json").is_file():
+            return []
+        required = [root / "node" / "node.exe", root / "python" / "python.exe", root / "pnpm" / "pnpm.exe", root / "bin" / "pnpm.cmd"]
+        if not all(path.is_file() for path in required):
+            return []
+    except OSError:
+        # An inaccessible build artifact is indistinguishable from a missing
+        # bundle here; fall back to the sanitized host PATH without failing the
+        # command before the sandbox is reached.
         return []
     return [root / "bin", root / "node", root / "python", root / "python" / "Scripts"]
 

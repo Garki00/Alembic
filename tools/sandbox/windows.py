@@ -296,8 +296,13 @@ class WindowsSandbox:
     def _setup_ready(self) -> bool:
         try:
             data = json.loads(self._setup_path.read_text(encoding="utf-8-sig"))
-            return bool(data.get("ready"))
-        except (OSError, ValueError, AttributeError):
+            if not bool(data.get("ready")):
+                return False
+            # Version 2 removed the online account's firewall rules. Refuse an
+            # old setup marker so an upgraded install cannot silently keep the
+            # previous allowlist firewall.
+            return int(data.get("version") or 1) >= 2
+        except (OSError, ValueError, AttributeError, TypeError):
             return False
 
     def status(self) -> SandboxStatus:
@@ -317,15 +322,22 @@ class WindowsSandbox:
             not reasons,
             "windows-local-user",
             "win32",
-            "专用本地用户 + ACL + Job Object + 按用户防火墙",
+            "专用本地用户 + ACL + Job Object；在线模式仅注入代理环境变量",
             allowed_domains=tuple(self.config.get()["allowed_domains"]),
             reasons=tuple(reasons),
         )
 
-    def _ensure_proxy(self) -> str:
+    def _ensure_proxy(self, *, allow_all: bool) -> str:
         cfg = self.config.get()
-        if self._proxy is None:
-            self._proxy = SandboxProxy(cfg["proxy_port"], cfg["allowed_domains"], set(cfg["allowed_ports"]))
+        if self._proxy is None or self._proxy.allow_all != allow_all:
+            if self._proxy is not None:
+                self._proxy.close()
+            self._proxy = SandboxProxy(
+                cfg["proxy_port"],
+                cfg["allowed_domains"],
+                set(cfg["allowed_ports"]),
+                allow_all=allow_all,
+            )
             self._proxy.start()
         return self._proxy.url
 
@@ -497,7 +509,8 @@ class WindowsSandbox:
                 hint="Run scripts/setup-sandbox.ps1 as administrator.",
             )
         self.prepare_workspace(policy)
-        mode = "online" if policy.normalized_network() == "allowlist" else "offline"
+        network = policy.normalized_network()
+        mode = "online" if network == "allow" else "offline"
         account = self._users.get(mode)
         if not account:
             raise sandbox_unavailable(f"Missing {mode} sandbox account; rerun setup-sandbox.ps1.")
@@ -505,19 +518,23 @@ class WindowsSandbox:
             comspec = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
             command = f'"{comspec}" /d /s /c "{command}"'
         password = _dpapi_unprotect(account["password"])
+        profile = Path(account.get("profile", f"C:\\Users\\{account['username']}"))
         if mode == "online":
-            proxy_url = self._ensure_proxy()
+            # The proxy is advisory in allow mode: the child inherits the proxy
+            # variables, but the online account has no firewall restriction and
+            # may connect directly.
+            proxy_url = self._ensure_proxy(allow_all=True)
             env = dict(env)
             env.update({
                 "HTTP_PROXY": proxy_url,
                 "HTTPS_PROXY": proxy_url,
+                "ALL_PROXY": proxy_url,
                 "http_proxy": proxy_url,
                 "https_proxy": proxy_url,
+                "all_proxy": proxy_url,
                 "NO_PROXY": "",
+                "no_proxy": "",
             })
-            profile = Path(account.get("profile", f"C:\\Users\\{account['username']}"))
-        else:
-            profile = Path(account.get("profile", f"C:\\Users\\{account['username']}"))
         env = dict(env)
         env.update({
             "USERNAME": account["username"],

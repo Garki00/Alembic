@@ -343,7 +343,7 @@ def main() -> None:
     policy = SandboxPolicy(
         workspace=workspace,
         session_id=args.session,
-        network=str(sandbox_config.get().get("network") or "offline"),
+        network=str(sandbox_config.get().get("network") or "allow"),
         allowed_domains=tuple(sandbox_config.get().get("allowed_domains") or ()),
         allowed_ports=tuple(int(item) for item in (sandbox_config.get().get("allowed_ports") or (443, 80))),
     )

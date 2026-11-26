@@ -83,9 +83,9 @@
 
 - 所有命令只能经 `ToolContext.sandbox.spawn(...)` 启动。`tools/shell.py` 与 `tools/processes.py` 不允许直接 `subprocess.Popen`。
 - 没有可用沙盒后端时返回 `sandbox_unavailable`，不回退到宿主机执行；POSIX 原生后端尚未实现，同样失败关闭。
-- Windows 沙盒使用两个专用标准用户、工作区 ACL、Job Object 与按用户防火墙；`allowlist` 模式只允许本机 CONNECT 代理。
+- Windows 沙盒使用两个专用标准用户、工作区 ACL 与 Job Object；`offline` 模式由按用户防火墙完全断网。
 - 沙盒账户不是管理员，凭据以 DPAPI 形式存于 `data/sandbox-users.json`，仅当前用户可读。
-- 网络默认 `offline`；只有 `allowlist` 才启动代理并注入 `HTTP_PROXY` / `HTTPS_PROXY`。
+- 网络默认 `allow`；`allow` 模式没有防火墙，只启动代理并向子进程注入 `HTTP_PROXY` / `HTTPS_PROXY`，命令可绕过代理直连。`offline` 才使用防火墙阻断网络。
 - 子进程环境变量走 `tools/env.py` 白名单，模型密钥不继承；内置运行时目录排在 PATH 最前。
 - 命令策略（`tools/command_policy.py`）在审批之外：不可恢复的高危命令直接拒绝，可恢复的危险操作把原因带进审批卡片。它按文本匹配，不是 shell 解释器，也不是文件隔离边界。
 

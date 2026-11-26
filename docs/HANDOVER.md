@@ -23,9 +23,8 @@
   其他平台没有原生沙盒后端时命令 fail closed；
 - **Windows 命令沙盒**：`scripts/setup-sandbox.ps1` 创建两个专用本地用户；
   `tools/sandbox/windows.py` 用 `CreateProcessWithLogonW` 启动，ACL 限定工作区，
-  `tools/winjob.py` 管理进程树，防火墙按用户阻断网络；`allowlist` 模式只允许本机
-  HTTP CONNECT 代理，域名由 `tools/sandbox/proxy.py` 校验。没有沙盒时命令失败关闭，
-  没有宿主机回退；
+  `tools/winjob.py` 管理进程树；`offline` 用防火墙阻断网络，`allow` 只注入代理
+  环境变量、没有防火墙限制。没有沙盒时命令失败关闭，没有宿主机回退；
 - 后台任务有独立进程视图：`GET /api/processes` 提供运行中与已完成列表，
   `/api/processes/events` 推送完成事件；`start_process(notify=True)` 的任务退出后
   自动触发一次内部续跑，长期服务可设 `notify=False`；
@@ -111,7 +110,7 @@ tools/
   sandbox/
     base.py             沙盒策略 / 状态 / 进程协议；没有可用后端时 fail closed
     windows.py          专用本地用户、ACL、CreateProcessWithLogonW、Job Object
-    proxy.py            本机 HTTP CONNECT 代理与域名允许列表
+    proxy.py            本机 HTTP CONNECT 代理（允许模式下直通）
     config.py           data/sandbox.json 网络模式与允许域名
   files.py               list_dir / read_file / search_files / find_files / file_stat
                          write_file / edit_file / make_dir / delete_file / move_file / copy_file
@@ -383,7 +382,7 @@ run_command / start_process
 ```
 
 - `offline` 使用 `AlembicSandboxOffline`，防火墙阻断全部出站/入站。
-- `allowlist` 使用 `AlembicSandboxOnline`，只允许到本机代理端口；代理再按域名放行。
+- `allow` 使用 `AlembicSandboxOnline`，没有防火墙限制，只注入代理环境变量；命令可绕过代理直连。
 - `scripts/setup-sandbox.ps1` 是唯一需要管理员权限的步骤；应用运行时不提权。
 - 没有可用后端时 `run_command` / `start_process` 返回 `sandbox_unavailable`；不允许直接 `subprocess.Popen`。
 - 文件工具不经过该子进程沙盒，仍由 `tools/paths.py` 做工作区与凭据校验。
@@ -476,8 +475,9 @@ run_command / start_process
 39. **沙盒用户不是管理员**：`scripts/setup-sandbox.ps1` 创建的两个账号只用于执行命令；
     不要把它们加入 Administrators，也不要在应用进程里保存明文密码。凭据只以 DPAPI
     形式保存到 `data/sandbox-users.json`，文件 ACL 仅当前用户可读。
-40. **网络默认最严**：`SandboxPolicy.network` 默认 `offline`；只有 `allowlist` 才启动
-    本机代理并注入 `HTTP_PROXY` / `HTTPS_PROXY`。WSL 终端在 Windows 沙盒下必须拒绝。
+40. **网络默认允许**：`SandboxPolicy.network` 默认 `allow`；`allow` 只启动本机代理并注入
+    `HTTP_PROXY` / `HTTPS_PROXY`，没有防火墙限制，命令可绕过代理直连。`offline` 才由
+    防火墙阻断网络。WSL 终端在 Windows 沙盒下必须拒绝。
 41. **Docstring / JSDoc 统一英文**：所有 Python 模块、类、函数、方法 docstring，以及
     前端 `/** ... */` JSDoc 都必须用英文。写法以“是什么、怎么用、有什么约束”为主，
     保留 `Args` / `Returns` / `Raises` 等结构化段落；不要写历史原因、第一人称解释或
@@ -631,8 +631,8 @@ token。开发时指向 `frontend/dist`，
     完成时通过 SSE 触发内部续跑。输入区新增附件导入、手动压缩与上下文占用圆环；
     `tests/process_view_test.py` 覆盖进程事件、取消、附件与压缩；测试 467。**
 21. **Windows 原生命令沙盒：`tools/sandbox/` 统一 `SandboxRunner` 接口，未初始化时
-    fail closed；`scripts/setup-sandbox.ps1` 创建离线/允许列表两个标准用户和按用户
-    防火墙；`WindowsSandbox` 用专用用户 + ACL + Job Object 启动，`allowlist` 走本机
+    fail closed；`scripts/setup-sandbox.ps1` 创建离线/允许两个标准用户和离线防火墙；
+    `WindowsSandbox` 用专用用户 + ACL + Job Object 启动，`allow` 只注入本机
     CONNECT 代理；新增 `/api/sandbox/status`、`/api/sandbox/config` 和设置面板状态。
     `tools/shell.py` / `tools/processes.py` 已删除宿主机直接执行路径；测试 467。**
 22. **思考去重：供应商流式 reasoning 与最终 AIMessage 的空格/换行常不一致，旧逻辑用

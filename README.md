@@ -34,12 +34,20 @@ cd frontend
 npm install
 cd ..
 
+# 可选：安装内置 Node.js / Python / pnpm 运行时，供命令工具优先使用
+# 不执行命令或只使用对话/文件工具时可跳过；未安装时命令使用宿主 PATH
+.\.venv\Scripts\python.exe scripts\provision_runtimes.py
+
 # Windows 命令沙盒，仅需以管理员身份执行一次
 .\scripts\setup-sandbox.ps1
 
 # 启动后端和前端，并打开浏览器
 .\scripts\dev.ps1
 ```
+
+`provision_runtimes.py` 是可选步骤：它下载并校验锁定的 Node.js、Python 和 pnpm，供 `run_command` 等命令工具优先使用；未执行时命令工具回退到宿主 `PATH`。桌面安装包构建会在 `packaging/build.ps1` 中自动执行该步骤，详见 [docs/runtimes.md](docs/runtimes.md)。
+
+从使用旧版 `allowlist` 网络策略升级时，也需要重新运行一次 `setup-sandbox.ps1`，删除在线账户遗留的防火墙规则。
 
 默认地址：`http://127.0.0.1:5173`。
 
@@ -97,7 +105,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build-release.ps1 -Dev
 - API 默认只监听本机回环地址。对外提供服务前，必须配置访问令牌、限制监听地址和 CORS 来源，并使用受保护的传输层。
 - 不要把 API Key、MCP 凭据或其他秘密提交到 Git；应用配置和会话文件应按敏感数据保护。
 - 工具调用受审批、工具开关和命令策略共同约束。原生插件与 MCP 服务器属于受信任扩展，应只安装和启用已审查的来源。
-- Windows 命令沙盒通过专用本地用户、工作区 ACL、进程树控制和网络策略限制命令。没有可用沙盒时，命令执行会失败关闭。
+- Windows 命令沙盒通过专用本地用户、工作区 ACL 和进程树控制限制命令。网络默认允许：只向子进程注入代理环境变量，没有防火墙限制；切到离线后才由防火墙断网。没有可用沙盒时，命令执行会失败关闭。
 - 模型输出、网页内容、插件描述和 MCP 返回值都属于不可信数据，不能替代用户授权或安全审查。
 
 ## 开发

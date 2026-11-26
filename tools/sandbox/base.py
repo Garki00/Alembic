@@ -30,7 +30,7 @@ class SandboxPolicy:
 
     workspace: Path
     session_id: str = "default"
-    network: str = "offline"  # offline | allowlist
+    network: str = "allow"  # offline | allow
     allowed_domains: tuple[str, ...] = ()
     allowed_ports: tuple[int, ...] = (443, 80)
     extra_read_roots: tuple[Path, ...] = ()
@@ -38,8 +38,12 @@ class SandboxPolicy:
     proxy_url: str = ""
 
     def normalized_network(self) -> str:
-        value = (self.network or "offline").strip().lower()
-        return value if value in {"offline", "allowlist"} else "offline"
+        value = (self.network or "allow").strip().lower()
+        # ``allowlist`` was the pre-1.0 online mode. Keep accepting it so old
+        # configuration files still load, but it now means open network access.
+        if value in {"allow", "allowlist"}:
+            return "allow"
+        return "offline"
 
 
 @dataclass
@@ -63,7 +67,7 @@ class SandboxStatus:
     backend: str
     platform: str
     detail: str = ""
-    network_modes: tuple[str, ...] = ("offline", "allowlist")
+    network_modes: tuple[str, ...] = ("offline", "allow")
     allowed_domains: tuple[str, ...] = ()
     reasons: tuple[str, ...] = ()
 

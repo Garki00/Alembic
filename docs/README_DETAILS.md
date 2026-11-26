@@ -624,17 +624,18 @@ Error: [read_required] 写入前必须先读取 a.txt 的现有内容。
 
 ### 6.4 命令沙盒
 
-命令不会以桌面用户身份直接执行。Windows 后端为命令创建独立的低权限本地用户，并通过 ACL、Job Object 和按用户匹配的 Windows Firewall 约束：
+命令不会以桌面用户身份直接执行。Windows 后端为命令创建独立的低权限本地用户，并通过 ACL、Job Object 和离线模式下的 Windows Firewall 约束：
 
-- 首次使用需要以管理员身份运行一次 `scripts\setup-sandbox.ps1`；它创建 `AlembicSbxOffline` / `AlembicSbxOnline` 两个标准用户、防火墙规则和 DPAPI 保护的凭据文件（Windows 本地账户名上限 20 字符，可用 `-OfflineUser` / `-OnlineUser` 改成自己的名字）。
+- 首次使用需要以管理员身份运行一次 `scripts\setup-sandbox.ps1`；它创建 `AlembicSbxOffline` / `AlembicSbxOnline` 两个标准用户、离线防火墙规则和 DPAPI 保护的凭据文件（Windows 本地账户名上限 20 字符，可用 `-OfflineUser` / `-OnlineUser` 改成自己的名字）。
 - 这两个账户默认从登录 / 切换用户界面隐藏（`SpecialAccounts\UserList` 里写 0），避免误登录和暴露面；`runas`、`LogonUser`、`CreateProcessWithLogonW` 仍然可以正常使用它们。恢复显示用 `scripts\hide-sandbox-users.ps1 -Show`，初始化时想保持显示用 `setup-sandbox.ps1 -Visible`。
 - 应用日常运行不需要管理员权限，也不以管理员身份运行。
 - 工作区授予沙盒用户 `Modify`；应用数据目录、`.ssh` / `.aws` / `.kube` / `.gnupg` / `.docker`、`.netrc` / `.npmrc` / `.pypirc`、私钥和工作区 `.env` 加 deny ACE。
 - 子进程自动加入 Job Object；停止生成、超时、客户端断开都会结束整个进程树。
 - 网络策略：
-  - `offline`：完全断网。
-  - `allowlist`：沙盒用户只能连接本机 `127.0.0.1:47831` 的 HTTP CONNECT 代理，代理只放行列出的域名和端口；未列出的域名直接返回 403。
-- 离线 / 允许列表切换在「设置 → 通用 → 命令沙盒」中完成；允许域名保存在 `data/sandbox.json`。
+  - `offline`：完全断网，仍由按用户匹配的 Windows Firewall 阻断。
+  - `allow`：在线账户没有防火墙限制，只向子进程注入 `HTTP_PROXY` / `HTTPS_PROXY` 等环境变量；命令可以忽略代理直连。代理仅用于配合客户端，不是网络边界。
+- 默认网络策略是 `allow`；“离线 / 允许”切换在「设置 → 通用 → 命令沙盒」中完成。`data/sandbox.json` 里的 `allowed_domains` 只作为旧配置保留，不再限制在线模式。
+- 从旧版升级后需要重新运行一次 `scripts\setup-sandbox.ps1`，删除在线账户遗留的防火墙规则；旧版 setup 标记不会被视为就绪。
 - 沙盒不可用（未初始化、代理端口被占用、工作区不是本地 NTFS 等）时，命令工具返回 `Error: [sandbox_unavailable]`，不会回退到宿主机执行。
 - Windows 沙盒下不能选择 WSL 终端：WSL 由独立服务启动，不能保证继承沙盒用户和 Job Object；需要 WSL 时使用独立的 Linux 沙盒后端。
 - 文件工具仍使用工作区路径校验和应用层凭据保护；它们不是通过这个子进程沙盒执行的。
@@ -867,7 +868,7 @@ tools/
   sandbox/
     base.py             沙盒策略 / 状态 / 进程协议
     windows.py          专用本地用户、ACL、Job Object、命令启动
-    proxy.py            本机 HTTP CONNECT 代理与域名允许列表
+    proxy.py            本机 HTTP CONNECT 代理（允许模式下直通）
     config.py           data/sandbox.json 配置
 web/
   server.py             路由、SSE、审批、工作区、供应商、进程视图

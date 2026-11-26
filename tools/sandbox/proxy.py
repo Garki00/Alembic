@@ -1,9 +1,11 @@
 # tools/sandbox/proxy.py
-"""Loopback HTTP CONNECT proxy with a domain allowlist.
+"""Loopback HTTP CONNECT proxy used for proxy environment injection.
 
-The sandboxed user is allowed by Windows Firewall to reach only this proxy
-port. The proxy enforces the domain allowlist and refuses private/loopback
-targets; there is no direct-network path for sandboxed children.
+In ``allow`` mode the proxy is an unfiltered pass-through: the child receives
+``HTTP_PROXY``/``HTTPS_PROXY`` but is not firewalled, so a command can ignore
+the proxy and connect directly. The domain matcher remains for tests and
+backward-compatible callers; production online mode always passes
+``allow_all=True``.
 """
 
 from __future__ import annotations
@@ -62,9 +64,18 @@ class _ProxyServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, address, handler, *, allowed: list[str], ports: set[int]):
+    def __init__(
+        self,
+        address,
+        handler,
+        *,
+        allowed: list[str],
+        ports: set[int],
+        allow_all: bool = False,
+    ):
         self.allowed = allowed
         self.allowed_ports = ports
+        self.allow_all = allow_all
         super().__init__(address, handler)
 
 
@@ -169,6 +180,8 @@ class _ProxyHandler(socketserver.StreamRequestHandler):
     def _allowed(self, host: str, port: int) -> bool:
         server = self.server
         assert isinstance(server, _ProxyServer)
+        if server.allow_all:
+            return True
         if port not in server.allowed_ports:
             return False
         if is_private_host(host) and not domain_allowed(host, server.allowed):
@@ -190,10 +203,18 @@ class _ProxyHandler(socketserver.StreamRequestHandler):
 class SandboxProxy:
     """Owns the loopback proxy lifetime."""
 
-    def __init__(self, port: int, allowed: list[str], ports: set[int]) -> None:
+    def __init__(
+        self,
+        port: int,
+        allowed: list[str],
+        ports: set[int],
+        *,
+        allow_all: bool = False,
+    ) -> None:
         self.port = int(port)
         self.allowed = list(allowed)
         self.ports = set(ports)
+        self.allow_all = allow_all
         self._server: _ProxyServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -204,7 +225,13 @@ class SandboxProxy:
     def start(self) -> None:
         if self._server is not None:
             return
-        server = _ProxyServer(("127.0.0.1", self.port), _ProxyHandler, allowed=self.allowed, ports=self.ports)
+        server = _ProxyServer(
+            ("127.0.0.1", self.port),
+            _ProxyHandler,
+            allowed=self.allowed,
+            ports=self.ports,
+            allow_all=self.allow_all,
+        )
         thread = threading.Thread(target=server.serve_forever, name="alembic-sandbox-proxy", daemon=True)
         thread.start()
         self._server = server

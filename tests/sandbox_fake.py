@@ -58,7 +58,7 @@ class FakeSandbox:
         self.closed = False
 
     def status(self) -> SandboxStatus:
-        return SandboxStatus(True, "fake", "test", "test sandbox", ("offline", "allowlist"))
+        return SandboxStatus(True, "fake", "test", "test sandbox", ("offline", "allow"))
 
     def prepare_workspace(self, policy: SandboxPolicy) -> None:
         return None
