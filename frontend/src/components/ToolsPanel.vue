@@ -11,6 +11,7 @@ import ToolCard from './ToolCard.vue'
 import McpEditor from './McpEditor.vue'
 import SettingsSheet from './SettingsSheet.vue'
 import DiscardChangesDialog from './DiscardChangesDialog.vue'
+import ChevronIcon from './ChevronIcon.vue'
 
 type Tab = 'tools' | 'mcp' | 'skills'
 const tabs: Array<{ id: Tab; label: string }> = [{ id: 'tools', label: '工具' }, { id: 'mcp', label: 'MCP' }, { id: 'skills', label: 'Skill' }]
@@ -219,7 +220,7 @@ onMounted(() => load())
     <div :id="`extension-content-${tab}`" role="tabpanel" :aria-labelledby="`extension-tab-${tab}`">
       <section v-for="source in sources" :key="`${tab}-${source.id}`" class="extension-source">
         <button class="extension-source-toggle" type="button" :aria-expanded="!collapsed[`${tab}-${source.id}`]" @click="collapsed[`${tab}-${source.id}`] = !collapsed[`${tab}-${source.id}`]">
-          <span aria-hidden="true">{{ collapsed[`${tab}-${source.id}`] ? '▸' : '▾' }}</span> {{ source.label }} <span class="extension-count">{{ itemsCount(source.id) }}</span>
+          <span aria-hidden="true"><ChevronIcon :direction="collapsed[`${tab}-${source.id}`] ? 'right' : 'down'" /></span> {{ source.label }} <span class="extension-count">{{ itemsCount(source.id) }}</span>
         </button>
         <div v-if="!collapsed[`${tab}-${source.id}`]" class="tool-list" :class="view">
           <p v-if="!itemsCount(source.id)" class="muted extension-empty">{{ busy && !snapshot ? '加载中…' : `暂无${source.label}${tabs.find(item => item.id === tab)?.label}` }}</p>

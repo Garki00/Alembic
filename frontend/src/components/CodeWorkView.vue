@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { AssistantTurn, ToolCallView, ToolResultView } from '../types/chat'
+import ChevronIcon from './ChevronIcon.vue'
 
 const props = defineProps<{ turn: AssistantTurn }>()
 const open = ref(true)
@@ -155,7 +156,7 @@ const entries = computed<CodeEntry[]>(() => {
     <button type="button" class="code-work-head" :aria-expanded="open" @click="open = !open">
       <span class="code-work-title">代码工作视图</span>
       <span class="code-work-meta">本轮 {{ entries.length }} 项</span>
-      <span class="work-steps-chevron" aria-hidden="true">{{ open ? '⌃' : '⌄' }}</span>
+      <ChevronIcon class="work-steps-chevron" :direction="open ? 'up' : 'down'" />
     </button>
 
     <div v-if="open" class="code-work-body">

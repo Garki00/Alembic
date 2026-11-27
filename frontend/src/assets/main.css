@@ -172,6 +172,7 @@ html.resizing .inspector-resizer::after {
 .new-chat-btn {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 8px;
     width: 100%;
     margin-bottom: 0;
@@ -181,11 +182,11 @@ html.resizing .inspector-resizer::after {
     background: var(--card);
     color: var(--ink);
     font-size: 12.5px;
-    text-align: left;
+    text-align: center;
     transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 .new-chat-btn svg { width: 15px; height: 15px; flex: none; color: var(--emerald); }
-.new-chat-btn span { flex: 1; min-width: 0; }
+.new-chat-btn span { flex: none; min-width: 0; }
 .new-chat-btn:hover {
     background: var(--hover-bg);
     border-color: var(--accent-border);
@@ -230,6 +231,7 @@ html.resizing .inspector-resizer::after {
     flex-direction: column;
     gap: 2px;
     overflow-y: auto;
+    overflow-x: hidden;
     min-height: 0;
     padding-bottom: 6px;
 }
@@ -1121,7 +1123,7 @@ html.resizing .sidebar-toggle { transition: none; }
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.work-step-chevron { flex: none; margin-left: auto; font-size: 10px; color: var(--soft); }
+.work-step-chevron { flex: none; margin-left: auto; align-self: center; font-size: 10px; color: var(--soft); }
 .work-step-error { flex: none; font-size: 10px; color: var(--danger); }
 .work-step-live { flex: none; font-size: 9.5px; color: var(--emerald); font-family: var(--mono); }
 .work-step-body { padding: 2px 0 6px; }

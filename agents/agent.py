@@ -104,12 +104,14 @@ def cli_permission_rules() -> PermissionRuleset:
 
 
 def cli_custom_system_prompt() -> str:
-    """Read the user-provided system prompt body used by the CLI."""
+    """Read the selected named prompt body used by the CLI."""
     try:
-        from config.store import PreferencesStore
+        from config.store import PreferencesStore, PromptStore
 
-        return str(PreferencesStore().get().get("custom_system_prompt") or "")
-    except Exception:  # preferences are optional for the CLI
+        store = PromptStore()
+        store.migrate_legacy(str(PreferencesStore().get().get("custom_system_prompt") or ""))
+        return store.selected_content()
+    except Exception:  # prompts are optional for the CLI
         return ""
 
 

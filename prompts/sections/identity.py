@@ -1,9 +1,9 @@
 # prompts/sections/identity.py
-"""Agent identity: the default identity or the user's custom system prompt.
+"""Agent identity: the default identity or the user's selected prompt.
 
-The identity body is the only section a user may replace. The fixed prefix and
-the operational rules stay in place, because they describe the runtime contract
-rather than the agent's persona.
+The selected prompt replaces the identity and rules sections. The fixed prefix,
+the interface contract, and the tool guidance stay in place, because they
+describe the runtime contract rather than the agent's persona.
 """
 
 from __future__ import annotations

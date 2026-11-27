@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { SubagentInfo } from '../api/types'
 import { useSubagentStore } from '../stores/subagents'
+import ChevronIcon from './ChevronIcon.vue'
 
 const subagents = useSubagentStore()
 const root = ref<HTMLElement | null>(null)
@@ -76,7 +77,7 @@ onBeforeUnmount(() => {
         <button type="button" class="process-group-head" @click="subagents.runningOpen = !subagents.runningOpen">
           <span class="process-group-title">运行中</span>
           <span class="process-group-count">{{ running.length }}</span>
-          <span class="process-group-caret">{{ subagents.runningOpen ? '⌃' : '⌄' }}</span>
+          <ChevronIcon class="process-group-caret" :direction="subagents.runningOpen ? 'up' : 'down'" />
         </button>
         <div v-if="subagents.runningOpen" class="process-rows">
           <p v-if="!running.length" class="process-empty">没有正在运行的子代理。</p>
@@ -131,7 +132,7 @@ onBeforeUnmount(() => {
         <button type="button" class="process-group-head" @click="subagents.finishedOpen = !subagents.finishedOpen">
           <span class="process-group-title">已完成</span>
           <span class="process-group-count">{{ finished.length }}</span>
-          <span class="process-group-caret">{{ subagents.finishedOpen ? '⌃' : '⌄' }}</span>
+          <ChevronIcon class="process-group-caret" :direction="subagents.finishedOpen ? 'up' : 'down'" />
         </button>
         <div v-if="subagents.finishedOpen" class="process-rows">
           <p v-if="!finished.length" class="process-empty">还没有已完成的子代理。</p>

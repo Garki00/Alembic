@@ -1,10 +1,22 @@
 import { defineStore } from 'pinia'
 
-export type SettingsTab = 'general' | 'models' | 'tools' | 'permissions'
+export type SettingsTab = 'general' | 'models' | 'tools' | 'permissions' | 'custom'
 
 export const SIDEBAR_WIDTH_KEY = 'alembic.sidebar-width'
+export const WORKSPACE_ORDER_KEY = 'alembic.workspace-order'
 export const SIDEBAR_MIN = 220
 export const SIDEBAR_MAX = 420
+
+function storedList(key: string): string[] {
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+  } catch (_) {
+    return []
+  }
+}
 
 function storedWidth(key: string, fallback: number, min: number, max: number): number {
   try {
@@ -28,10 +40,11 @@ export const useUiStore = defineStore('ui', {
     sessionGrouping: 'workspace' as 'workspace' | 'flat',
     sessionSort: 'recent' as 'recent' | 'manual',
     manualOrder: [] as string[],
+    workspaceOrder: storedList(WORKSPACE_ORDER_KEY),
     archivedOpen: false,
     expanded: {} as Record<string, boolean>,
     settingsOpen: false,
-    settingsTab: 'models' as SettingsTab,
+    settingsTab: 'general' as SettingsTab,
     workspaceModalOpen: false,
     toastVisible: false,
     toastMessage: '',
@@ -73,6 +86,16 @@ export const useUiStore = defineStore('ui', {
       this.sessionSort = 'manual'
     },
 
+    /** Persist the sidebar's workspace order; ids missing from the list fall back to time order. */
+    setWorkspaceOrder(ids: string[]): void {
+      this.workspaceOrder = [...new Set(ids)]
+      try {
+        window.localStorage.setItem(WORKSPACE_ORDER_KEY, JSON.stringify(this.workspaceOrder))
+      } catch (_) {
+        // 隐私模式下 localStorage 可能不可用；排序仍然生效
+      }
+    },
+
     isExpanded(workspaceId: string): boolean {
       return this.expanded[workspaceId] !== false
     },
@@ -81,7 +104,7 @@ export const useUiStore = defineStore('ui', {
       this.expanded[workspaceId] = !this.isExpanded(workspaceId)
     },
 
-    openSettings(tab: SettingsTab = 'models'): void {
+    openSettings(tab: SettingsTab = 'general'): void {
       this.settingsTab = tab
       this.settingsOpen = true
       this.sidebarOpen = false

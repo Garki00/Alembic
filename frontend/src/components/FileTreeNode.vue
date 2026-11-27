@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { api, errorMessage } from '../api/client'
 import type { WorkspaceDirListing, WorkspaceEntry } from '../api/types'
 import { useInspectorStore } from '../stores/inspector'
+import ChevronIcon from './ChevronIcon.vue'
 
 const props = defineProps<{ entry: WorkspaceEntry; depth: number }>()
 const inspector = useInspectorStore()
@@ -49,7 +50,8 @@ async function toggle(): Promise<void> {
       @click="toggle"
     >
       <span class="file-node-icon">
-        {{ entry.type === 'dir' ? (expanded ? '▾' : '▸') : '·' }}
+        <ChevronIcon v-if="entry.type === 'dir'" :direction="expanded ? 'down' : 'right'" />
+        <template v-else>·</template>
       </span>
       <span class="file-node-name">{{ entry.name }}</span>
     </button>

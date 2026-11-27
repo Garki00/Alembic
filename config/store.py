@@ -32,6 +32,7 @@ __all__ = [
     "ModelConfig",
     "ModelStore",
     "PreferencesStore",
+    "PromptStore",
     "ToolField",
     "ToolSpec",
     "ToolStore",
@@ -1395,6 +1396,157 @@ class PreferencesStore:
 
 
 # ---------------------------------------------------------------------------
+# 提示词
+# ---------------------------------------------------------------------------
+#: Named system prompts. The built-in default prompt is virtual and never stored.
+PROMPTS_VERSION = 1
+MAX_PROMPT_NAME_CHARS = 80
+
+
+class PromptStore:
+    """Named system prompts that replace the identity and rules sections.
+
+    Only one prompt is selected at a time; an empty selection means the built-in
+    default. The selection and the prompt bodies are machine-local data.
+    """
+
+    def __init__(self, path: str | Path | None = None) -> None:
+        self.file = _JsonFile(path or (Path(settings.data_dir) / "prompts.json"))
+
+    def _load(self) -> dict[str, Any]:
+        data = self.file.load(
+            {"version": PROMPTS_VERSION, "selected": "", "prompts": []}
+        )
+        prompts: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in data.get("prompts") or []:
+            if not isinstance(item, Mapping):
+                continue
+            prompt_id = str(item.get("id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if not prompt_id or not name or prompt_id in seen:
+                continue
+            seen.add(prompt_id)
+            prompts.append(
+                {
+                    "id": prompt_id,
+                    "name": name[:MAX_PROMPT_NAME_CHARS],
+                    "content": str(item.get("content") or ""),
+                    "created_at": str(item.get("created_at") or ""),
+                    "updated_at": str(item.get("updated_at") or ""),
+                }
+            )
+        selected = str(data.get("selected") or "").strip()
+        if selected and selected not in seen:
+            selected = ""
+        return {"version": PROMPTS_VERSION, "selected": selected, "prompts": prompts}
+
+    def _save(self, state: Mapping[str, Any]) -> None:
+        self.file.save(
+            {
+                "version": PROMPTS_VERSION,
+                "selected": str(state.get("selected") or ""),
+                "prompts": list(state.get("prompts") or []),
+            }
+        )
+
+    def state(self) -> dict[str, Any]:
+        """Return ``{"selected": str, "prompts": [...]}`` for the frontend."""
+        return self._load()
+
+    def _validated(self, name: Any, content: Any) -> tuple[str, str]:
+        text = str(name or "").strip()
+        if not text:
+            raise ValueError("提示词名称不能为空")
+        if len(text) > MAX_PROMPT_NAME_CHARS:
+            raise ValueError(f"提示词名称不能超过 {MAX_PROMPT_NAME_CHARS} 个字符")
+        body = str(content or "").replace("\x00", "")
+        if not body.strip():
+            raise ValueError("提示词内容不能为空")
+        if len(body) > MAX_CUSTOM_SYSTEM_PROMPT_CHARS:
+            raise ValueError(f"提示词内容不能超过 {MAX_CUSTOM_SYSTEM_PROMPT_CHARS} 个字符")
+        return text, body
+
+    def create(self, name: Any, content: Any) -> dict[str, str]:
+        """Append a new prompt and return it; the selection does not change."""
+        state = self._load()
+        label, body = self._validated(name, content)
+        prompt = {
+            "id": f"p-{uuid.uuid4().hex[:12]}",
+            "name": label,
+            "content": body,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        state["prompts"].append(prompt)
+        self._save(state)
+        return dict(prompt)
+
+    def update(
+        self,
+        prompt_id: str,
+        *,
+        name: Any = None,
+        content: Any = None,
+    ) -> dict[str, str]:
+        """Update one prompt; omitted fields keep their current value."""
+        state = self._load()
+        target = next((item for item in state["prompts"] if item["id"] == prompt_id), None)
+        if target is None:
+            raise KeyError(prompt_id)
+        label, body = self._validated(
+            target["name"] if name is None else name,
+            target["content"] if content is None else content,
+        )
+        target["name"] = label
+        target["content"] = body
+        target["updated_at"] = _now()
+        self._save(state)
+        return dict(target)
+
+    def delete(self, prompt_id: str) -> dict[str, Any]:
+        """Delete one prompt; deleting the selected prompt returns to the default."""
+        state = self._load()
+        remaining = [item for item in state["prompts"] if item["id"] != prompt_id]
+        if len(remaining) == len(state["prompts"]):
+            raise KeyError(prompt_id)
+        state["prompts"] = remaining
+        if state["selected"] == prompt_id:
+            state["selected"] = ""
+        self._save(state)
+        return state
+
+    def select(self, prompt_id: Any) -> dict[str, Any]:
+        """Select a prompt by id; an empty id restores the built-in default."""
+        state = self._load()
+        selected = str(prompt_id or "").strip()
+        if selected and not any(item["id"] == selected for item in state["prompts"]):
+            raise KeyError(selected)
+        state["selected"] = selected
+        self._save(state)
+        return state
+
+    def selected_content(self) -> str:
+        """Return the selected prompt body, or an empty string for the default."""
+        state = self._load()
+        selected = state["selected"]
+        if not selected:
+            return ""
+        item = next((row for row in state["prompts"] if row["id"] == selected), None)
+        return str(item["content"]) if item else ""
+
+    def migrate_legacy(self, content: str) -> None:
+        """Import the former single custom prompt once, when no store exists yet."""
+        if self.file.path.exists():
+            return
+        text = str(content or "").replace("\x00", "").strip()
+        if not text:
+            return
+        prompt = self.create("自定义提示词", text)
+        self.select(prompt["id"])
+
+
+# ---------------------------------------------------------------------------
 # 汇总
 # ---------------------------------------------------------------------------
 class AppPaths:
@@ -1407,6 +1559,7 @@ class AppPaths:
         self.tools_file = base / "tools.json"
         self.workspace_file = base / "workspace.json"
         self.permissions_file = base / "permissions.json"
+        self.prompts_file = base / "prompts.json"
         self.preferences_file = (
             _resolve(settings.preferences_file) if data_dir is None else base / "preferences.json"
         )

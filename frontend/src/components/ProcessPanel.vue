@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ProcessInfo } from '../api/types'
 import { useProcessStore } from '../stores/processes'
+import ChevronIcon from './ChevronIcon.vue'
 
 const processes = useProcessStore()
 const root = ref<HTMLElement | null>(null)
@@ -70,7 +71,7 @@ onBeforeUnmount(() => {
         <button type="button" class="process-group-head" @click="processes.runningOpen = !processes.runningOpen">
           <span class="process-group-title">运行中</span>
           <span class="process-group-count">{{ running.length }}</span>
-          <span class="process-group-caret">{{ processes.runningOpen ? '⌃' : '⌄' }}</span>
+          <ChevronIcon class="process-group-caret" :direction="processes.runningOpen ? 'up' : 'down'" />
         </button>
         <div v-if="processes.runningOpen" class="process-rows">
           <p v-if="!running.length" class="process-empty">没有正在运行的后台任务。</p>
@@ -105,7 +106,7 @@ onBeforeUnmount(() => {
         <button type="button" class="process-group-head" @click="processes.finishedOpen = !processes.finishedOpen">
           <span class="process-group-title">已完成</span>
           <span class="process-group-count">{{ finished.length }}</span>
-          <span class="process-group-caret">{{ processes.finishedOpen ? '⌃' : '⌄' }}</span>
+          <ChevronIcon class="process-group-caret" :direction="processes.finishedOpen ? 'up' : 'down'" />
         </button>
         <div v-if="processes.finishedOpen" class="process-rows">
           <p v-if="!finished.length" class="process-empty">还没有已完成的后台任务。</p>

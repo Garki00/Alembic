@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { AssistantTurn, SubagentView, WorkEvent } from '../types/chat'
+import ChevronIcon from './ChevronIcon.vue'
 
 const props = defineProps<{ turn: AssistantTurn }>()
 const chat = useChatStore()
@@ -238,7 +239,7 @@ function returnUsage(event: SubagentReturnEvent): string {
         <template v-if="errorCount"> · {{ errorCount }} 个错误</template>
         <template v-if="turn.streaming"> · 运行中</template>
       </span>
-      <span v-if="!isVerbose" class="work-steps-chevron" aria-hidden="true">{{ isOpen ? '⌃' : '⌄' }}</span>
+      <ChevronIcon v-if="!isVerbose" class="work-steps-chevron" :direction="isOpen ? 'up' : 'down'" />
     </button>
 
     <div v-if="isOpen" class="work-steps-body">
@@ -264,9 +265,7 @@ function returnUsage(event: SubagentReturnEvent): string {
           <span v-else-if="event.kind === 'tool' && event.liveOutput && !event.result" class="work-step-live">
             输出中
           </span>
-          <span v-if="!isVerbose" class="work-step-chevron" aria-hidden="true">
-            {{ rowOpen(event) ? '⌃' : '⌄' }}
-          </span>
+          <ChevronIcon v-if="!isVerbose" class="work-step-chevron" :direction="rowOpen(event) ? 'up' : 'down'" />
         </button>
 
         <div v-if="rowOpen(event)" class="work-step-body">

@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import type { ApprovalDecision } from '../api/types'
 import type { ChatApproval } from '../types/chat'
+import ChevronIcon from './ChevronIcon.vue'
 
 const props = defineProps<{ approval: ChatApproval }>()
 const emit = defineEmits<{ decide: [decision: ApprovalDecision] }>()
@@ -98,7 +99,7 @@ function decide(decision: ApprovalDecision): void {
         @click="toggleDetail"
       >
         <span>{{ detailLabel }}</span>
-        <span class="approval-detail-chevron" aria-hidden="true">{{ detailOpen ? '⌃' : '⌄' }}</span>
+        <ChevronIcon class="approval-detail-chevron" :direction="detailOpen ? 'up' : 'down'" />
       </button>
       <pre v-if="detailOpen" class="approval-preview">{{ approval.preview }}</pre>
     </div>

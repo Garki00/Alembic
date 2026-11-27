@@ -8,6 +8,7 @@ import { useWorkspaceStore } from '../stores/workspace'
 import ConfirmDialog from './ConfirmDialog.vue'
 import FloatingMenu from './FloatingMenu.vue'
 import SessionRow from './SessionRow.vue'
+import ChevronIcon from './ChevronIcon.vue'
 
 const props = defineProps<{
   workspace: WorkspaceInfo
@@ -15,6 +16,8 @@ const props = defineProps<{
   totalCount: number
   dropId?: string
   dropBefore?: boolean
+  workspaceDropId?: string
+  workspaceDropBefore?: boolean
   /** 这个工作区里是否有一个还没发消息的新对话占位 */
   draft?: boolean
 }>()
@@ -25,6 +28,10 @@ const emit = defineEmits<{
   (event: 'dragover', id: string, before: boolean): void
   (event: 'dragend'): void
   (event: 'drop', id: string): void
+  (event: 'workspace-dragstart', id: string): void
+  (event: 'workspace-dragover', id: string, before: boolean): void
+  (event: 'workspace-dragend'): void
+  (event: 'workspace-drop', id: string): void
 }>()
 
 const store = useWorkspaceStore()
@@ -39,9 +46,11 @@ const renameValue = ref('')
 const renameInput = ref<HTMLInputElement | null>(null)
 
 const expanded = () => ui.isExpanded(props.workspace.id)
+let dragEndedAt = 0
 
 function onHeadClick(): void {
   if (renaming.value) return
+  if (Date.now() - dragEndedAt < 200) return
   if (store.activeWorkspaceId !== props.workspace.id) {
     void store.activateWorkspace(props.workspace.id)
   }
@@ -118,22 +127,64 @@ function forwardDragOver(id: string, before: boolean): void {
   emit('dragover', id, before)
 }
 
+function onWorkspaceDragStart(event: DragEvent): void {
+  if (renaming.value) {
+    event.preventDefault()
+    return
+  }
+  emit('workspace-dragstart', props.workspace.id)
+  if (event.dataTransfer) {
+    event.dataTransfer.setData('text/plain', props.workspace.id)
+    event.dataTransfer.effectAllowed = 'move'
+  }
+}
+
+function onWorkspaceDragOver(event: DragEvent): void {
+  if (renaming.value) return
+  event.preventDefault()
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  emit('workspace-dragover', props.workspace.id, event.clientY < rect.top + rect.height / 2)
+}
+
+function onWorkspaceDrop(event: DragEvent): void {
+  event.preventDefault()
+  dragEndedAt = Date.now()
+  emit('workspace-drop', props.workspace.id)
+}
+
+function onWorkspaceDragEnd(): void {
+  dragEndedAt = Date.now()
+  emit('workspace-dragend')
+}
 </script>
 
 <template>
   <div
     class="ws-group"
-    :class="{ active: workspace.id === store.activeWorkspaceId }"
+    :class="{
+      active: workspace.id === store.activeWorkspaceId,
+      'drop-before': workspaceDropId === workspace.id && workspaceDropBefore,
+      'drop-after': workspaceDropId === workspace.id && !workspaceDropBefore,
+    }"
     :data-id="workspace.id"
   >
-    <div class="ws-head" @click="onHeadClick">
-      <span class="ws-caret">{{ expanded() ? '▾' : '▸' }}</span>
+    <div
+      class="ws-head"
+      :draggable="!renaming"
+      @click="onHeadClick"
+      @dragstart="onWorkspaceDragStart"
+      @dragover="onWorkspaceDragOver"
+      @dragend="onWorkspaceDragEnd"
+      @drop="onWorkspaceDrop"
+    >
+      <span class="ws-caret"><ChevronIcon :direction="expanded() ? 'down' : 'right'" /></span>
 
       <input
         v-if="renaming"
         ref="renameInput"
         v-model="renameValue"
         class="ws-rename"
+        draggable="false"
         @click.stop
         @keydown.enter.prevent="finishRename(true)"
         @keydown.esc.prevent="finishRename(false)"
@@ -145,6 +196,7 @@ function forwardDragOver(id: string, before: boolean): void {
         type="button"
         class="ws-action"
         title="在此工作区新建对话"
+        draggable="false"
         @click.stop="addChat"
       >
         ＋
@@ -154,6 +206,7 @@ function forwardDragOver(id: string, before: boolean): void {
         type="button"
         class="ws-action"
         title="更多"
+        draggable="false"
         @click.stop="menuOpen = !menuOpen"
       >
         ⋯
@@ -205,3 +258,20 @@ function forwardDragOver(id: string, before: boolean): void {
     />
   </div>
 </template>
+
+<style scoped>
+.ws-group { position: relative; }
+.ws-group.drop-before::before,
+.ws-group.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--emerald);
+  pointer-events: none;
+}
+.ws-group.drop-before::before { top: -1px; }
+.ws-group.drop-after::after { bottom: -1px; }
+</style>

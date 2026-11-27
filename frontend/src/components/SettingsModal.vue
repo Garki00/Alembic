@@ -4,6 +4,7 @@ import GeneralPanel from './GeneralPanel.vue'
 import ModelsPanel from './ModelsPanel.vue'
 import PermissionsPanel from './PermissionsPanel.vue'
 import ToolsPanel from './ToolsPanel.vue'
+import CustomPanel from './CustomPanel.vue'
 import { useUiStore } from '../stores/ui'
 
 const ui = useUiStore()
@@ -72,11 +73,22 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
           >
             扩展
           </button>
+          <button
+            type="button"
+            class="tab"
+            :class="{ active: ui.settingsTab === 'custom' }"
+            role="tab"
+            :aria-selected="ui.settingsTab === 'custom'"
+            @click="ui.settingsTab = 'custom'"
+          >
+            自定义
+          </button>
         </nav>
 
         <GeneralPanel v-if="ui.settingsTab === 'general'" />
         <ModelsPanel v-else-if="ui.settingsTab === 'models'" />
         <PermissionsPanel v-else-if="ui.settingsTab === 'permissions'" />
+        <CustomPanel v-else-if="ui.settingsTab === 'custom'" />
         <ToolsPanel v-else />
       </div>
     </div>

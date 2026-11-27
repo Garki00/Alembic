@@ -74,7 +74,7 @@
 - 中间件顺序固定为 retry → model limit → tool limit → 工具暴露/延迟执行 → approval（审批在最内层）。
 - 一轮对话在服务端工作线程里跑 agent，事件经 `queue.Queue` 交给主线程写 SSE。不要在生成器里直接跑 agent：审批需要工具线程阻塞等待浏览器回执。
 - 停止生成：前端先 `POST /api/sessions/{id}/cancel` 再断开 SSE；服务端置位 `threading.Event`，前台命令按进程树结束，同时停止当前会话的后台任务。切换会话只断开旧流时用 `?background=0`。
-- 系统提示词由 `prompts/sections/` 的分段构建，`prompts/builder.py` 按「稳定 → 动态」排序后拼成一条 system 消息；自定义系统提示词（`preferences.custom_system_prompt`）只替换身份段，前缀、规则、运行时公告仍然生效。工具描述不写进系统提示词，随请求的 `tools` 字段下发。
+- 系统提示词由 `prompts/sections/` 的分段构建，`prompts/builder.py` 按「稳定 → 动态」排序后拼成一条 system 消息；用户选中的提示词（`data/prompts.json`）替换身份与规则两段，前缀、界面约定、工具指导与运行时公告仍然生效。工具描述不写进系统提示词，随请求的 `tools` 字段下发。
 - 会话历史写 `memory/<session>.json`；压缩只替换模型上下文，`display_messages` 保留用户可见原文。不新增第二条写入路径。
 - 供应商与模型以「供应商 + 模型列表」为单位；密钥字段永不回显（`value=""` + `value_set` + `hint`），空值表示保持原值，清空走 `clear`。
 - 扩展：原生插件与 MCP 属于受信宿主代码，默认禁用；`allowed-tools` 不授予权限。发现阶段不导入插件代码。
@@ -135,7 +135,7 @@
 - 数据根目录默认 `%APPDATA%\Alembic`（Windows）/ `~/Library/Application Support/Alembic`（macOS）/ `$XDG_DATA_HOME/Alembic`（Linux），`ALEMBIC_HOME` 可覆盖。
 - 业务数据与 Electron 自身 profile 分属两个目录：`%APPDATA%\Alembic` 存配置与会话，`%LOCALAPPDATA%\Alembic` 存缓存与运行日志。
 - 首次启动把仓库里的 `data/`、`memory/` 复制到数据目录；只复制、不删除。
-- 配置文件包括 `models.json`、`tools.json`、`workspace.json`、`preferences.json`、`permissions.json`、`sandbox.json`、`sandbox-users.json`、`sandbox-setup.json` 与会话目录 `memory/`。
+- 配置文件包括 `models.json`、`tools.json`、`workspace.json`、`preferences.json`、`permissions.json`、`prompts.json`、`sandbox.json`、`sandbox-users.json`、`sandbox-setup.json` 与会话目录 `memory/`。
 - 主要环境变量：`ALEMBIC_HOME`、`DATA_DIR`、`MEMORY_DIR`、`WORKSPACE_DIR`、`SESSION_ID`、`MODEL_NAME`、`DEEPSEEK_API_KEY`、`AGENT_ENGINE`、`ALEMBIC_TOKEN`、`WEB_HOST`/`WEB_PORT`、`CORS_ORIGINS`、`APPROVAL_TIMEOUT`、`QUESTION_TIMEOUT`。完整列表与默认值见 `README.md` 与 `config/settings.py`。
 
 ## 桌面外壳与打包

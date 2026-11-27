@@ -53,11 +53,13 @@ class CompositionTest(unittest.TestCase):
         self.assertIn("using your own judgment", prompt.system)
         self.assertIn("IMPORTANT: Assist with authorized security testing", prompt.system)
 
-    def test_custom_prompt_replaces_the_identity_body(self):
+    def test_selected_prompt_replaces_identity_and_rules(self):
         prompt = build(custom_prompt="You are a release engineer. Be terse.")
         self.assertIn("You are a local interactive workspace agent.", prompt.system)
         self.assertIn("You are a release engineer. Be terse.", prompt.system)
         self.assertNotIn("using your own judgment", prompt.system)
+        self.assertNotIn("# Rules", prompt.system)
+        self.assertNotIn("Inspect before changing", prompt.system)
         self.assertEqual(prompt.sections[1].source, "custom_system_prompt")
 
     def test_surface_changes_the_interface_section(self):

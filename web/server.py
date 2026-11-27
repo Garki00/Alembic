@@ -54,6 +54,7 @@ from config.store import (
     AppPaths,
     ModelStore,
     PreferencesStore,
+    PromptStore,
     ToolStore,
     WorkspaceStore,
 )
@@ -191,6 +192,15 @@ class FolderPickPayload(BaseModel):
 
 class ApprovalPayload(BaseModel):
     decision: str = "deny"  # once | always | deny
+
+
+class PromptPayload(BaseModel):
+    name: str = ""
+    content: str = ""
+
+
+class PromptSelectPayload(BaseModel):
+    id: str = ""
 
 
 class AnswerPayload(BaseModel):
@@ -446,6 +456,8 @@ def create_app(
     extensions = ExtensionManager(paths.data_dir)
     workspaces = WorkspaceStore(paths.workspace_file, default=settings.default_workspace)
     preferences = PreferencesStore(paths.preferences_file)
+    prompts = PromptStore(paths.prompts_file)
+    prompts.migrate_legacy(str(preferences.get().get("custom_system_prompt") or ""))
     sessions = SessionStore(memory_dir or settings.memory_dir)
     sandbox_config = SandboxConfigStore(Path(paths.data_dir) / "sandbox.json")
     sandbox = create_sandbox(config=sandbox_config)
@@ -476,6 +488,7 @@ def create_app(
     app.state.tools = tools
     app.state.workspaces = workspaces
     app.state.preferences = preferences
+    app.state.prompts = prompts
     app.state.permission_rules = PermissionRulesStore(paths.permissions_file)
     app.state.sessions = sessions
     app.state.sandbox = sandbox
@@ -892,6 +905,47 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
         return {"preferences": updated}
 
+    # ---- 提示词 ----
+    @app.get("/api/prompts")
+    def list_prompts():
+        """Return the selected prompt id and every stored prompt."""
+        return prompts.state()
+
+    @app.post("/api/prompts")
+    def create_prompt(payload: PromptPayload):
+        try:
+            prompts.create(payload.name, payload.content)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return prompts.state()
+
+    @app.put("/api/prompts/{prompt_id}")
+    def update_prompt(prompt_id: str, payload: PromptPayload):
+        try:
+            prompts.update(prompt_id, name=payload.name, content=payload.content)
+        except KeyError as exc:
+            raise HTTPException(404, "提示词不存在") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return prompts.state()
+
+    @app.delete("/api/prompts/{prompt_id}")
+    def delete_prompt(prompt_id: str):
+        try:
+            prompts.delete(prompt_id)
+        except KeyError as exc:
+            raise HTTPException(404, "提示词不存在") from exc
+        return prompts.state()
+
+    @app.post("/api/prompts/select")
+    def select_prompt(payload: PromptSelectPayload):
+        """Select a prompt; an empty id restores the built-in default."""
+        try:
+            prompts.select(payload.id)
+        except KeyError as exc:
+            raise HTTPException(404, "提示词不存在") from exc
+        return prompts.state()
+
     # ---- 权限规则 ----
     @app.get("/api/permissions")
     def get_permission_rules(workspace_id: str = ""):
@@ -1240,7 +1294,7 @@ def create_app(
                     ),
                     sandbox=app.state.sandbox,
                     sandbox_config=sandbox_config.get(),
-                    custom_prompt=str(prefs.get("custom_system_prompt") or ""),
+                    custom_prompt=app.state.prompts.selected_content(),
                 )
             except Exception as exc:
                 raise HTTPException(400, str(exc)) from exc
@@ -1453,7 +1507,7 @@ def create_app(
                 subagents=app.state.subagents,
                 workspace_id=workspace_id,
                 subagent_models=prefs.get("subagent_models") or {},
-                custom_prompt=str(prefs.get("custom_system_prompt") or ""),
+                custom_prompt=app.state.prompts.selected_content(),
             )
         except Exception as exc:
             if "cancel_event" in locals():

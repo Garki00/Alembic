@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { TodoItem } from '../api/types'
+import ChevronIcon from './ChevronIcon.vue'
 
 const props = defineProps<{ items: TodoItem[] }>()
 
@@ -32,7 +33,7 @@ function mark(status: string): string {
           <span :style="{ width: `${percent}%` }"></span>
         </span>
       </span>
-      <span class="todo-toggle" aria-hidden="true">{{ expanded ? '⌄' : '⌃' }}</span>
+      <ChevronIcon class="todo-toggle" :direction="expanded ? 'down' : 'up'" />
     </button>
     <ol v-if="expanded" class="todo-list">
       <li v-for="(item, index) in items" :key="index" :class="item.status">

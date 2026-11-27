@@ -9,6 +9,7 @@ import { useWorkspaceStore } from '../stores/workspace'
 import SessionRow from './SessionRow.vue'
 import WorkspaceGroup from './WorkspaceGroup.vue'
 import SunIcon from './SunIcon.vue'
+import ChevronIcon from './ChevronIcon.vue'
 
 const ui = useUiStore()
 const workspace = useWorkspaceStore()
@@ -19,6 +20,9 @@ const searchInput = ref<HTMLInputElement | null>(null)
 const dragId = ref('')
 const dragOverId = ref('')
 const dragOverBefore = ref(true)
+const workspaceDragId = ref('')
+const workspaceDropId = ref('')
+const workspaceDropBefore = ref(true)
 const toolbar = ref<HTMLElement | null>(null)
 
 function onResize(event: PointerEvent): void {
@@ -78,6 +82,15 @@ const groups = computed<WorkspaceGroupView[]>(() => {
     })
   }
   result.sort((a, b) => {
+    if (ui.sessionSort === 'manual' && ui.workspaceOrder.length) {
+      const left = ui.workspaceOrder.indexOf(a.workspace.id)
+      const right = ui.workspaceOrder.indexOf(b.workspace.id)
+      if (left !== right) {
+        if (left < 0) return 1
+        if (right < 0) return -1
+        return left - right
+      }
+    }
     const latest = (sessions: SessionSummary[]): string => sessions.reduce(
       (value, session) => (String(session.updated_at || '') > value ? String(session.updated_at) : value),
       '',
@@ -177,6 +190,8 @@ function onDragStart(id: string): void {
 }
 
 function onDragOver(id: string, before: boolean): void {
+  // 拖动工作区时，鼠标经过对话行不应留下对话的插入提示。
+  if (workspaceDragId.value) return
   dragOverId.value = id
   dragOverBefore.value = before
 }
@@ -205,14 +220,75 @@ function onDrop(targetId: string, section: SessionSummary[]): void {
   ui.setManualOrder(rest)
 }
 
+function onWorkspaceDragStart(id: string): void {
+  workspaceDragId.value = id
+  workspaceDropId.value = ''
+  dragId.value = ''
+  dragOverId.value = ''
+}
+
+function onWorkspaceDragOver(id: string, before: boolean): void {
+  if (!workspaceDragId.value || workspaceDragId.value === id) return
+  workspaceDropId.value = id
+  workspaceDropBefore.value = before
+}
+
+function onWorkspaceDragEnd(): void {
+  workspaceDragId.value = ''
+  workspaceDropId.value = ''
+  dragOverId.value = ''
+}
+
+function onWorkspaceDrop(targetId: string): void {
+  const source = workspaceDragId.value
+  const before = workspaceDropBefore.value
+  onWorkspaceDragEnd()
+  if (!source || source === targetId) return
+  const visible = groups.value.map((group) => group.workspace.id)
+  const wasManual = ui.sessionSort === 'manual'
+  const base = wasManual && ui.workspaceOrder.length ? [...ui.workspaceOrder] : [...visible]
+  for (const id of visible) {
+    if (!base.includes(id)) base.push(id)
+  }
+  if (!base.includes(source) || !base.includes(targetId)) return
+  const moved = base.filter((id) => id !== source)
+  const index = moved.indexOf(targetId)
+  if (index < 0) return
+  moved.splice(before ? index : index + 1, 0, source)
+
+  const nextVisible = moved.filter((id) => visible.includes(id))
+  const changed = nextVisible.some((id, position) => id !== visible[position])
+  if (!changed) return
+
+  // 工作区顺序是手动维护的，拖动重排后视图选项同步为手动排序。
+  if (!wasManual) ui.setSessionSort('manual')
+  ui.setWorkspaceOrder(moved)
+}
+
 function onDocumentClick(event: MouseEvent): void {
   if (!viewMenuOpen.value) return
   if (toolbar.value && event.target instanceof Node && toolbar.value.contains(event.target)) return
   viewMenuOpen.value = false
 }
 
-onMounted(() => document.addEventListener('click', onDocumentClick))
-onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
+/** Any drag finish clears both session and workspace insertion hints. */
+function clearDragState(): void {
+  dragId.value = ''
+  dragOverId.value = ''
+  workspaceDragId.value = ''
+  workspaceDropId.value = ''
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocumentClick)
+  document.addEventListener('dragend', clearDragState)
+  document.addEventListener('drop', clearDragState)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocumentClick)
+  document.removeEventListener('dragend', clearDragState)
+  document.removeEventListener('drop', clearDragState)
+})
 </script>
 
 <template>
@@ -225,7 +301,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
         class="icon-btn brand-action"
         title="设置"
         aria-label="设置"
-        @click="ui.openSettings('models')"
+        @click="ui.openSettings()"
       >
         ⚙
       </button>
@@ -246,7 +322,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
             stroke-width="1.25"
             stroke-linejoin="round"
           />
-          <path d="M8 5.6v4.2M5.9 7.7h4.2" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+          <path d="M8 6.1v4M6 8.1h4" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
         </svg>
         <span>新对话</span>
       </button>
@@ -392,17 +468,23 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
             :draft="isDraftWorkspace(group.workspace.id)"
             :drop-id="dragOverId"
             :drop-before="dragOverBefore"
+            :workspace-drop-id="workspaceDropId"
+            :workspace-drop-before="workspaceDropBefore"
             @session-select="openSession"
             @dragstart="onDragStart"
             @dragover="onDragOver"
             @dragend="onDragEnd"
             @drop="onDrop($event, group.sessions)"
+            @workspace-dragstart="onWorkspaceDragStart"
+            @workspace-dragover="onWorkspaceDragOver"
+            @workspace-dragend="onWorkspaceDragEnd"
+            @workspace-drop="onWorkspaceDrop"
           />
         </template>
 
         <div v-if="archivedSessions.length" class="ws-group archived-group">
           <div class="ws-head" @click="ui.archivedOpen = !ui.archivedOpen">
-            <span class="ws-caret">{{ ui.archivedOpen ? '▾' : '▸' }}</span>
+            <span class="ws-caret"><ChevronIcon :direction="ui.archivedOpen ? 'down' : 'right'" /></span>
             <span class="ws-name">已归档</span>
             <span class="ws-count">{{ archivedSessions.length }}</span>
           </div>

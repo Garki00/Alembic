@@ -4,8 +4,9 @@
 The prompt is assembled from named sections instead of one large constant:
 
 1. fixed product prefix;
-2. agent identity (default, or the user's custom system prompt);
-3. operating rules and execution discipline;
+2. agent identity (default, or the user's selected prompt);
+3. operating rules and execution discipline (skipped when a prompt is selected,
+   because the prompt replaces both identity and rules);
 4. presentation surface (desktop app or terminal);
 5. tool guidance derived from this turn's visible and deferred tools;
 6. repository snapshot at the start of the conversation;
@@ -114,7 +115,8 @@ def build_prompt(
         now: Injectable clock for tests.
         project_context: Pre-rendered workspace instructions; ``None`` loads the
             first project context file, ``""`` skips the section.
-        custom_prompt: User-provided identity body; empty means the default.
+        custom_prompt: User-selected prompt body; it replaces the identity and
+            rules sections. Empty means the built-in default.
         model: Current model identifier announced to the model.
         additional_directories: Extra roots visible to the tool runtime.
         git_snapshot: Pre-collected repository snapshot; ``None`` collects one
@@ -132,10 +134,17 @@ def build_prompt(
     sections: list[PromptSection] = [
         build_prefix_section(),
         build_identity_section(custom_prompt),
-        build_rules_section(engine),
-        build_interface_section(surface),
-        build_tool_guidance_section(tool_names, deferred),
     ]
+    if not (custom_prompt or "").strip():
+        # A selected prompt owns both the identity and the operating rules; the
+        # fixed prefix, interface contract, and tool guidance still apply.
+        sections.append(build_rules_section(engine))
+    sections.extend(
+        [
+            build_interface_section(surface),
+            build_tool_guidance_section(tool_names, deferred),
+        ]
+    )
     git_section = build_git_status_section(git_snapshot)
     if git_section is not None:
         sections.append(git_section)
